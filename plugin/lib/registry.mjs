@@ -204,6 +204,20 @@ export function isActiveController(convId, parsed) {
   return false;
 }
 
+export function findActiveWorkerSession(convId, parsed) {
+  if (!convId || !parsed || !Array.isArray(parsed.activeSessions)) return null;
+  const a = String(convId).trim().toLowerCase();
+  if (!a) return null;
+  for (const row of parsed.activeSessions) {
+    const b = String(row?.conversationId || '').trim().toLowerCase();
+    if (!b || PLACEHOLDER_RE.test(b)) continue;
+    if (a === b || (a.length >= 8 && b.length >= 8 && (a.startsWith(b) || b.startsWith(a)))) {
+      return row;
+    }
+  }
+  return null;
+}
+
 function findSectionRange(lines, headingMatcher, labelForErr) {
   let start = -1;
   let end = lines.length;
@@ -521,7 +535,7 @@ export function deleteQueueRow(mdText, id) {
   return lines.join('\n');
 }
 
-export function extractTemplates(templatesPath) {
+export function extractTemplatesFromMarkdown(mdText) {
   const fallback = {
     registrySkeleton: '# 跨会话调度总账与资源租约登记表（SESSION-REGISTRY）\n',
     bootstrapPrompt: '',
@@ -529,24 +543,30 @@ export function extractTemplates(templatesPath) {
     dispatchOfflineTemplate: '',
     dispatchGrantTemplate: '',
   };
-  if (!templatesPath || !existsSync(templatesPath)) return fallback;
+  if (!mdText || typeof mdText !== 'string') return fallback;
+  const getCodeBlockAfter = (headingPattern) => {
+    const idx = mdText.search(headingPattern);
+    if (idx < 0) return '';
+    const sub = mdText.slice(idx);
+    const m = sub.match(/```(?:markdown|text)?\n([\s\S]*?)\n```/);
+    return m ? m[1] : '';
+  };
+  return {
+    registrySkeleton: getCodeBlockAfter(/^## 1\./m) || fallback.registrySkeleton,
+    bootstrapPrompt: getCodeBlockAfter(/^## 2\./m),
+    handoverTemplate: getCodeBlockAfter(/^## 3\./m),
+    dispatchOfflineTemplate: getCodeBlockAfter(/^### 4\.1/m),
+    dispatchGrantTemplate: getCodeBlockAfter(/^### 4\.2/m),
+  };
+}
+
+export function extractTemplates(templatesPath) {
+  if (!templatesPath || !existsSync(templatesPath)) {
+    return extractTemplatesFromMarkdown('');
+  }
   try {
-    const md = readFileSync(templatesPath, 'utf8');
-    const getCodeBlockAfter = (headingPattern) => {
-      const idx = md.search(headingPattern);
-      if (idx < 0) return '';
-      const sub = md.slice(idx);
-      const m = sub.match(/```(?:markdown|text)?\n([\s\S]*?)\n```/);
-      return m ? m[1] : '';
-    };
-    return {
-      registrySkeleton: getCodeBlockAfter(/^## 1\./m) || fallback.registrySkeleton,
-      bootstrapPrompt: getCodeBlockAfter(/^## 2\./m),
-      handoverTemplate: getCodeBlockAfter(/^## 3\./m),
-      dispatchOfflineTemplate: getCodeBlockAfter(/^### 4\.1/m),
-      dispatchGrantTemplate: getCodeBlockAfter(/^### 4\.2/m),
-    };
+    return extractTemplatesFromMarkdown(readFileSync(templatesPath, 'utf8'));
   } catch {
-    return fallback;
+    return extractTemplatesFromMarkdown('');
   }
 }

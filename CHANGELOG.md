@@ -5,6 +5,20 @@ All notable changes to `control-tower` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-11-22
+
+### Added
+- 新增三层物理隔离配置中心 `plugin/lib/settings.mjs`（`plugin-settings.json`、`global-settings.json` + 全局文档覆盖、`workspaces/<wsHash>/settings.json` + 工作区覆盖，全部托管于 `<appData>/plugin_data/control-tower/`，读操作零副作用）。
+- 支持只读读取宿主 `~/.gemini/config/config.json`（及 `$AGY_CONFIG_DIR`）权限配置并映射为总控默认代决策档位（`autonomous` / `balanced` / `strict`），同时支持工作区级独占资源单锁模式开关与 `PLUGIN_DATA` 零侵入托管台账模式（`@plugin_data/SESSION-REGISTRY.md`）及工作区自定义相对路径。
+- 扩展 `plugin/hooks.json` 与 `plugin/scripts/ct-hook.mjs` 为四事件协同架构：新增双角色感知（`SessionStart` 向已入账专职会话注入锁边界与双向汇报锚点）、`PreToolUse` 台账防误改写保护（默认 `ask`，支持 `deny`/`off`）、以及 `Stop` 钩子自动防漏报阶段回执兜底。
+- 在 `plugin/lib/transcript.mjs` 新增原生 `swarm` 状态与消息板动态解析（`inspectNativeSwarm`）、长汇报上下文精确会话 ID 过滤（自动跳过无关 Git SHA）、以及 `Stop` 主动汇报检测（`hasOutboundAgentApiReport`）。
+- 升级 Aux Pane 看板 UI 与后端（`plugin/sidecars/tower/`）：新增「受控直派」通道（`/api/dispatch/create` 与模型合规校验的 `/_sidecar/new-conversation`）、原生 Swarm 实时集群面板、智能无感自动轮询、顶部待办/换届提醒横幅、精美微动效与无障碍降级支持，以及三段式隔离「设置中心」标签页（无台账工作区亦可随时打开）。
+
+### Changed
+- 将默认总控换届上下文压缩提醒阈值从 `2` 次提高至 `5` 次（非强制、看板可调），并支持一键拉起新总控接班或标记「本会话忽略不再提醒」。
+- 升级 `plugin/skills/control-tower/SKILL.md` 与 `references/templates.md`，引入环境自适应派遣（优先推荐原生 `swarm`、次选 `agentapi` 直派并支持斜杠前缀、保留手动兜底）、三档代决策与 100% Antigravity 原生系统通知边界。
+- 放宽 `PreInvocation` 默认速查输入阈值至 `2000` 字符 / `6` 个 ID，并对 `[CT_AUTO_RECEIPT]` 回执自动跳过重复速查。
+
 ## [1.1.0] - 2026-11-21
 
 ### Added

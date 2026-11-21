@@ -16,5 +16,28 @@
         "timeout": 5
       }
     ]
+  },
+  "control-tower-pre-tool-use": {
+    "PreToolUse": [
+      {
+        "matcher": "write_file|edit_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ./scripts/ct-hook.mjs PreToolUse",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "control-tower-stop": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": "node ./scripts/ct-hook.mjs Stop",
+        "timeout": 5
+      }
+    ]
   }
 }

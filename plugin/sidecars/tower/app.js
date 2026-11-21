@@ -5,9 +5,12 @@
 
   const state = {
     tab: 'overview',
+    settingsScope: 'plugin',
     workspace: '',
     snap: null,
     toastTimer: null,
+    pollTimer: null,
+    pollPausedByUser: false,
     rawDirty: false,
     lastProbe: null,
   };
@@ -46,7 +49,7 @@
     el.textContent = msg;
     el.className = isErr ? 'toast error' : 'toast';
     clearTimeout(state.toastTimer);
-    state.toastTimer = setTimeout(() => el.classList.add('hidden'), 2600);
+    state.toastTimer = setTimeout(() => el.classList.add('hidden'), 2800);
   }
 
   async function copyText(text) {
@@ -93,14 +96,33 @@
     });
   }
 
+  function applyMotionSetting(snap) {
+    const motion = snap?.settings?.plugin?.uiMotion || 'standard';
+    document.documentElement.dataset.motion = motion;
+  }
+
   function switchTab(tab) {
     state.tab = tab;
     document.querySelectorAll('.tab').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.tab === tab);
     });
-    ['overview', 'sessions', 'queue', 'raw'].forEach((name) => {
+    const hasReg = Boolean(state.snap?.registryExists);
+    const showEmpty = !hasReg && Boolean(state.snap?.workspace) && tab !== 'settings';
+    $('empty-state').classList.toggle('hidden', !showEmpty);
+    ['overview', 'sessions', 'queue', 'raw', 'settings'].forEach((name) => {
       const panel = $(`tab-${name}`);
-      panel.classList.toggle('hidden', !state.snap?.registryExists || name !== tab);
+      const visible = name === 'settings' ? tab === 'settings' : hasReg && name === tab;
+      panel.classList.toggle('hidden', !visible);
+    });
+  }
+
+  function switchSettingsScope(scope) {
+    state.settingsScope = scope;
+    document.querySelectorAll('.seg-btn').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.scope === scope);
+    });
+    ['plugin', 'global', 'workspace'].forEach((name) => {
+      $(`settings-scope-${name}`).classList.toggle('hidden', name !== scope);
     });
   }
 
@@ -120,51 +142,102 @@
     }
     const relBadge = $('reg-rel-badge');
     if (snap.registryExists && snap.registryRelPath) {
-      relBadge.textContent = snap.registryRelPath;
+      relBadge.textContent = snap.registryIsManaged ? '零侵入托管台账' : snap.registryRelPath;
+      relBadge.className = `badge ${snap.registryIsManaged ? '' : 'badge-muted'}`;
       relBadge.classList.remove('hidden');
     } else {
       relBadge.classList.add('hidden');
     }
   }
 
+  function renderAttentionBanner(snap) {
+    const enabled = snap?.settings?.plugin?.attentionBannerEnabled !== false;
+    const items = Array.isArray(snap?.attention?.items) ? snap.attention.items : [];
+    const banner = $('attention-banner');
+    if (!enabled || items.length === 0) {
+      banner.classList.add('hidden');
+      $('attention-list').innerHTML = '';
+      return;
+    }
+    banner.classList.remove('hidden');
+    $('attention-list').innerHTML = items
+      .map((item) => {
+        const isHandover = item.kind === 'handover';
+        const ctrlId = item.controllerId || snap?.parsed?.controller?.currentControllerId || '';
+        const actionBtns = isHandover
+          ? `
+            <button class="btn btn-primary btn-sm spawn-handover-btn" data-id="${esc(ctrlId)}">一键接班</button>
+            <button class="btn btn-ghost btn-sm jump-conv-btn" data-id="${esc(ctrlId)}">跳转总控</button>
+            <button class="btn btn-ghost btn-sm dismiss-att-btn" data-kind="handover" data-ctrl="${esc(ctrlId)}">本会话忽略</button>
+          `
+          : `
+            <button class="btn btn-primary btn-sm jump-conv-btn" data-id="${esc(ctrlId)}">跳转总控拍板</button>
+            <button class="btn btn-ghost btn-sm dismiss-att-btn" data-id="${esc(item.id)}">已处理</button>
+          `;
+        return `
+          <div class="attention-item">
+            <span>${esc(item.summary || item.kind)}</span>
+            <div class="actions">${actionBtns}</div>
+          </div>
+        `;
+      })
+      .join('');
+  }
+
   function renderOverview(snap) {
+    const eff = snap.settings?.effective || {};
+    const leaseEnabled = eff.exclusiveLeaseEnabled !== false;
     const lease = snap.parsed?.lease || {};
-    const statusText = lease.lockStatus || '-';
+    const statusText = leaseEnabled ? lease.lockStatus || '-' : '无独占资源模式';
     const pill = $('lease-status-pill');
     pill.textContent = statusText;
-    const isIdle = /IDLE|空闲|无独占/i.test(statusText);
+    const isIdle = !leaseEnabled || /IDLE|空闲|无独占/i.test(statusText);
     pill.className = `badge ${isIdle ? 'badge-ok' : 'badge-warn'}`;
 
-    $('lease-view').innerHTML = [
-      ['锁状态', lease.lockStatus || '-'],
-      ['持锁会话', lease.holder || '-'],
-      ['独占对象', lease.resource || '-'],
-      ['起始时间', lease.since || '-'],
-      ['操作范围', lease.scope || '-'],
-      ['解锁判据', lease.releaseCriteria || '-'],
-    ]
-      .map(([k, v]) => `<div class="kv-k">${esc(k)}</div><div class="kv-v">${esc(v)}</div>`)
-      .join('');
+    $('lease-disabled-note').classList.toggle('hidden', leaseEnabled);
+    $('lease-active-wrap').classList.toggle('hidden', !leaseEnabled);
 
-    $('lf-lockStatus').value = lease.lockStatus || '';
-    $('lf-holder').value = lease.holder || '-';
-    $('lf-resource').value = lease.resource || '-';
-    $('lf-since').value = lease.since || '-';
-    $('lf-scope').value = lease.scope || '-';
-    $('lf-releaseCriteria').value = lease.releaseCriteria || '-';
+    if (leaseEnabled) {
+      $('lease-view').innerHTML = [
+        ['锁状态', lease.lockStatus || '-'],
+        ['持锁会话', lease.holder || '-'],
+        ['独占对象', lease.resource || '-'],
+        ['起始时间', lease.since || '-'],
+        ['操作范围', lease.scope || '-'],
+        ['解锁判据', lease.releaseCriteria || '-'],
+      ]
+        .map(([k, v]) => `<div class="kv-k">${esc(k)}</div><div class="kv-v">${esc(v)}</div>`)
+        .join('');
+
+      $('lf-lockStatus').value = lease.lockStatus || '';
+      $('lf-holder').value = lease.holder || '-';
+      $('lf-resource').value = lease.resource || '-';
+      $('lf-since').value = lease.since || '-';
+      $('lf-scope').value = lease.scope || '-';
+      $('lf-releaseCriteria').value = lease.releaseCriteria || '-';
+    }
 
     const ctrl = snap.parsed?.controller || {};
     const tel = ctrl.telemetry || {};
     const comps = Number(tel.compactions || 0);
+    const threshold = Number(eff.controllerCompactionThreshold || 5);
+    const ignored = Boolean(snap?.attention?.handoverIgnored);
     const compBadge = $('ctrl-comp-badge');
-    compBadge.textContent = `压缩 ${comps} 次`;
-    compBadge.className = `badge ${comps >= 2 ? 'badge-danger' : 'badge-ok'}`;
-    $('ctrl-alert').classList.toggle('hidden', comps < 2);
+    compBadge.textContent = ignored
+      ? `压缩 ${comps} 次 (已忽略)`
+      : `压缩 ${comps} / ${threshold} 次`;
+    compBadge.className = `badge ${!ignored && comps >= threshold ? 'badge-danger' : 'badge-ok'}`;
+    $('ctrl-alert').classList.toggle('hidden', ignored || comps < threshold);
+    $('ctrl-alert-text').textContent = `当前总控已累计 ${comps} 次压缩（阈值 ${threshold} 次），可一键拉起新总控接班或忽略。`;
+
+    const autoBadge = $('ctrl-autonomy-badge');
+    const autoLabel = eff.effectiveAutonomy || 'balanced';
+    autoBadge.textContent = `代决策: ${autoLabel}`;
 
     const stepStr = tel.exists ? `${tel.maxStepIndex || tel.lineCount} 步 (${tel.lineCount} 条)` : '未定位到日志';
     $('ctrl-view').innerHTML = [
       ['总控 ID', ctrl.currentControllerId || '未登记'],
-      ['常驻模型', ctrl.defaultModel || '-'],
+      ['常驻模型', ctrl.defaultModel || eff.l0ControllerModel || '-'],
       ['运行状态', `${ctrl.currentControllerStatus || '-'} | ${tel.lastModel || '-'}`],
       ['日志进度', `${stepStr}${tel.lastUpdatedAt ? ` | ${tel.lastUpdatedAt}` : ''}`],
     ]
@@ -173,11 +246,65 @@
 
     $('cf-controllerId').value = ctrl.currentControllerId || window.sidecar?.conversationId || '';
     $('cf-status').value = ctrl.currentControllerStatus || 'ONLINE';
-    $('cf-defaultModel').value = ctrl.defaultModel || 'Orchestrator (Neon)';
+    $('cf-defaultModel').value = ctrl.defaultModel || eff.l0ControllerModel || 'Orchestrator (Neon)';
   }
 
   function renderSessions(snap) {
+    const eff = snap.settings?.effective || {};
+    const leaseEnabled = eff.exclusiveLeaseEnabled !== false;
+    $('df-lock-wrap').classList.toggle('hidden', !leaseEnabled);
+    if (!$('df-model').dataset.userEdited) {
+      $('df-model').value = eff.l2StandardModel || 'Orchestrator (Neon)';
+    }
+
+    // Native Swarm panel
+    const swarm = snap.nativeSwarm || { active: false, members: [], recentPosts: [] };
+    const swarmCard = $('swarm-card');
+    swarmCard.classList.toggle('hidden', !swarm.active);
+    if (swarm.active) {
+      $('swarm-title-badge').textContent = `${swarm.title} | ${swarm.members.length} 成员`;
+      $('swarm-members-list').innerHTML = swarm.members
+        .map((m) => {
+          const stCls =
+            m.state === 'working'
+              ? 'badge-ok'
+              : m.state === 'killed'
+                ? 'badge-danger'
+                : 'badge-muted';
+          return `
+            <div class="item-box">
+              <div class="card-head">
+                <strong>${esc(m.name)} (${esc(m.role)})</strong>
+                <span class="badge ${stCls}">${esc(m.state)}</span>
+              </div>
+              <div class="item-meta">模型: ${esc(m.model)} | 步数: ${esc(m.steps)} | 压缩: ${esc(m.compactions)} 次</div>
+              ${m.lastError ? `<div class="item-meta">报错: ${esc(m.lastError)}</div>` : ''}
+              ${
+                m.conversationId
+                  ? `<div class="actions">
+                      <button class="btn btn-ghost btn-sm jump-conv-btn" data-id="${esc(m.conversationId)}">跳转成员会话</button>
+                      <button class="btn btn-ghost btn-sm copy-conv-btn" data-id="${esc(m.conversationId)}">复制 ID</button>
+                    </div>`
+                  : ''
+              }
+            </div>
+          `;
+        })
+        .join('');
+      $('swarm-posts-list').innerHTML =
+        swarm.recentPosts.length === 0
+          ? ''
+          : `<div class="divider-label">最近消息板动态</div>` +
+            swarm.recentPosts
+              .map(
+                (p) =>
+                  `<div class="item-meta">#${esc(p.seq)} [${esc(p.agent)}]: ${esc(p.text)}</div>`
+              )
+              .join('');
+    }
+
     const active = snap.parsed?.activeSessions || [];
+    const workerThresh = Number(eff.workerCompactionThreshold || 2);
     $('active-count-badge').textContent = String(active.length);
     const activeBox = $('active-sessions-list');
     if (active.length === 0) {
@@ -186,7 +313,7 @@
       activeBox.innerHTML = active
         .map((s) => {
           const t = s.telemetry || {};
-          const compWarn = t.compactions >= 2 ? 'badge-danger' : 'badge-muted';
+          const compWarn = (t.compactions || 0) >= workerThresh ? 'badge-danger' : 'badge-muted';
           const telLine = t.exists
             ? `步数 ${t.maxStepIndex || t.lineCount} | 模型 ${t.lastModel || '-'} | 压缩 ${t.compactions} 次`
             : '无本地日志';
@@ -230,6 +357,10 @@
 
   function renderQueue(snap) {
     const queue = snap.parsed?.queue || [];
+    const eff = snap.settings?.effective || {};
+    if (!$('qf-originalId').value && !$('qf-route').dataset.userEdited) {
+      $('qf-route').value = `L2 ${eff.l2StandardModel || 'Orchestrator (Neon)'}`;
+    }
     $('queue-count-badge').textContent = String(queue.length);
     const box = $('queue-list');
     if (queue.length === 0) {
@@ -258,20 +389,168 @@
 
   function renderRaw(snap) {
     $('raw-hash-badge').textContent = snap.hash ? snap.hash.slice(0, 10) : '-';
+    const tplSrc = snap.settings?.docs?.['templates.md']?.source || 'builtin';
+    $('tpl-source-badge').textContent = tplSrc;
     if (!state.rawDirty) {
       $('raw-editor').value = snap.content || '';
     }
   }
 
+  function setOvTag(key, isWsOverride) {
+    const el = $(`ov-tag-${key}`);
+    if (!el) return;
+    el.textContent = isWsOverride ? '工作区覆盖' : '继承全局';
+    el.className = `badge ${isWsOverride ? 'badge-warn' : 'badge-muted'}`;
+  }
+
+  function syncGlobalDocEditor(snap) {
+    const docName = $('global-doc-select').value;
+    const docs = snap.settings?.docs || {};
+    const d = docs[docName] || {};
+    const hasGlobal = Boolean(d.hasGlobalOverride);
+    $('global-doc-badge').textContent = hasGlobal ? '已存在全局覆盖' : '使用内置基准';
+    $('global-doc-badge').className = `badge ${hasGlobal ? 'badge-warn' : 'badge-muted'}`;
+    if (document.activeElement !== $('global-doc-editor')) {
+      $('global-doc-editor').value =
+        d.source === 'global' ? d.content || '' : d.builtinContent || d.content || '';
+    }
+  }
+
+  function syncWsDocEditor(snap) {
+    const docName = $('ws-doc-select').value;
+    const docs = snap.settings?.docs || {};
+    const d = docs[docName] || {};
+    const hasWs = Boolean(d.hasWorkspaceOverride);
+    $('ws-doc-badge').textContent = hasWs ? '已存在工作区覆盖' : `继承 (${d.source || 'builtin'})`;
+    $('ws-doc-badge').className = `badge ${hasWs ? 'badge-warn' : 'badge-muted'}`;
+    if (document.activeElement !== $('ws-doc-editor')) {
+      $('ws-doc-editor').value = d.content || '';
+    }
+  }
+
+  function renderSettings(snap) {
+    const s = snap.settings || {};
+    const p = s.plugin || {};
+    const g = s.global || {};
+    const w = s.workspace || {};
+    const eff = s.effective || {};
+    const ov = w.overrides || {};
+    const hp = s.hostPermission || {};
+
+    // Layer 1: Plugin
+    $('ps-livePollEnabled').checked = p.livePollEnabled !== false;
+    $('ps-livePollIntervalSec').value = String(p.livePollIntervalSec ?? 4);
+    $('ps-uiMotion').value = p.uiMotion || 'standard';
+    $('ps-attentionBannerEnabled').checked = p.attentionBannerEnabled !== false;
+    $('ps-dualRoleHookEnabled').checked = p.dualRoleHookEnabled !== false;
+    $('ps-stopHookReportEnabled').checked = p.stopHookReportEnabled !== false;
+    $('ps-registryWriteGuard').value = p.registryWriteGuard || 'ask';
+    $('ps-maxLookupInputLength').value = String(p.maxLookupInputLength ?? 2000);
+    $('ps-maxLookupCandidates').value = String(p.maxLookupCandidates ?? 6);
+
+    // Layer 2: Global
+    const hostDesc = hp.available
+      ? `宿主权限检测: preset=${hp.permissionPreset || '-'} | exec=${hp.autoExecutionPolicy || '-'} -> 映射档位: ${eff.effectiveAutonomy || 'balanced'}`
+      : `未检测到宿主权限文件，跟随模式下默认采用 balanced 均衡档`;
+    $('host-perm-summary').textContent = hostDesc;
+    $('gs-l0ControllerModel').value = g.l0ControllerModel || 'Orchestrator (Neon)';
+    $('gs-l1LightModel').value = g.l1LightModel || 'Gemini 4 Hydrogen (Low)';
+    $('gs-l2StandardModel').value = g.l2StandardModel || 'Orchestrator (Neon)';
+    $('gs-l3DeepModel').value = g.l3DeepModel || 'Orchestrator (Carbon)';
+    $('gs-l4IntegrationModel').value = g.l4IntegrationModel || 'Orchestrator (Neon)';
+    $('gs-modelGuardPolicy').value = g.modelGuardPolicy || 'strict_gemini4';
+    $('gs-customAllowedModels').value = Array.isArray(g.customAllowedModels)
+      ? g.customAllowedModels.join(', ')
+      : '';
+    $('gs-decisionAutonomy').value = g.decisionAutonomy || 'inherit';
+    $('gs-askBeforeDispatch').checked = g.askBeforeDispatch !== false;
+    $('gs-notifyOnSingleTaskDone').checked = Boolean(g.notifyOnSingleTaskDone);
+    $('gs-controllerCompactionThreshold').value = String(g.controllerCompactionThreshold ?? 5);
+    $('gs-workerCompactionThreshold').value = String(g.workerCompactionThreshold ?? 2);
+    syncGlobalDocEditor(snap);
+
+    // Layer 3: Workspace
+    const hasWs = Boolean(snap.workspace);
+    $('ws-settings-empty').classList.toggle('hidden', hasWs);
+    $('ws-settings-body').classList.toggle('hidden', !hasWs);
+    if (hasWs) {
+      $('ws-settings-badge').textContent = snap.workspace.split('/').filter(Boolean).pop() || 'workspace';
+      $('ws-exclusiveLeaseEnabled').checked = w.exclusiveLeaseEnabled !== false;
+      $('ws-registryMode').value = w.registryMode || 'workspace_auto';
+      $('ws-customRegistryRelPath').value = w.customRegistryRelPath || '';
+      $('ws-custom-rel-wrap').classList.toggle('hidden', $('ws-registryMode').value !== 'workspace_custom');
+
+      ['l0ControllerModel', 'l2StandardModel', 'l3DeepModel'].forEach((k) => {
+        const hasOv = Object.prototype.hasOwnProperty.call(ov, k);
+        $(`ws-ov-${k}`).value = hasOv ? ov[k] : '';
+        $(`ws-ov-${k}`).placeholder = `继承全局 (${g[k] || '-'})`;
+        setOvTag(k, hasOv);
+      });
+
+      const hasAutoOv = Object.prototype.hasOwnProperty.call(ov, 'decisionAutonomy');
+      $('ws-ov-decisionAutonomy').value = hasAutoOv ? ov.decisionAutonomy : '';
+      setOvTag('decisionAutonomy', hasAutoOv);
+
+      const hasAskOv = Object.prototype.hasOwnProperty.call(ov, 'askBeforeDispatch');
+      $('ws-ov-askBeforeDispatch').value = hasAskOv ? String(ov.askBeforeDispatch) : '';
+      setOvTag('askBeforeDispatch', hasAskOv);
+
+      const hasNotifyOv = Object.prototype.hasOwnProperty.call(ov, 'notifyOnSingleTaskDone');
+      $('ws-ov-notifyOnSingleTaskDone').value = hasNotifyOv ? String(ov.notifyOnSingleTaskDone) : '';
+      setOvTag('notifyOnSingleTaskDone', hasNotifyOv);
+
+      const hasThreshOv = Object.prototype.hasOwnProperty.call(ov, 'controllerCompactionThreshold');
+      $('ws-ov-controllerCompactionThreshold').value = hasThreshOv
+        ? String(ov.controllerCompactionThreshold)
+        : '';
+      $('ws-ov-controllerCompactionThreshold').placeholder = `继承全局 (${g.controllerCompactionThreshold ?? 5})`;
+      setOvTag('controllerCompactionThreshold', hasThreshOv);
+
+      syncWsDocEditor(snap);
+    }
+  }
+
+  function updateLivePollControls(snap) {
+    const pluginPoll = snap?.settings?.plugin?.livePollEnabled !== false;
+    const sec = Number(snap?.settings?.plugin?.livePollIntervalSec || 4);
+    const hasActiveWork = Boolean(
+      (snap?.parsed?.activeSessions || []).length > 0 || snap?.nativeSwarm?.active
+    );
+    const isLive = pluginPoll && !state.pollPausedByUser;
+    $('live-dot').classList.toggle('live', isLive && hasActiveWork);
+    const btn = $('poll-toggle-btn');
+    btn.classList.toggle('active', isLive);
+    btn.textContent = isLive ? `监测 ${sec}s` : '监测暂停';
+
+    clearInterval(state.pollTimer);
+    state.pollTimer = null;
+    if (isLive && hasActiveWork) {
+      state.pollTimer = setInterval(() => {
+        if (document.visibilityState !== 'visible') return;
+        const activeTag = document.activeElement?.tagName;
+        if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT') return;
+        if (state.rawDirty) return;
+        const editingFormOpen =
+          !$('lease-form').classList.contains('hidden') ||
+          !$('ctrl-form').classList.contains('hidden') ||
+          !$('session-form').classList.contains('hidden');
+        if (editingFormOpen) return;
+        refresh(undefined, { silent: true });
+      }, Math.max(2, sec) * 1000);
+    }
+  }
+
   function render(snap) {
     state.snap = snap;
-    $('version-badge').textContent = `v${snap.plugin?.version || '1.1.0'}`;
+    $('version-badge').textContent = `v${snap.plugin?.version || '1.2.0'}`;
+    applyMotionSetting(snap);
     renderWorkspaces(snap);
+    renderAttentionBanner(snap);
 
     const hasReg = Boolean(snap.registryExists);
-    $('empty-state').classList.toggle('hidden', hasReg || !snap.workspace);
     $('empty-ws-path').textContent = snap.workspace ? `当前工作区: ${snap.workspace}` : '';
     switchTab(state.tab);
+    renderSettings(snap);
 
     if (hasReg) {
       renderOverview(snap);
@@ -279,9 +558,10 @@
       renderQueue(snap);
       renderRaw(snap);
     }
+    updateLivePollControls(snap);
   }
 
-  async function refresh(wsOverride, { recordSelection = false } = {}) {
+  async function refresh(wsOverride, { recordSelection = false, silent = false } = {}) {
     const targetWs = wsOverride !== undefined ? wsOverride : state.workspace;
     try {
       let snap;
@@ -296,11 +576,13 @@
         snap = await api(`/api/snapshot${qs}`);
       }
       state.workspace = snap.workspace || '';
-      state.rawDirty = false;
-      $('conflict-banner').classList.add('hidden');
+      if (!silent) {
+        state.rawDirty = false;
+        $('conflict-banner').classList.add('hidden');
+      }
       render(snap);
     } catch (err) {
-      showToast(err.message, true);
+      if (!silent) showToast(err.message, true);
     }
   }
 
@@ -309,6 +591,7 @@
     const raw = snap?.templates?.handoverTemplate || '';
     if (!snap || !snap.registryExists) return raw;
     const ctrl = snap.parsed?.controller || {};
+    const eff = snap.settings?.effective || {};
     const nextTerm = (ctrl.handoverHistory?.length || 0) + 1;
     const lease = snap.parsed?.lease || {};
     const activeText =
@@ -316,16 +599,59 @@
         .slice(0, 3)
         .map((s) => `${s.conversationId} (${s.topic})`)
         .join('; ') || '无';
+    const swarmPart = snap.nativeSwarm?.active ? ` | Swarm: ${snap.nativeSwarm.title}` : '';
+    const settingsSnapshot = `${eff.exclusiveLeaseEnabled === false ? '无独占锁' : '单锁开启'} | ${eff.effectiveAutonomy || 'balanced'} | 阈值 ${eff.controllerCompactionThreshold || 5} 次`;
     return raw
       .replace('<N>', String(nextTerm))
       .replace('<旧 conversationId>', ctrl.currentControllerId || '<旧 conversationId>')
-      .replace('<列出 AGENTS.md / 状态总账 / SESSION-REGISTRY.md 精确路径>', snap.registryRelPath || 'SESSION-REGISTRY.md')
-      .replace('<无独占资源 / IDLE / 会话 conversationId（任务编号）>', `${lease.lockStatus || 'IDLE'} | ${lease.holder || '-'}`)
-      .replace('<1~3 条仍在推进的 conversationId 与停靠点，没有填 无>', activeText);
+      .replace('<列出 AGENTS.md / 状态总账 / SESSION-REGISTRY.md（含托管标记）精确路径>', snap.registryPath || snap.registryRelPath || 'SESSION-REGISTRY.md')
+      .replace('<独占锁开启或关闭 | 代决策档位 autonomous/balanced/strict | 换届阈值 | 生效覆盖文档路径>', settingsSnapshot)
+      .replace('<无独占资源模式 / IDLE / 会话 conversationId（任务编号）>', eff.exclusiveLeaseEnabled === false ? '无独占资源模式' : `${lease.lockStatus || 'IDLE'} | ${lease.holder || '-'}`)
+      .replace('<列出仍在推进的 conversationId 或活跃原生 swarm 标题与停靠点，没有填 无>', `${activeText}${swarmPart}`);
+  }
+
+  async function spawnHandoverController(oldCtrlId) {
+    const snap = state.snap;
+    const eff = snap?.settings?.effective || {};
+    const model = eff.l0ControllerModel || 'Orchestrator (Neon)';
+    const handoverPrompt = buildPrefilledHandover();
+    try {
+      const res = await api('/_sidecar/new-conversation', {
+        method: 'POST',
+        body: {
+          workspace: state.workspace,
+          model,
+          title: 'Control Tower 换届接班总控',
+          message: handoverPrompt,
+        },
+      });
+      const cid =
+        res.result?.conversationId ||
+        res.result?.conversation_id ||
+        res.result?.response?.conversationId ||
+        '';
+      showToast(cid ? `已拉起接班总控 ${cid.slice(0, 8)}` : '已发起换届接班会话');
+      if (cid) {
+        window.sidecar?.ui?.toggleConversation?.(cid);
+      } else if (oldCtrlId) {
+        await copyText(handoverPrompt);
+      }
+    } catch (err) {
+      showToast(err.message, true);
+    }
   }
 
   document.querySelectorAll('.tab').forEach((btn) => {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+  });
+
+  document.querySelectorAll('.seg-btn').forEach((btn) => {
+    btn.addEventListener('click', () => switchSettingsScope(btn.dataset.scope));
+  });
+
+  $('poll-toggle-btn').addEventListener('click', () => {
+    state.pollPausedByUser = !state.pollPausedByUser;
+    if (state.snap) updateLivePollControls(state.snap);
   });
 
   $('refresh-btn').addEventListener('click', () => refresh());
@@ -333,12 +659,21 @@
     if (e.target.value) refresh(e.target.value, { recordSelection: true });
   });
 
+  $('init-relpath').addEventListener('change', (e) => {
+    $('init-custom-wrap').classList.toggle('hidden', e.target.value !== '__custom__');
+  });
+
   $('init-registry-btn').addEventListener('click', async () => {
     if (!state.workspace) return;
+    let relPath = $('init-relpath').value;
+    if (relPath === '__custom__') {
+      relPath = $('init-custom-relpath').value.trim();
+      if (!relPath) return showToast('请输入自定义相对路径', true);
+    }
     try {
       const res = await api('/api/registry/init', {
         method: 'POST',
-        body: { workspace: state.workspace, relPath: $('init-relpath').value },
+        body: { workspace: state.workspace, relPath },
       });
       render(res.snapshot);
       showToast('已初始化 SESSION-REGISTRY.md');
@@ -351,6 +686,8 @@
     const ok = await copyText(state.snap?.templates?.bootstrapPrompt || '');
     showToast(ok ? '已复制冷启动引导词' : '复制失败', !ok);
   });
+
+  $('open-settings-empty-btn').addEventListener('click', () => switchTab('settings'));
 
   $('edit-lease-btn').addEventListener('click', () => $('lease-form').classList.toggle('hidden'));
   $('cancel-lease-btn').addEventListener('click', () => $('lease-form').classList.add('hidden'));
@@ -446,6 +783,73 @@
   $('copy-handover-btn').addEventListener('click', handleCopyHandover);
   $('copy-handover-raw-btn').addEventListener('click', handleCopyHandover);
 
+  $('ctrl-handover-spawn-btn').addEventListener('click', () => {
+    spawnHandoverController(state.snap?.parsed?.controller?.currentControllerId || '');
+  });
+
+  $('ctrl-ignore-handover-btn').addEventListener('click', async () => {
+    const ctrlId = state.snap?.parsed?.controller?.currentControllerId || '';
+    try {
+      const res = await api('/api/attention/dismiss', {
+        method: 'POST',
+        body: { workspace: state.workspace, kind: 'handover', controllerId: ctrlId, ignoreForSession: true },
+      });
+      render(res.snapshot);
+      showToast('已标记当前总控会话忽略换届提醒');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  // Dispatch form
+  $('toggle-dispatch-btn').addEventListener('click', () => $('dispatch-form').classList.toggle('hidden'));
+  $('df-model').addEventListener('input', () => {
+    $('df-model').dataset.userEdited = '1';
+  });
+
+  $('dispatch-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const res = await api('/api/dispatch/create', {
+        method: 'POST',
+        body: {
+          workspace: state.workspace,
+          expectedHash: state.snap?.hash,
+          topic: $('df-topic').value.trim(),
+          title: $('df-topic').value.trim(),
+          model: $('df-model').value.trim(),
+          slashPrefix: $('df-slash').value,
+          lockStatus: $('df-lock').value,
+          prompt: $('df-prompt').value.trim(),
+        },
+      });
+      $('df-topic').value = '';
+      $('df-prompt').value = '';
+      render(res.snapshot);
+      showToast(
+        res.conversationId
+          ? `已拉起专职会话 ${res.conversationId.slice(0, 8)}${res.enrolled ? ' 并入账' : ''}`
+          : '已拉起专职会话'
+      );
+    } catch (err) {
+      if (err.status === 409) $('conflict-banner').classList.remove('hidden');
+      showToast(err.message, true);
+    }
+  });
+
+  $('df-copy-btn').addEventListener('click', async () => {
+    const tpl = state.snap?.templates?.dispatchOfflineTemplate || '';
+    const topic = $('df-topic').value.trim() || '<唯一目标>';
+    const prompt = $('df-prompt').value.trim() || '<验证判据>';
+    const prefix = $('df-slash').value ? `${$('df-slash').value} ` : '';
+    const ctrlId = state.snap?.parsed?.controller?.currentControllerId || '<controllerId>';
+    const filled = `${prefix}${tpl
+      .replace('<编号> — <唯一目标>', topic)
+      .replace('<controllerId>', ctrlId)}\n\n补充需求说明：${prompt}`;
+    const ok = await copyText(filled);
+    showToast(ok ? '已复制直派兜底开场词' : '复制失败', !ok);
+  });
+
   $('toggle-session-form-btn').addEventListener('click', () => $('session-form').classList.toggle('hidden'));
   $('cancel-session-form-btn').addEventListener('click', () => $('session-form').classList.add('hidden'));
 
@@ -505,11 +909,308 @@
     }
   });
 
+  // Settings Center Events
+  $('plugin-settings-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const res = await api('/api/settings/plugin', {
+        method: 'POST',
+        body: {
+          workspace: state.workspace,
+          livePollEnabled: $('ps-livePollEnabled').checked,
+          livePollIntervalSec: Number($('ps-livePollIntervalSec').value),
+          uiMotion: $('ps-uiMotion').value,
+          attentionBannerEnabled: $('ps-attentionBannerEnabled').checked,
+          dualRoleHookEnabled: $('ps-dualRoleHookEnabled').checked,
+          stopHookReportEnabled: $('ps-stopHookReportEnabled').checked,
+          registryWriteGuard: $('ps-registryWriteGuard').value,
+          maxLookupInputLength: Number($('ps-maxLookupInputLength').value),
+          maxLookupCandidates: Number($('ps-maxLookupCandidates').value),
+        },
+      });
+      render(res.snapshot);
+      showToast('已保存插件设置');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  $('ps-reset-btn').addEventListener('click', async () => {
+    try {
+      const res = await api('/api/settings/plugin', {
+        method: 'POST',
+        body: { workspace: state.workspace, action: 'reset' },
+      });
+      render(res.snapshot);
+      showToast('已恢复插件默认设置');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  $('clear-cache-btn').addEventListener('click', async () => {
+    try {
+      const res = await api('/api/cache/clear', {
+        method: 'POST',
+        body: { workspace: state.workspace },
+      });
+      render(res.snapshot);
+      showToast('已清理遥测缓存');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  $('global-settings-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const customRaw = $('gs-customAllowedModels').value
+        .split(',')
+        .map((x) => x.trim())
+        .filter(Boolean);
+      const res = await api('/api/settings/global', {
+        method: 'POST',
+        body: {
+          workspace: state.workspace,
+          l0ControllerModel: $('gs-l0ControllerModel').value.trim(),
+          l1LightModel: $('gs-l1LightModel').value.trim(),
+          l2StandardModel: $('gs-l2StandardModel').value.trim(),
+          l3DeepModel: $('gs-l3DeepModel').value.trim(),
+          l4IntegrationModel: $('gs-l4IntegrationModel').value.trim(),
+          modelGuardPolicy: $('gs-modelGuardPolicy').value,
+          customAllowedModels: customRaw,
+          decisionAutonomy: $('gs-decisionAutonomy').value,
+          askBeforeDispatch: $('gs-askBeforeDispatch').checked,
+          notifyOnSingleTaskDone: $('gs-notifyOnSingleTaskDone').checked,
+          controllerCompactionThreshold: Number($('gs-controllerCompactionThreshold').value),
+          workerCompactionThreshold: Number($('gs-workerCompactionThreshold').value),
+        },
+      });
+      render(res.snapshot);
+      showToast('已保存全局设置');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  $('gs-reset-btn').addEventListener('click', async () => {
+    try {
+      const res = await api('/api/settings/global', {
+        method: 'POST',
+        body: { workspace: state.workspace, action: 'reset' },
+      });
+      render(res.snapshot);
+      showToast('已重置全局设置为内置默认');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  $('global-doc-select').addEventListener('change', () => {
+    if (state.snap) {
+      $('global-doc-editor').blur();
+      syncGlobalDocEditor(state.snap);
+    }
+  });
+
+  $('global-doc-load-builtin-btn').addEventListener('click', () => {
+    const docName = $('global-doc-select').value;
+    const d = state.snap?.settings?.docs?.[docName];
+    if (d) $('global-doc-editor').value = d.builtinContent || d.content || '';
+  });
+
+  $('global-doc-save-btn').addEventListener('click', async () => {
+    try {
+      const res = await api('/api/settings/override', {
+        method: 'POST',
+        body: {
+          workspace: state.workspace,
+          scope: 'global',
+          docName: $('global-doc-select').value,
+          content: $('global-doc-editor').value,
+        },
+      });
+      render(res.snapshot);
+      showToast('已保存全局文档覆盖');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  $('global-doc-reset-btn').addEventListener('click', async () => {
+    try {
+      const res = await api('/api/settings/override', {
+        method: 'POST',
+        body: {
+          workspace: state.workspace,
+          scope: 'global',
+          docName: $('global-doc-select').value,
+          action: 'reset',
+        },
+      });
+      render(res.snapshot);
+      showToast('已清除全局文档覆盖');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  $('ws-registryMode').addEventListener('change', () => {
+    $('ws-custom-rel-wrap').classList.toggle('hidden', $('ws-registryMode').value !== 'workspace_custom');
+  });
+
+  $('ws-settings-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!state.workspace) return;
+    const overrides = {};
+    ['l0ControllerModel', 'l2StandardModel', 'l3DeepModel'].forEach((k) => {
+      const v = $(`ws-ov-${k}`).value.trim();
+      overrides[k] = v || null;
+    });
+    overrides.decisionAutonomy = $('ws-ov-decisionAutonomy').value || null;
+    const askVal = $('ws-ov-askBeforeDispatch').value;
+    overrides.askBeforeDispatch = askVal === '' ? null : askVal === 'true';
+    const notifyVal = $('ws-ov-notifyOnSingleTaskDone').value;
+    overrides.notifyOnSingleTaskDone = notifyVal === '' ? null : notifyVal === 'true';
+    const threshVal = $('ws-ov-controllerCompactionThreshold').value.trim();
+    overrides.controllerCompactionThreshold = threshVal ? Number(threshVal) : null;
+
+    try {
+      const res = await api('/api/settings/workspace', {
+        method: 'POST',
+        body: {
+          workspace: state.workspace,
+          exclusiveLeaseEnabled: $('ws-exclusiveLeaseEnabled').checked,
+          registryMode: $('ws-registryMode').value,
+          customRegistryRelPath: $('ws-customRegistryRelPath').value.trim(),
+          overrides,
+        },
+      });
+      render(res.snapshot);
+      showToast('已保存当前工作区设置');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  $('ws-reset-btn').addEventListener('click', async () => {
+    if (!state.workspace) return;
+    try {
+      const res = await api('/api/settings/workspace', {
+        method: 'POST',
+        body: { workspace: state.workspace, action: 'reset' },
+      });
+      render(res.snapshot);
+      showToast('已重置当前工作区全部设置');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  $('ws-doc-select').addEventListener('change', () => {
+    if (state.snap) {
+      $('ws-doc-editor').blur();
+      syncWsDocEditor(state.snap);
+    }
+  });
+
+  $('ws-doc-load-effective-btn').addEventListener('click', () => {
+    const docName = $('ws-doc-select').value;
+    const d = state.snap?.settings?.docs?.[docName];
+    if (d) $('ws-doc-editor').value = d.content || '';
+  });
+
+  $('ws-doc-save-btn').addEventListener('click', async () => {
+    if (!state.workspace) return;
+    try {
+      const res = await api('/api/settings/override', {
+        method: 'POST',
+        body: {
+          workspace: state.workspace,
+          scope: 'workspace',
+          docName: $('ws-doc-select').value,
+          content: $('ws-doc-editor').value,
+        },
+      });
+      render(res.snapshot);
+      showToast('已保存工作区文档覆盖');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  $('ws-doc-reset-btn').addEventListener('click', async () => {
+    if (!state.workspace) return;
+    try {
+      const res = await api('/api/settings/override', {
+        method: 'POST',
+        body: {
+          workspace: state.workspace,
+          scope: 'workspace',
+          docName: $('ws-doc-select').value,
+          action: 'reset',
+        },
+      });
+      render(res.snapshot);
+      showToast('已清除工作区文档覆盖');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
   document.body.addEventListener('click', async (e) => {
+    const gotoWs = e.target.closest('.goto-ws-settings-btn');
+    if (gotoWs) {
+      switchTab('settings');
+      switchSettingsScope('workspace');
+      return;
+    }
+
+    const clearOv = e.target.closest('.ws-clear-ov');
+    if (clearOv?.dataset.key && state.workspace) {
+      try {
+        const res = await api('/api/settings/workspace', {
+          method: 'POST',
+          body: { workspace: state.workspace, overrides: { [clearOv.dataset.key]: null } },
+        });
+        render(res.snapshot);
+        showToast('已恢复继承全局设置');
+      } catch (err) {
+        showToast(err.message, true);
+      }
+      return;
+    }
+
+    const spawnHandover = e.target.closest('.spawn-handover-btn');
+    if (spawnHandover) {
+      await spawnHandoverController(spawnHandover.dataset.id || '');
+      return;
+    }
+
+    const dismissAtt = e.target.closest('.dismiss-att-btn');
+    if (dismissAtt) {
+      try {
+        const res = await api('/api/attention/dismiss', {
+          method: 'POST',
+          body: {
+            workspace: state.workspace,
+            kind: dismissAtt.dataset.kind || undefined,
+            controllerId: dismissAtt.dataset.ctrl || undefined,
+            id: dismissAtt.dataset.id || undefined,
+          },
+        });
+        render(res.snapshot);
+      } catch (err) {
+        showToast(err.message, true);
+      }
+      return;
+    }
+
     const enrollBtn = e.target.closest('.enroll-probe-btn');
     if (enrollBtn && state.lastProbe?.status === 'ok') {
       const p = state.lastProbe;
       const info = p.info || {};
+      const leaseOff = state.snap?.settings?.effective?.exclusiveLeaseEnabled === false;
       try {
         const res = await api('/api/sessions/upsert', {
           method: 'POST',
@@ -520,7 +1221,7 @@
             conversationId: p.conversationId,
             topic: info.goal || '专职会话',
             modelTool: info.lastModel || '-',
-            lockStatus: '纯离线无锁',
+            lockStatus: leaseOff ? '无独占资源限制' : '纯离线无锁',
             status: info.lastStatus === 'DONE' ? 'DONE' : 'ACTIVE',
             paths: '-',
           },
@@ -620,6 +1321,10 @@
     }
   });
 
+  $('qf-route').addEventListener('input', () => {
+    $('qf-route').dataset.userEdited = '1';
+  });
+
   $('queue-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     try {
@@ -638,7 +1343,8 @@
       });
       $('queue-form').reset();
       $('qf-originalId').value = '';
-      $('qf-route').value = 'L2 Orchestrator (Neon)';
+      delete $('qf-route').dataset.userEdited;
+      $('qf-route').value = `L2 ${state.snap?.settings?.effective?.l2StandardModel || 'Orchestrator (Neon)'}`;
       render(res.snapshot);
       showToast('已保存调度任务');
     } catch (err) {
@@ -649,7 +1355,8 @@
   $('qf-reset-btn').addEventListener('click', () => {
     $('queue-form').reset();
     $('qf-originalId').value = '';
-    $('qf-route').value = 'L2 Orchestrator (Neon)';
+    delete $('qf-route').dataset.userEdited;
+    $('qf-route').value = `L2 ${state.snap?.settings?.effective?.l2StandardModel || 'Orchestrator (Neon)'}`;
   });
 
   $('raw-editor').addEventListener('input', () => {

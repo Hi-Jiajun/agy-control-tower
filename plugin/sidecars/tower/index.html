@@ -12,11 +12,14 @@
     <header class="topbar">
       <div class="brand-row">
         <div class="brand-title">
-          <span class="brand-dot"></span>
+          <span id="live-dot" class="brand-dot" title="监测指示"></span>
           <strong>Control Tower</strong>
-          <span id="version-badge" class="badge">v1.1.0</span>
+          <span id="version-badge" class="badge">v1.2.0</span>
         </div>
-        <button id="refresh-btn" class="btn btn-ghost btn-sm" title="刷新台账与会话态">刷新</button>
+        <div class="actions">
+          <button id="poll-toggle-btn" class="pill-btn" title="切换实时自动监测">实时监测</button>
+          <button id="refresh-btn" class="btn btn-ghost btn-sm" title="立即刷新台账与会话态">刷新</button>
+        </div>
       </div>
       <div class="ws-row">
         <select id="ws-select" class="select" aria-label="选择工作区">
@@ -26,11 +29,16 @@
       </div>
     </header>
 
+    <div id="attention-banner" class="attention-banner hidden">
+      <div id="attention-list" class="attention-list"></div>
+    </div>
+
     <nav class="tabs" role="tablist">
       <button class="tab active" data-tab="overview">总览与锁</button>
-      <button class="tab" data-tab="sessions">会话探针</button>
+      <button class="tab" data-tab="sessions">监测派遣</button>
       <button class="tab" data-tab="queue">任务队列</button>
-      <button class="tab" data-tab="raw">台账与模板</button>
+      <button class="tab" data-tab="raw">台账模板</button>
+      <button class="tab" data-tab="settings">设置中心</button>
     </nav>
 
     <main id="main-content" class="main">
@@ -38,61 +46,81 @@
         <h3>当前工作区尚未建立控制塔台账</h3>
         <p class="muted" id="empty-ws-path"></p>
         <div class="form-row">
-          <label for="init-relpath">选择初始化路径</label>
+          <label class="field-label" for="init-relpath">选择台账落点模式</label>
           <select id="init-relpath" class="select">
-            <option value=".agents/SESSION-REGISTRY.md">.agents/SESSION-REGISTRY.md（推荐）</option>
+            <option value=".agents/SESSION-REGISTRY.md">.agents/SESSION-REGISTRY.md（工作区推荐）</option>
+            <option value="@plugin_data/SESSION-REGISTRY.md">@plugin_data/SESSION-REGISTRY.md（PLUGIN_DATA 零侵入托管）</option>
             <option value="research/SESSION-REGISTRY.md">research/SESSION-REGISTRY.md</option>
             <option value="SESSION-REGISTRY.md">SESSION-REGISTRY.md</option>
+            <option value="__custom__">自定义工作区相对路径...</option>
           </select>
+        </div>
+        <div id="init-custom-wrap" class="form-row hidden">
+          <label class="field-label" for="init-custom-relpath">工作区相对路径（需以 .md 结尾）</label>
+          <input id="init-custom-relpath" class="input" placeholder="例如 docs/SESSION-REGISTRY.md" />
         </div>
         <div class="actions">
           <button id="init-registry-btn" class="btn btn-primary">一键初始化 SESSION-REGISTRY.md</button>
           <button id="copy-bootstrap-empty-btn" class="btn btn-ghost">复制冷启动引导词</button>
+          <button id="open-settings-empty-btn" class="btn btn-ghost">打开设置中心</button>
         </div>
       </section>
 
       <section id="tab-overview" class="tab-panel">
-        <div class="card">
+        <div id="lease-card" class="card">
           <div class="card-head">
             <h3>独占资源租约（全局单锁）</h3>
             <span id="lease-status-pill" class="badge">-</span>
           </div>
-          <div id="lease-view" class="kv-grid"></div>
-          <div class="actions">
-            <button id="edit-lease-btn" class="btn btn-ghost btn-sm">编辑租约</button>
-            <button id="release-lease-btn" class="btn btn-warn btn-sm">一键释放为 IDLE</button>
+          <div id="lease-disabled-note" class="info-banner hidden">
+            <span>当前工作区已关闭独占资源单锁模式（多路并发无需抢锁）。</span>
+            <button type="button" class="btn btn-ghost btn-sm goto-ws-settings-btn">前往调整</button>
           </div>
-          <form id="lease-form" class="subform hidden">
-            <label>锁状态 <input id="lf-lockStatus" class="input" required /></label>
-            <label>持锁会话 <input id="lf-holder" class="input" /></label>
-            <label>独占对象与任务 <input id="lf-resource" class="input" /></label>
-            <label>租约起始时间 <input id="lf-since" class="input" /></label>
-            <label>允许操作范围与保护现场 <input id="lf-scope" class="input" /></label>
-            <label>交还解锁判据 <input id="lf-releaseCriteria" class="input" /></label>
+          <div id="lease-active-wrap">
+            <div id="lease-view" class="kv-grid"></div>
             <div class="actions">
-              <button type="submit" class="btn btn-primary btn-sm">保存租约</button>
-              <button type="button" id="cancel-lease-btn" class="btn btn-ghost btn-sm">取消</button>
+              <button id="edit-lease-btn" class="btn btn-ghost btn-sm">编辑租约</button>
+              <button id="release-lease-btn" class="btn btn-warn btn-sm">一键释放为 IDLE</button>
             </div>
-          </form>
+            <form id="lease-form" class="subform hidden">
+              <label>锁状态 <input id="lf-lockStatus" class="input" required /></label>
+              <label>持锁会话 <input id="lf-holder" class="input" /></label>
+              <label>独占对象与任务 <input id="lf-resource" class="input" /></label>
+              <label>租约起始时间 <input id="lf-since" class="input" /></label>
+              <label>允许操作范围与保护现场 <input id="lf-scope" class="input" /></label>
+              <label>交还解锁判据 <input id="lf-releaseCriteria" class="input" /></label>
+              <div class="actions">
+                <button type="submit" class="btn btn-primary btn-sm">保存租约</button>
+                <button type="button" id="cancel-lease-btn" class="btn btn-ghost btn-sm">取消</button>
+              </div>
+            </form>
+          </div>
         </div>
 
         <div class="card">
           <div class="card-head">
             <h3>现役主交流总控健康态</h3>
-            <span id="ctrl-comp-badge" class="badge">压缩 0 次</span>
+            <div class="actions">
+              <span id="ctrl-autonomy-badge" class="badge badge-muted">-</span>
+              <span id="ctrl-comp-badge" class="badge">压缩 0 / 5 次</span>
+            </div>
           </div>
           <div id="ctrl-view" class="kv-grid"></div>
           <div id="ctrl-alert" class="alert hidden">
-            当前总控会话已发生 >= 2 次上下文自动压缩，建议同步台账并生成换届交接卡。
+            <span id="ctrl-alert-text">当前总控会话已达压缩提醒阈值，可选择换届或本会话忽略。</span>
+            <div class="actions">
+              <button id="ctrl-handover-spawn-btn" class="btn btn-primary btn-sm">一键接班</button>
+              <button id="ctrl-ignore-handover-btn" class="btn btn-ghost btn-sm">忽略提醒</button>
+            </div>
           </div>
           <div class="actions">
             <button id="jump-ctrl-btn" class="btn btn-ghost btn-sm">跳转总控会话</button>
             <button id="copy-ctrl-id-btn" class="btn btn-ghost btn-sm">复制总控 ID</button>
             <button id="edit-ctrl-btn" class="btn btn-ghost btn-sm">登记 / 换届总控</button>
-            <button id="copy-handover-btn" class="btn btn-primary btn-sm">复制预填换届交接卡</button>
+            <button id="copy-handover-btn" class="btn btn-primary btn-sm">复制预填交接卡</button>
           </div>
           <form id="ctrl-form" class="subform hidden">
-            <label>现役总控 conversationId <input id="cf-controllerId" class="input" placeholder="输入总控会话 UUID" required /></label>
+            <label>现役总控 conversationId <input id="cf-controllerId" class="input" placeholder="输入总控会话 ID" required /></label>
             <label>总控状态
               <select id="cf-status" class="select">
                 <option value="ONLINE">ONLINE</option>
@@ -100,7 +128,7 @@
                 <option value="HANDOVER">HANDOVER</option>
               </select>
             </label>
-            <label>常驻模型配置 <input id="cf-defaultModel" class="input" placeholder="Orchestrator (Neon)" /></label>
+            <label>常驻模型配置 <input id="cf-defaultModel" class="input" list="ct-model-presets" placeholder="Orchestrator (Neon)" /></label>
             <label class="inline-check"><input type="checkbox" id="cf-appendHistory" /> 同步追加至第 2 节换届历史表</label>
             <label>换届原因与产出摘要（勾选追加时生效） <input id="cf-summary" class="input" placeholder="例如：首任入驻 / 第 2 任接班" /></label>
             <div class="actions">
@@ -112,6 +140,52 @@
       </section>
 
       <section id="tab-sessions" class="tab-panel hidden">
+        <div class="card">
+          <div class="card-head">
+            <h3>受控直派新专职会话</h3>
+            <button id="toggle-dispatch-btn" class="btn btn-ghost btn-sm">展开 / 收起</button>
+          </div>
+          <form id="dispatch-form" class="subform">
+            <label>任务主题 / 标题 <input id="df-topic" class="input" placeholder="例如：M2 协议解析修复" required /></label>
+            <div class="two-col">
+              <label>选定模型（受路由护栏校验）
+                <input id="df-model" class="input" list="ct-model-presets" value="Orchestrator (Neon)" required />
+              </label>
+              <label>斜杠工作流前缀
+                <select id="df-slash" class="select">
+                  <option value="">无（标准专职任务）</option>
+                  <option value="/plan">/plan（先规划后执行）</option>
+                  <option value="/boost">/boost（深度多角度攻坚）</option>
+                  <option value="/teamwork">/teamwork（跨多天长程工程）</option>
+                  <option value="/goal">/goal（长程目标驱动）</option>
+                </select>
+              </label>
+            </div>
+            <label id="df-lock-wrap">资源锁状态
+              <select id="df-lock" class="select">
+                <option value="纯离线无锁">纯离线无锁（严禁碰独占资源）</option>
+                <option value="持独占锁">持独占锁（确认当前 IDLE 后授予）</option>
+              </select>
+            </label>
+            <label>目标、可证伪判据与必读锚点
+              <textarea id="df-prompt" class="input textarea-sm" placeholder="写明唯一目标、验证命令与相关路径，派发时会自动内嵌总控双向汇报锚点" required></textarea>
+            </label>
+            <div class="actions">
+              <button type="submit" class="btn btn-primary btn-sm">直接拉起并自动入账</button>
+              <button type="button" id="df-copy-btn" class="btn btn-ghost btn-sm">复制开场词兜底</button>
+            </div>
+          </form>
+        </div>
+
+        <div id="swarm-card" class="card hidden">
+          <div class="card-head">
+            <h3>原生 Swarm 实时集群</h3>
+            <span id="swarm-title-badge" class="badge">-</span>
+          </div>
+          <div id="swarm-members-list" class="list-stack"></div>
+          <div id="swarm-posts-list" class="list-stack"></div>
+        </div>
+
         <div class="card">
           <div class="card-head">
             <h3>裸 ID 尾步探针</h3>
@@ -134,7 +208,7 @@
           <form id="session-form" class="subform hidden">
             <label>会话 conversationId <input id="sf-id" class="input" required /></label>
             <label>任务编号 / 主题 <input id="sf-topic" class="input" required /></label>
-            <label>模型与工具 <input id="sf-modelTool" class="input" value="Orchestrator (Neon)" /></label>
+            <label>模型与工具 <input id="sf-modelTool" class="input" list="ct-model-presets" value="Orchestrator (Neon)" /></label>
             <label>资源锁状态 <input id="sf-lockStatus" class="input" value="纯离线无锁" /></label>
             <label>当前状态
               <select id="sf-status" class="select">
@@ -187,7 +261,7 @@
                 <option value="DONE">DONE</option>
               </select>
             </label>
-            <label>建议路线与模型 <input id="qf-route" class="input" value="L2 Orchestrator (Neon)" /></label>
+            <label>建议路线与模型 <input id="qf-route" class="input" list="ct-model-presets" value="L2 Orchestrator (Neon)" /></label>
             <div class="actions">
               <button type="submit" class="btn btn-primary btn-sm">保存任务行</button>
               <button type="button" id="qf-reset-btn" class="btn btn-ghost btn-sm">清空</button>
@@ -216,17 +290,316 @@
         <div class="card">
           <div class="card-head">
             <h3>标准调度提示词一键复制</h3>
+            <span id="tpl-source-badge" class="badge badge-muted">builtin</span>
           </div>
           <div class="actions-grid">
             <button class="btn btn-ghost btn-sm copy-tpl" data-tpl="bootstrapPrompt">复制冷启动引导词</button>
-            <button class="btn btn-ghost btn-sm" id="copy-handover-raw-btn">复制预填换届交接卡</button>
+            <button class="btn btn-ghost btn-sm" id="copy-handover-raw-btn">复制预填交接卡</button>
             <button class="btn btn-ghost btn-sm copy-tpl" data-tpl="dispatchOfflineTemplate">复制模板 A（离线派单）</button>
             <button class="btn btn-ghost btn-sm copy-tpl" data-tpl="dispatchGrantTemplate">复制模板 B（原会话授锁）</button>
           </div>
         </div>
       </section>
+
+      <section id="tab-settings" class="tab-panel hidden">
+        <div class="segmented" role="tablist">
+          <button type="button" class="seg-btn active" data-scope="plugin">插件设置</button>
+          <button type="button" class="seg-btn" data-scope="global">全局设置</button>
+          <button type="button" class="seg-btn" data-scope="workspace">当前工作区</button>
+        </div>
+
+        <!-- Scope 1: Plugin Settings -->
+        <div id="settings-scope-plugin" class="settings-scope">
+          <div class="card">
+            <div class="card-head">
+              <h3>面板与底层 Hook 引擎设置</h3>
+              <span class="badge">plugin-settings.json</span>
+            </div>
+            <p class="muted">仅控制看板交互、动效与 Hooks 引擎行为，与具体项目业务调度策略物理隔离。</p>
+            <form id="plugin-settings-form" class="subform">
+              <div class="switch-row">
+                <div>
+                  <strong>自动实时监测</strong>
+                  <div class="item-meta">面板可见且有活跃任务时增量轮询刷新</div>
+                </div>
+                <label class="switch"><input type="checkbox" id="ps-livePollEnabled" /><span></span></label>
+              </div>
+              <div class="two-col">
+                <label>轮询间隔（2~60 秒）
+                  <input type="number" min="2" max="60" id="ps-livePollIntervalSec" class="input" />
+                </label>
+                <label>UI 动效模式
+                  <select id="ps-uiMotion" class="select">
+                    <option value="standard">标准微动效</option>
+                    <option value="reduced">减弱动效</option>
+                  </select>
+                </label>
+              </div>
+              <div class="switch-row">
+                <div>
+                  <strong>顶部待办 / 换届提醒横幅</strong>
+                  <div class="item-meta">存在待拍板决策或达换届阈值时顶部醒目提示</div>
+                </div>
+                <label class="switch"><input type="checkbox" id="ps-attentionBannerEnabled" /><span></span></label>
+              </div>
+              <div class="switch-row">
+                <div>
+                  <strong>双角色 Hook 感知</strong>
+                  <div class="item-meta">已入账专职会话启动时同步注入锁状态与禁改提示</div>
+                </div>
+                <label class="switch"><input type="checkbox" id="ps-dualRoleHookEnabled" /><span></span></label>
+              </div>
+              <div class="switch-row">
+                <div>
+                  <strong>Stop 防漏报兜底</strong>
+                  <div class="item-meta">专职会话正常停下却漏发回执时自动汇总补报</div>
+                </div>
+                <label class="switch"><input type="checkbox" id="ps-stopHookReportEnabled" /><span></span></label>
+              </div>
+              <label>PreToolUse 台账写保护力度
+                <select id="ps-registryWriteGuard" class="select">
+                  <option value="ask">ask（非总控改写台账时弹窗确认，推荐）</option>
+                  <option value="deny">deny（硬拦截非总控直接修改台账）</option>
+                  <option value="off">off（关闭写保护）</option>
+                </select>
+              </label>
+              <div class="two-col">
+                <label>ID 速查最大字符长
+                  <input type="number" min="100" max="10000" id="ps-maxLookupInputLength" class="input" />
+                </label>
+                <label>单条消息最多提取 ID 数
+                  <input type="number" min="1" max="20" id="ps-maxLookupCandidates" class="input" />
+                </label>
+              </div>
+              <div class="actions">
+                <button type="submit" class="btn btn-primary btn-sm">保存插件设置</button>
+                <button type="button" id="ps-reset-btn" class="btn btn-ghost btn-sm">恢复插件默认</button>
+                <button type="button" id="clear-cache-btn" class="btn btn-warn btn-sm">清理遥测缓存</button>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <!-- Scope 2: Global Settings -->
+        <div id="settings-scope-global" class="settings-scope hidden">
+          <div class="card">
+            <div class="card-head">
+              <h3>全局默认调度与代决策策略</h3>
+              <span class="badge">global-settings.json</span>
+            </div>
+            <p class="muted" id="host-perm-summary">读取宿主权限配置中...</p>
+            <form id="global-settings-form" class="subform">
+              <div class="two-col">
+                <label>L0 常驻总控模型 <input id="gs-l0ControllerModel" class="input" list="ct-model-presets" /></label>
+                <label>L1 轻量扫描模型 <input id="gs-l1LightModel" class="input" list="ct-model-presets" /></label>
+                <label>L2 常规开发模型 <input id="gs-l2StandardModel" class="input" list="ct-model-presets" /></label>
+                <label>L3 疑难攻坚模型 <input id="gs-l3DeepModel" class="input" list="ct-model-presets" /></label>
+              </div>
+              <label>L4 集成发布模型 <input id="gs-l4IntegrationModel" class="input" list="ct-model-presets" /></label>
+              <div class="two-col">
+                <label>直派模型护栏策略
+                  <select id="gs-modelGuardPolicy" class="select">
+                    <option value="strict_gemini4">仅纯 Gemini 4 + Orchestrator（推荐）</option>
+                    <option value="custom_allowlist">Gemini 4 + 自定义白名单</option>
+                  </select>
+                </label>
+                <label>总控默认代决策档位
+                  <select id="gs-decisionAutonomy" class="select">
+                    <option value="inherit">跟随 Antigravity 会话权限（默认）</option>
+                    <option value="balanced">均衡档（局部自决，分叉请示）</option>
+                    <option value="autonomous">高自主档（细节与排障自动拍板）</option>
+                    <option value="strict">严格档（遇分叉均交用户定夺）</option>
+                  </select>
+                </label>
+              </div>
+              <label>自定义允许模型列表（逗号分隔，仅自定义白名单模式生效）
+                <input id="gs-customAllowedModels" class="input" placeholder="留空表示仅用纯 Gemini 4" />
+              </label>
+              <div class="switch-row">
+                <div>
+                  <strong>派单前使用 ask_question 询问方式</strong>
+                  <div class="item-meta">默认开启：推荐 swarm / agentapi 直派 / 手动兜底供用户确认</div>
+                </div>
+                <label class="switch"><input type="checkbox" id="gs-askBeforeDispatch" /><span></span></label>
+              </div>
+              <div class="switch-row">
+                <div>
+                  <strong>单个子任务完成即唤醒通知</strong>
+                  <div class="item-meta">默认关闭：仅阶段性或全部会话收口时汇总触发系统通知</div>
+                </div>
+                <label class="switch"><input type="checkbox" id="gs-notifyOnSingleTaskDone" /><span></span></label>
+              </div>
+              <div class="two-col">
+                <label>总控默认换届压缩阈值（1~20 次）
+                  <input type="number" min="1" max="20" id="gs-controllerCompactionThreshold" class="input" />
+                </label>
+                <label>专职会话建议新建压缩阈值（1~20 次）
+                  <input type="number" min="1" max="20" id="gs-workerCompactionThreshold" class="input" />
+                </label>
+              </div>
+              <div class="actions">
+                <button type="submit" class="btn btn-primary btn-sm">保存全局设置</button>
+                <button type="button" id="gs-reset-btn" class="btn btn-ghost btn-sm">重置全局默认</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h3>全局规则与模板在线覆盖</h3>
+              <span id="global-doc-badge" class="badge badge-muted">-</span>
+            </div>
+            <div class="form-row">
+              <select id="global-doc-select" class="select">
+                <option value="model-routing.md">model-routing.md（全局路由规范）</option>
+                <option value="templates.md">templates.md（全局文本模板）</option>
+              </select>
+            </div>
+            <textarea id="global-doc-editor" class="editor editor-md" spellcheck="false"></textarea>
+            <div class="actions">
+              <button type="button" id="global-doc-save-btn" class="btn btn-primary btn-sm">保存全局覆盖</button>
+              <button type="button" id="global-doc-load-builtin-btn" class="btn btn-ghost btn-sm">载入内置基准</button>
+              <button type="button" id="global-doc-reset-btn" class="btn btn-warn btn-sm">清除全局覆盖</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Scope 3: Workspace Settings -->
+        <div id="settings-scope-workspace" class="settings-scope hidden">
+          <div id="ws-settings-empty" class="card hidden">
+            <p class="muted">请先在顶部选择一个工作区，再配置单工作区覆盖设置。</p>
+          </div>
+          <div id="ws-settings-body">
+            <div class="card">
+              <div class="card-head">
+                <h3>当前工作区专属配置与继承覆盖</h3>
+                <span id="ws-settings-badge" class="badge badge-muted">-</span>
+              </div>
+              <form id="ws-settings-form" class="subform">
+                <div class="switch-row">
+                  <div>
+                    <strong>启用独占资源单锁模式</strong>
+                    <div class="item-meta">无独占测试机或共享资源的纯代码仓可关闭，自动折叠租约卡</div>
+                  </div>
+                  <label class="switch"><input type="checkbox" id="ws-exclusiveLeaseEnabled" /><span></span></label>
+                </div>
+                <div class="two-col">
+                  <label>台账存储模式
+                    <select id="ws-registryMode" class="select">
+                      <option value="workspace_auto">工作区自动探测（默认）</option>
+                      <option value="plugin_data">PLUGIN_DATA 零侵入托管</option>
+                      <option value="workspace_custom">工作区内自定义路径</option>
+                    </select>
+                  </label>
+                  <label id="ws-custom-rel-wrap">自定义相对路径
+                    <input id="ws-customRegistryRelPath" class="input" placeholder="例如 docs/SESSION-REGISTRY.md" />
+                  </label>
+                </div>
+
+                <div class="divider-label">对全局设置的按需覆盖（留空或选「继承全局」即随全局变化）</div>
+
+                <div class="override-row">
+                  <label class="ov-label"><span>L0 总控模型</span><span id="ov-tag-l0ControllerModel" class="badge badge-muted">继承全局</span></label>
+                  <div class="inline-row">
+                    <input id="ws-ov-l0ControllerModel" class="input" list="ct-model-presets" placeholder="继承全局" />
+                    <button type="button" class="btn btn-ghost btn-sm ws-clear-ov" data-key="l0ControllerModel">继承</button>
+                  </div>
+                </div>
+
+                <div class="override-row">
+                  <label class="ov-label"><span>L2 常规开发模型</span><span id="ov-tag-l2StandardModel" class="badge badge-muted">继承全局</span></label>
+                  <div class="inline-row">
+                    <input id="ws-ov-l2StandardModel" class="input" list="ct-model-presets" placeholder="继承全局" />
+                    <button type="button" class="btn btn-ghost btn-sm ws-clear-ov" data-key="l2StandardModel">继承</button>
+                  </div>
+                </div>
+
+                <div class="override-row">
+                  <label class="ov-label"><span>L3 疑难攻坚模型</span><span id="ov-tag-l3DeepModel" class="badge badge-muted">继承全局</span></label>
+                  <div class="inline-row">
+                    <input id="ws-ov-l3DeepModel" class="input" list="ct-model-presets" placeholder="继承全局" />
+                    <button type="button" class="btn btn-ghost btn-sm ws-clear-ov" data-key="l3DeepModel">继承</button>
+                  </div>
+                </div>
+
+                <div class="two-col">
+                  <label>
+                    <span class="ov-label"><span>代决策档位</span><span id="ov-tag-decisionAutonomy" class="badge badge-muted">继承全局</span></span>
+                    <select id="ws-ov-decisionAutonomy" class="select">
+                      <option value="">继承全局设置</option>
+                      <option value="inherit">跟随宿主权限</option>
+                      <option value="balanced">均衡档</option>
+                      <option value="autonomous">高自主档</option>
+                      <option value="strict">严格档</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span class="ov-label"><span>派单前询问</span><span id="ov-tag-askBeforeDispatch" class="badge badge-muted">继承全局</span></span>
+                    <select id="ws-ov-askBeforeDispatch" class="select">
+                      <option value="">继承全局设置</option>
+                      <option value="true">开启询问</option>
+                      <option value="false">直接派遣</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div class="two-col">
+                  <label>
+                    <span class="ov-label"><span>单任务完成通知</span><span id="ov-tag-notifyOnSingleTaskDone" class="badge badge-muted">继承全局</span></span>
+                    <select id="ws-ov-notifyOnSingleTaskDone" class="select">
+                      <option value="">继承全局设置</option>
+                      <option value="false">仅阶段收口通知</option>
+                      <option value="true">单任务即通知</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span class="ov-label"><span>总控换届压缩阈值</span><span id="ov-tag-controllerCompactionThreshold" class="badge badge-muted">继承全局</span></span>
+                    <input type="number" min="1" max="20" id="ws-ov-controllerCompactionThreshold" class="input" placeholder="继承全局" />
+                  </label>
+                </div>
+
+                <div class="actions">
+                  <button type="submit" class="btn btn-primary btn-sm">保存工作区设置</button>
+                  <button type="button" id="ws-reset-btn" class="btn btn-ghost btn-sm">重置当前工作区</button>
+                </div>
+              </form>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <h3>当前工作区路由与模板覆盖</h3>
+                <span id="ws-doc-badge" class="badge badge-muted">-</span>
+              </div>
+              <div class="form-row">
+                <select id="ws-doc-select" class="select">
+                  <option value="model-routing.md">model-routing.md（工作区路由覆盖）</option>
+                  <option value="templates.md">templates.md（工作区模板覆盖）</option>
+                </select>
+              </div>
+              <textarea id="ws-doc-editor" class="editor editor-md" spellcheck="false"></textarea>
+              <div class="actions">
+                <button type="button" id="ws-doc-save-btn" class="btn btn-primary btn-sm">保存工作区覆盖</button>
+                <button type="button" id="ws-doc-load-effective-btn" class="btn btn-ghost btn-sm">载入当前生效内容</button>
+                <button type="button" id="ws-doc-reset-btn" class="btn btn-warn btn-sm">清除工作区覆盖</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
     </main>
   </div>
+
+  <datalist id="ct-model-presets">
+    <option value="Orchestrator (Neon)"></option>
+    <option value="Orchestrator (Carbon)"></option>
+    <option value="Gemini 4 Carbon (High)"></option>
+    <option value="Gemini 4 Carbon (Medium)"></option>
+    <option value="Gemini 4 Neon (High)"></option>
+    <option value="Gemini 4 Neon (Medium)"></option>
+    <option value="Gemini 4 Hydrogen (High)"></option>
+    <option value="Gemini 4 Hydrogen (Medium)"></option>
+    <option value="Gemini 4 Hydrogen (Low)"></option>
+  </datalist>
 
   <div id="toast" class="toast hidden"></div>
   <script src="/app.js"></script>

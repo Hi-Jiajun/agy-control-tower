@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import {
   atomicWriteText,
   findExistingRegistry,
+  MANAGED_REGISTRY_VIRTUAL_REL,
   normalizeWorkspaceInput,
   PathError,
   readJsonSafe,
@@ -18,7 +19,7 @@ import {
 import {
   archiveActiveSession,
   deleteQueueRow,
-  extractTemplates,
+  extractTemplatesFromMarkdown,
   parseRegistry,
   updateControllerSection,
   updateLeaseSection,
@@ -26,19 +27,35 @@ import {
   upsertQueueRow,
 } from '../../lib/registry.mjs';
 import {
+  MODEL_PRESETS,
+  normalizeModelForAgentApi,
+  resetDocOverride,
+  resetGlobalSettings,
+  resetPluginSettings,
+  resetWorkspaceSettings,
+  resolveEffectiveSettings,
+  saveDocOverride,
+  saveGlobalSettings,
+  savePluginSettings,
+  saveWorkspaceSettings,
+  validateDispatchModel,
+} from '../../lib/settings.mjs';
+import {
   inspectById,
+  inspectNativeSwarm,
   inspectTranscript,
+  loadPluginState,
   resolveBrainTranscript,
+  savePluginState,
 } from '../../lib/transcript.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(__dirname, '..', '..');
-const PLUGIN_JSON_PATH = join(PLUGIN_ROOT, 'plugin.json');
-const TEMPLATES_PATH = join(PLUGIN_ROOT, 'skills', 'control-tower', 'references', 'templates.md');
 
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_CACHE_ENTRIES = 200;
+const UUID_EXTRACT_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
 class HttpError extends Error {
   constructor(status, message, extra = null) {
@@ -85,11 +102,11 @@ function findPreloadJs() {
 }
 
 function readPluginMeta() {
-  const raw = readJsonSafe(PLUGIN_JSON_PATH, {});
+  const raw = readJsonSafe(join(PLUGIN_ROOT, 'plugin.json'), {});
   return {
     name: raw?.name || 'control-tower',
     displayName: raw?.displayName || 'Control Tower',
-    version: raw?.version || '1.1.0',
+    version: raw?.version || '1.2.0',
   };
 }
 
@@ -119,6 +136,52 @@ function execAgentApi(args, { projectId } = {}) {
   const execArgs = exe ? ['agentapi', ...args] : args;
   const out = execFileSync(file, execArgs, { encoding: 'utf8', env });
   return out && out.trim() ? JSON.parse(out) : {};
+}
+
+function extractConversationIdFromResult(res) {
+  if (!res || typeof res !== 'object') return '';
+  const direct =
+    res.conversationId ||
+    res.conversation_id ||
+    res.id ||
+    res.response?.conversationId ||
+    res.response?.conversation_id ||
+    res.result?.conversationId;
+  if (typeof direct === 'string' && direct.trim()) {
+    return direct.trim();
+  }
+  const m = JSON.stringify(res).match(UUID_EXTRACT_RE);
+  return m ? m[0] : '';
+}
+
+function buildDispatchPayload({
+  prompt,
+  slashPrefix = '',
+  controllerId = '',
+  exclusiveLeaseEnabled = true,
+  lockStatus = '纯离线无锁',
+  registryRelPath = '.agents/SESSION-REGISTRY.md',
+}) {
+  let body = String(prompt || '').trim();
+  const prefix = String(slashPrefix || '').trim();
+  if (prefix && !body.startsWith(prefix)) {
+    body = `${prefix} ${body}`;
+  }
+  if (!controllerId || body.includes('[CT_REPORT:')) {
+    return body;
+  }
+  const lockLine = exclusiveLeaseEnabled
+    ? `当前资源锁约束: ${lockStatus || '纯离线无锁'}。`
+    : '当前工作区处于无独占资源模式。';
+  return (
+    `${body}\n\n` +
+    `【Control Tower 跨会话汇报锚点（现役总控: ${controllerId}）】\n` +
+    `1. ${lockLine}严禁直接改写 ${registryRelPath}。\n` +
+    `2. 遇需要拍板的架构/接口/范围分叉或连续两轮假设失败时，执行：\n` +
+    `   agentapi send-message "${controllerId}" "[CT_REPORT:DECISION] <分叉简述与备选方案>"\n` +
+    `3. 完成收口时汇报交付摘要与验证结果：\n` +
+    `   agentapi send-message "${controllerId}" "[CT_REPORT:DONE] <交付摘要与验证结论>"`
+  );
 }
 
 class ControlTowerServer {
@@ -199,13 +262,60 @@ class ControlTowerServer {
     });
   }
 
+  #buildAttention(dataDir, wsReal, parsed, resolved) {
+    const pluginState = loadPluginState(dataDir);
+    const ctrlId = String(parsed?.controller?.currentControllerId || '').trim();
+    const ctrlEntry = ctrlId ? pluginState.controllers?.[ctrlId] || {} : {};
+    const handoverIgnored = Boolean(ctrlEntry.handoverIgnored);
+    const items = [];
+    const seen = new Set();
+
+    for (const item of pluginState.pendingAttention || []) {
+      if (!item || !item.id) continue;
+      if (item.workspace && wsReal && item.workspace !== wsReal) continue;
+      if (item.kind === 'handover' && handoverIgnored) continue;
+      items.push(item);
+      seen.add(item.id);
+    }
+
+    const comps = Number(parsed?.controller?.telemetry?.compactions || 0);
+    const threshold = resolved.effective.controllerCompactionThreshold || 5;
+    if (ctrlId && !handoverIgnored && comps >= threshold) {
+      const liveId = `handover-${ctrlId.slice(0, 8)}`;
+      if (!seen.has(liveId)) {
+        items.push({
+          id: liveId,
+          kind: 'handover',
+          workspace: wsReal || '',
+          controllerId: ctrlId,
+          compactions: comps,
+          threshold,
+          summary: `总控已累计压缩 ${comps} 次（阈值 ${threshold} 次），可选择换届或本会话忽略`,
+          updatedAt: Date.now(),
+        });
+      }
+    }
+
+    return { items, handoverIgnored };
+  }
+
   #buildSnapshot(wsRaw, { recentOverride = null } = {}) {
+    const dataDir = getDataDir();
     const plugin = readPluginMeta();
-    const templates = extractTemplates(TEMPLATES_PATH);
     const recent = recentOverride || loadRecentWorkspaces();
     const wsReal = wsRaw
       ? normalizeWorkspaceInput(wsRaw, { throwOnInvalid: true })
       : recent[0] || null;
+
+    const resolved = resolveEffectiveSettings({
+      dataDir,
+      wsReal: wsReal || '',
+      pluginRoot: PLUGIN_ROOT,
+      env: process.env,
+    });
+    const templates = extractTemplatesFromMarkdown(resolved.docs['templates.md']?.content || '');
+    const settingsPayload = { ...resolved, modelPresets: MODEL_PRESETS };
+    const emptySwarm = { active: false, title: '', members: [], recentPosts: [] };
 
     if (!wsReal) {
       return {
@@ -213,28 +323,39 @@ class ControlTowerServer {
         workspace: '',
         recentWorkspaces: recent,
         registryExists: false,
+        registryIsManaged: false,
         registryRelPath: '',
         registryPath: '',
         hash: '',
         content: '',
         parsed: parseRegistry(''),
         templates,
+        settings: settingsPayload,
+        nativeSwarm: emptySwarm,
+        attention: { items: [], handoverIgnored: false },
       };
     }
 
-    const found = findExistingRegistry(wsReal);
+    const found = findExistingRegistry(wsReal, {
+      dataDir,
+      workspaceSettings: resolved.workspace,
+    });
     if (!found) {
       return {
         plugin,
         workspace: wsReal,
         recentWorkspaces: recent,
         registryExists: false,
+        registryIsManaged: false,
         registryRelPath: '',
         registryPath: '',
         hash: '',
         content: '',
         parsed: parseRegistry(''),
         templates,
+        settings: settingsPayload,
+        nativeSwarm: emptySwarm,
+        attention: { items: [], handoverIgnored: false },
       };
     }
 
@@ -255,33 +376,64 @@ class ControlTowerServer {
           })
         : null,
     }));
+
+    const nativeSwarm = parsed.controller.currentControllerId
+      ? inspectNativeSwarm(parsed.controller.currentControllerId, {
+          env: process.env,
+          cacheMap: this.#transcriptCache,
+        })
+      : emptySwarm;
     this.#pruneCache();
+
+    const attention = this.#buildAttention(dataDir, wsReal, parsed, resolved);
 
     return {
       plugin,
       workspace: wsReal,
       recentWorkspaces: recent,
       registryExists: true,
+      registryIsManaged: Boolean(found.isManaged),
       registryRelPath: found.relPath,
       registryPath: found.absPath,
       hash: sha256(content),
       content,
       parsed,
       templates,
+      settings: settingsPayload,
+      nativeSwarm,
+      attention,
     };
   }
 
   #loadRegistryForMutation(body) {
+    const dataDir = getDataDir();
     const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
     if (!wsReal) throw new HttpError(400, 'workspace is required');
+    const resolved = resolveEffectiveSettings({
+      dataDir,
+      wsReal,
+      pluginRoot: PLUGIN_ROOT,
+      env: process.env,
+    });
+
     let target = null;
     if (body.relPath) {
+      const allowCustomRel =
+        resolved.workspace.registryMode === 'workspace_custom' &&
+        body.relPath === resolved.workspace.customRegistryRelPath;
       target = {
         relPath: body.relPath,
-        absPath: resolveRegistryTarget(wsReal, body.relPath, { allowMissing: false }),
+        absPath: resolveRegistryTarget(wsReal, body.relPath, {
+          allowMissing: false,
+          dataDir,
+          allowCustomRel,
+        }),
       };
     } else {
-      target = findExistingRegistry(wsReal);
+      target = findExistingRegistry(wsReal, {
+        dataDir,
+        workspaceSettings: resolved.workspace,
+      });
     }
     if (!target) throw new HttpError(404, 'SESSION-REGISTRY.md not found in workspace');
     const content = readFileSync(target.absPath, 'utf8');
@@ -292,7 +444,7 @@ class ControlTowerServer {
         content,
       });
     }
-    return { wsReal, target, content, currentHash };
+    return { dataDir, wsReal, target, content, currentHash, resolved };
   }
 
   async #handleSidecarBridge(req, res, url) {
@@ -301,10 +453,29 @@ class ControlTowerServer {
     }
     const body = await this.#readBody(req);
     if (url.pathname === '/_sidecar/new-conversation') {
-      throw new HttpError(
-        403,
-        'control-tower 禁用默认 flash 的快捷新建会话入口，请复制标准 6 要素派单卡片按纯 Gemini 4 + Orchestrator 路由创建专职会话。'
-      );
+      const wsReal = body.workspace
+        ? normalizeWorkspaceInput(body.workspace, { throwOnInvalid: false })
+        : '';
+      const resolved = resolveEffectiveSettings({
+        dataDir: getDataDir(),
+        wsReal: wsReal || '',
+        pluginRoot: PLUGIN_ROOT,
+        env: process.env,
+      });
+      const check = validateDispatchModel(body.model, resolved.effective);
+      if (!check.ok) {
+        throw new HttpError(403, check.reason);
+      }
+      const message = String(body.message || '').trim();
+      if (!message) {
+        throw new HttpError(400, 'message is required');
+      }
+      const cliModel = normalizeModelForAgentApi(check.model);
+      const args = ['new-conversation', '--model', cliModel];
+      if (body.title) args.push('--title', String(body.title).trim());
+      args.push(message);
+      const result = execAgentApi(args, { projectId: body.projectId });
+      return this.#sendJson(res, 200, { ok: true, cliModel, result });
     }
     if (url.pathname === '/_sidecar/get-conversation-metadata') {
       const convId = String(body.conversationId || '').trim();
@@ -328,10 +499,25 @@ class ControlTowerServer {
   }
 
   async #handleApi(req, res, url) {
+    const dataDir = getDataDir();
+
     if (req.method === 'GET' && url.pathname === '/api/snapshot') {
       const snap = this.#buildSnapshot(url.searchParams.get('workspace') || '');
       return this.#sendJson(res, 200, snap);
     }
+
+    if (req.method === 'GET' && url.pathname === '/api/settings') {
+      const wsRaw = url.searchParams.get('workspace') || '';
+      const wsReal = wsRaw ? normalizeWorkspaceInput(wsRaw, { throwOnInvalid: true }) : '';
+      const resolved = resolveEffectiveSettings({
+        dataDir,
+        wsReal: wsReal || '',
+        pluginRoot: PLUGIN_ROOT,
+        env: process.env,
+      });
+      return this.#sendJson(res, 200, { ...resolved, modelPresets: MODEL_PRESETS });
+    }
+
     if (req.method === 'GET' && url.pathname === '/api/session/inspect') {
       const q = (url.searchParams.get('id') || '').trim();
       const resInspect = resolveBrainTranscript(q, { env: process.env });
@@ -371,16 +557,239 @@ class ControlTowerServer {
       return this.#sendJson(res, 200, { ok: true, snapshot: snap });
     }
 
+    if (url.pathname === '/api/settings/plugin') {
+      const next =
+        body.action === 'reset' ? resetPluginSettings(dataDir) : savePluginSettings(dataDir, body);
+      const wsReal = body.workspace
+        ? normalizeWorkspaceInput(body.workspace, { throwOnInvalid: false })
+        : '';
+      return this.#sendJson(res, 200, {
+        ok: true,
+        plugin: next,
+        snapshot: this.#buildSnapshot(wsReal || ''),
+      });
+    }
+
+    if (url.pathname === '/api/settings/global') {
+      const next =
+        body.action === 'reset' ? resetGlobalSettings(dataDir) : saveGlobalSettings(dataDir, body);
+      const wsReal = body.workspace
+        ? normalizeWorkspaceInput(body.workspace, { throwOnInvalid: false })
+        : '';
+      return this.#sendJson(res, 200, {
+        ok: true,
+        global: next,
+        snapshot: this.#buildSnapshot(wsReal || ''),
+      });
+    }
+
+    if (url.pathname === '/api/settings/workspace') {
+      const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
+      if (!wsReal) throw new HttpError(400, 'workspace is required');
+      const next =
+        body.action === 'reset'
+          ? resetWorkspaceSettings(dataDir, wsReal)
+          : saveWorkspaceSettings(dataDir, wsReal, body);
+      return this.#sendJson(res, 200, {
+        ok: true,
+        workspaceSettings: next,
+        snapshot: this.#buildSnapshot(wsReal),
+      });
+    }
+
+    if (url.pathname === '/api/settings/override') {
+      const scope = body.scope;
+      const docName = body.docName;
+      const wsReal =
+        scope === 'workspace'
+          ? normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true })
+          : body.workspace
+            ? normalizeWorkspaceInput(body.workspace, { throwOnInvalid: false })
+            : '';
+      if (scope === 'workspace' && !wsReal) {
+        throw new HttpError(400, 'workspace is required');
+      }
+      if (body.action === 'reset') {
+        resetDocOverride(dataDir, scope, docName, wsReal || '');
+      } else {
+        saveDocOverride(dataDir, scope, docName, body.content, wsReal || '');
+      }
+      return this.#sendJson(res, 200, {
+        ok: true,
+        snapshot: this.#buildSnapshot(wsReal || ''),
+      });
+    }
+
+    if (url.pathname === '/api/attention/dismiss') {
+      const wsReal = body.workspace
+        ? normalizeWorkspaceInput(body.workspace, { throwOnInvalid: false })
+        : '';
+      const state = loadPluginState(dataDir);
+      if (body.kind === 'handover') {
+        let ctrlId = String(body.controllerId || '').trim();
+        if (!ctrlId && wsReal) {
+          const found = findExistingRegistry(wsReal, { dataDir });
+          if (found) {
+            const parsed = parseRegistry(readFileSync(found.absPath, 'utf8'));
+            ctrlId = parsed?.controller?.currentControllerId || '';
+          }
+        }
+        if (ctrlId) {
+          state.controllers[ctrlId] = {
+            ...(state.controllers[ctrlId] || {}),
+            handoverIgnored: body.ignoreForSession !== false,
+            updatedAt: Date.now(),
+          };
+          state.pendingAttention = (state.pendingAttention || []).filter(
+            (x) => !(x.kind === 'handover' && (!x.controllerId || x.controllerId === ctrlId))
+          );
+        }
+      } else if (body.id) {
+        state.pendingAttention = (state.pendingAttention || []).filter((x) => x.id !== body.id);
+      }
+      savePluginState(dataDir, state);
+      return this.#sendJson(res, 200, {
+        ok: true,
+        snapshot: this.#buildSnapshot(wsReal || ''),
+      });
+    }
+
+    if (url.pathname === '/api/cache/clear') {
+      const wsReal = body.workspace
+        ? normalizeWorkspaceInput(body.workspace, { throwOnInvalid: false })
+        : '';
+      const state = loadPluginState(dataDir);
+      state.transcriptCache = {};
+      this.#transcriptCache = {};
+      savePluginState(dataDir, state);
+      return this.#sendJson(res, 200, {
+        ok: true,
+        snapshot: this.#buildSnapshot(wsReal || ''),
+      });
+    }
+
+    if (url.pathname === '/api/dispatch/create') {
+      const wsReal = body.workspace
+        ? normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true })
+        : '';
+      const resolved = resolveEffectiveSettings({
+        dataDir,
+        wsReal: wsReal || '',
+        pluginRoot: PLUGIN_ROOT,
+        env: process.env,
+      });
+      const chosenModel = String(body.model || resolved.effective.l2StandardModel || '').trim();
+      const check = validateDispatchModel(chosenModel, resolved.effective);
+      if (!check.ok) {
+        throw new HttpError(403, check.reason);
+      }
+      const rawPrompt = String(body.prompt || body.topic || '').trim();
+      if (!rawPrompt) {
+        throw new HttpError(400, 'prompt or topic is required');
+      }
+
+      let regFound = null;
+      let parsedReg = null;
+      if (wsReal) {
+        regFound = findExistingRegistry(wsReal, {
+          dataDir,
+          workspaceSettings: resolved.workspace,
+        });
+        if (regFound) {
+          const curContent = readFileSync(regFound.absPath, 'utf8');
+          const curHash = sha256(curContent);
+          if (body.expectedHash && body.expectedHash !== curHash) {
+            throw new HttpError(409, '台账已被外部会话修改，请重载最新内容后再派遣。', {
+              currentHash: curHash,
+              content: curContent,
+            });
+          }
+          parsedReg = parseRegistry(curContent);
+        }
+      }
+
+      const cliModel = normalizeModelForAgentApi(check.model);
+      const ctrlId = String(parsedReg?.controller?.currentControllerId || '').trim();
+      const lockStatus =
+        resolved.effective.exclusiveLeaseEnabled === false
+          ? '无独占资源限制'
+          : String(body.lockStatus || '纯离线无锁').trim();
+      const finalMessage = buildDispatchPayload({
+        prompt: rawPrompt,
+        slashPrefix: body.slashPrefix,
+        controllerId: ctrlId,
+        exclusiveLeaseEnabled: resolved.effective.exclusiveLeaseEnabled,
+        lockStatus,
+        registryRelPath: regFound?.relPath || '.agents/SESSION-REGISTRY.md',
+      });
+
+      const title = String(body.title || body.topic || '').trim();
+      const args = ['new-conversation', '--model', cliModel];
+      if (title) args.push('--title', title);
+      args.push(finalMessage);
+      const apiResult = execAgentApi(args, { projectId: body.projectId });
+      const newConvId = extractConversationIdFromResult(apiResult);
+
+      let enrolled = false;
+      if (newConvId && regFound) {
+        const latestContent = readFileSync(regFound.absPath, 'utf8');
+        const nextMd = upsertActiveSessionRow(latestContent, {
+          conversationId: newConvId,
+          topic: String(body.topic || title || rawPrompt.slice(0, 48)).trim(),
+          modelTool: body.slashPrefix ? `${check.model} + ${String(body.slashPrefix).trim()}` : check.model,
+          lockStatus,
+          status: 'ACTIVE',
+          paths: String(body.paths || '-').trim() || '-',
+        });
+        atomicWriteText(regFound.absPath, nextMd.endsWith('\n') ? nextMd : `${nextMd}\n`);
+        enrolled = true;
+      }
+
+      return this.#sendJson(res, 200, {
+        ok: true,
+        conversationId: newConvId,
+        cliModel,
+        enrolled,
+        result: apiResult,
+        snapshot: this.#buildSnapshot(wsReal || ''),
+      });
+    }
+
     if (url.pathname === '/api/registry/init') {
       const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
       if (!wsReal) throw new HttpError(400, 'workspace is required');
-      const relPath = body.relPath || '.agents/SESSION-REGISTRY.md';
-      const target = resolveRegistryTarget(wsReal, relPath, { allowMissing: true });
+      const relPath = String(body.relPath || '.agents/SESSION-REGISTRY.md').trim();
+      const isStandard =
+        relPath === '.agents/SESSION-REGISTRY.md' ||
+        relPath === 'research/SESSION-REGISTRY.md' ||
+        relPath === 'SESSION-REGISTRY.md';
+      const isManaged = relPath === MANAGED_REGISTRY_VIRTUAL_REL;
+      const target = resolveRegistryTarget(wsReal, relPath, {
+        allowMissing: true,
+        dataDir,
+        allowCustomRel: !isStandard && !isManaged,
+      });
       if (existsSync(target)) {
         throw new HttpError(409, `Target already exists: ${relPath}`);
       }
-      const { registrySkeleton } = extractTemplates(TEMPLATES_PATH);
+      const resolved = resolveEffectiveSettings({
+        dataDir,
+        wsReal,
+        pluginRoot: PLUGIN_ROOT,
+        env: process.env,
+      });
+      const { registrySkeleton } = extractTemplatesFromMarkdown(
+        resolved.docs['templates.md']?.content || ''
+      );
       atomicWriteText(target, `${registrySkeleton.trimEnd()}\n`);
+      if (isManaged) {
+        saveWorkspaceSettings(dataDir, wsReal, { registryMode: 'plugin_data' });
+      } else if (!isStandard) {
+        saveWorkspaceSettings(dataDir, wsReal, {
+          registryMode: 'workspace_custom',
+          customRegistryRelPath: relPath,
+        });
+      }
       const nextRecent = recordRecentWorkspace(wsReal);
       return this.#sendJson(res, 200, {
         ok: true,
@@ -517,7 +926,7 @@ class ControlTowerServer {
         try {
           await this.#handleSidecarBridge(req, res, url);
         } catch (err) {
-          if (err instanceof HttpError) {
+          if (err instanceof HttpError || err instanceof PathError) {
             return this.#sendJson(res, err.status, {
               error: err.extra?.error || 'error',
               message: err.message,

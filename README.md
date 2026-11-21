@@ -5,10 +5,10 @@
 ## 插件核心能力与架构边界
 
 - **标准 `./plugin/` 纯净包布局**：运行态全部资产收拢在 [plugin/](plugin/) 子目录，仓储研发文档与测试放在仓根，直接通过 `agy plugin validate --strict ./plugin` 零警告校验，并支持原生 `agy plugin install ./plugin` 安装与卸载。
-- **纯零依赖 Node.js ESM 单栈**：`plugin/lib/`（`paths.mjs`、`registry.mjs`、`transcript.mjs`）同时驱动 Hooks 与 Sidecar，彻底消除双语言重复解析；`transcript.jsonl` 采用头 `32KB` + 尾 `64KB` 分片及字节偏移增量扫描缓存。
-- **可读写 Aux Pane 总控看板（`plugin/sidecars/tower/`）**：自动跟随工作区并支持切换近期工作区；提供 `SESSION-REGISTRY.md` 第 1~5 节全结构化操作（独占租约锁、现役总控登记与换届历史、裸 ID 探针一键入账、活跃会话归档至里程碑、待调度队列增删、Markdown 在线编辑），支持一键向现役总控投递裸 ID（禁用默认 `flash` 快捷新建会话），且全部 `/api/*` 与 `/_sidecar/*` 路由强制校验 `x-sidecar-token`、路径白名单与 SHA256 乐观并发锁。
-- **总控定向轻量感知 Hooks（`plugin/hooks.json` + `plugin/scripts/ct-hook.mjs`）**：仅在当前会话是工作区 `SESSION-REGISTRY.md` 登记的现役总控时激活，普通专职会话静音直通且不建任何目录；支持单裸 ID 与短口令内多会话 ID 尾步速查，以及现役总控 `>= 2` 次上下文压缩防刷屏换届提醒。
-- **官方数据目录隔离**：刻意不包含 `rules/AGENTS.md`（不向普通专职会话注入 always-on 规则）；运行状态统一存于官方 `<appData>/plugin_data/control-tower/`（支持 `AGY_CONTROL_TOWER_DATA_DIR` / `PLUGIN_DATA` 覆盖）。
+- **纯零依赖 Node.js ESM 单栈**：`plugin/lib/`（`paths.mjs`、`registry.mjs`、`settings.mjs`、`transcript.mjs`）同时驱动 Hooks 与 Sidecar，彻底消除双语言重复解析；`transcript.jsonl` 采用头 `32KB` + 尾 `64KB` 分片及字节偏移增量扫描缓存。
+- **可读写 Aux Pane 总控看板（`plugin/sidecars/tower/`）**：支持实时无感监测（同时聚合独立专职会话与原生 `swarm` 集群）、按路由护栏校验的受控直派新会话（`/api/dispatch/create`）、`SESSION-REGISTRY.md` 第 1~5 节全结构化操作、以及严格物理隔离的「插件 / 全局 / 当前工作区」三层设置中心（含 `PLUGIN_DATA` 零侵入托管台账模式与文档在线覆盖）。
+- **四事件定向感知 Hooks（`plugin/hooks.json` + `plugin/scripts/ct-hook.mjs`）**：覆盖 `SessionStart`（现役总控与已入账专职会话双角色注入）、`PreInvocation`（裸/多 ID 及汇报速查、弹性换届提醒）、`PreToolUse`（非总控改写台账防呆门禁）、与 `Stop`（专职会话漏报阶段收口自动回执兜底）；无关会话静音直通。
+- **官方数据目录隔离**：刻意不包含 `rules/AGENTS.md`（不向无关会话注入 always-on 全局规则）；运行状态与三层设置统一存于官方 `<appData>/plugin_data/control-tower/`（支持 `AGY_CONTROL_TOWER_DATA_DIR` / `PLUGIN_DATA` 覆盖）。
 
 ## 目录结构
 
@@ -21,11 +21,11 @@ control-tower/
 ├── package.json                     # 仓根私有工程清单（npm test / selftest / validate / setup-hooks）
 ├── plugin/                          # Antigravity 官方标准原生插件纯净包
 │   ├── plugin.json                  # 唯一版本真源（SemVer）
-│   ├── hooks.json                   # SessionStart + PreInvocation -> node ./scripts/ct-hook.mjs
+│   ├── hooks.json                   # 四事件钩子 -> node ./scripts/ct-hook.mjs
 │   ├── README.md
 │   ├── LICENSE
 │   ├── assets/logo.svg
-│   ├── lib/{paths,registry,transcript}.mjs
+│   ├── lib/{paths,registry,settings,transcript}.mjs
 │   ├── scripts/ct-hook.mjs
 │   ├── sidecars/tower/
 │   └── skills/control-tower/

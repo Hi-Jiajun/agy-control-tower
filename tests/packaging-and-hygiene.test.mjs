@@ -64,7 +64,7 @@ test('Official agy plugin validate --strict and isolated HOME install/list/unins
   assert.equal(valJson.name, 'control-tower');
   assert.deepEqual(valJson.findings, []);
   assert.equal(valJson.components.skills, 1);
-  assert.equal(valJson.components.hooks, 2);
+  assert.equal(valJson.components.hooks, 4);
   assert.equal(valJson.components.sidecars, 1);
   assert.equal(valJson.components.rules, 0);
 

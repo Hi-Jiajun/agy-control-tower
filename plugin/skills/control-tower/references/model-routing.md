@@ -2,6 +2,8 @@
 
 本路由规范依据 Google 官方文档（`ai.google.dev`、`deepmind.google`、`antigravity.google`）及 Antigravity 会话模式实测边界制定，供全局 `control-tower` 在任意工作区统一调用。
 
+> **看板动态可编辑提示**：本文件为插件内置默认基准。用户可在 Control Tower Aux Pane 看板「设置中心」中针对**全局**或**当前工作区**分别自定义 `L0~L4` 默认模型、白名单策略，或在线覆写本路由规范正文；存在覆盖时 `SessionStart` 钩子会自动向现役总控提示生效路径。
+
 ---
 
 ## 1. 明确排除项与配额边界

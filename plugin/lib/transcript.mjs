@@ -3,6 +3,7 @@ import {
   existsSync,
   openSync,
   readdirSync,
+  readFileSync,
   readSync,
   realpathSync,
   statSync,
@@ -17,11 +18,16 @@ import {
 
 const HEAD_BYTES = 32 * 1024;
 const TAIL_BYTES = 64 * 1024;
+const SWARM_BOARD_TAIL_BYTES = 32 * 1024;
 const CHUNK_BYTES = 64 * 1024;
 const STATE_MAX_ENTRIES = 200;
+const ATTENTION_MAX_ENTRIES = 20;
 
 export const HEX_CONV_ID_RE =
   /^[0-9a-f]{8}(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f-]{0,28})$/i;
+
+const FULL_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const HEX_CANDIDATE_GLOBAL_RE =
   /(?<![A-Za-z0-9_-])([0-9a-f]{8}(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|-[0-9a-f-]{1,27}|[0-9a-f]{0,24}))(?![A-Za-z0-9_-])/gi;
@@ -34,13 +40,25 @@ export function isValidConvIdOrPrefix(token) {
   return hexOnly.length >= 8 && hexOnly.length <= 32;
 }
 
+function matchesKnownId(cand, knownList) {
+  if (!Array.isArray(knownList) || knownList.length === 0) return false;
+  const cLower = cand.toLowerCase();
+  for (const k of knownList) {
+    if (k === cLower) return true;
+    if (cLower.length >= 8 && k.length >= 8 && (k.startsWith(cLower) || cLower.startsWith(k))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
- * Extract conversation IDs or 8+ hex prefixes from bare ID or short command prompts.
- * Ignores fenced/inline code blocks and oversized prompts.
+ * Extract conversation IDs or 8+ hex prefixes from bare ID, short command, or structured report prompts.
+ * In long inputs (> 400 chars), filters out incidental commit SHAs by requiring a full UUID or known registry ID prefix.
  */
 export function extractPromptSessionIds(
   rawInput,
-  { maxCandidates = 3, maxInputLength = 400 } = {}
+  { maxCandidates = 6, maxInputLength = 2000, knownIds = [] } = {}
 ) {
   if (typeof rawInput !== 'string') {
     return { isSingleBareId: false, ids: [] };
@@ -63,11 +81,19 @@ export function extractPromptSessionIds(
     return { isSingleBareId: false, ids: [] };
   }
 
+  const isLongText = stripped.length > 400;
+  const normalizedKnown = Array.isArray(knownIds)
+    ? knownIds.map((x) => String(x || '').trim().toLowerCase()).filter((x) => x.length >= 8)
+    : [];
+
   const ids = [];
   const seen = new Set();
   for (const m of stripped.matchAll(HEX_CANDIDATE_GLOBAL_RE)) {
     const cand = m[1];
     if (!isValidConvIdOrPrefix(cand)) continue;
+    if (isLongText && !FULL_UUID_RE.test(cand) && !matchesKnownId(cand, normalizedKnown)) {
+      continue;
+    }
     const key = cand.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
@@ -481,6 +507,167 @@ export function inspectById(convId, { env = process.env, hintPath = '', cacheMap
   return { conversationId: res.conversationId, ...info };
 }
 
+function readTailText(filePath, maxBytes) {
+  if (!filePath || !existsSync(filePath)) return '';
+  let fd;
+  try {
+    const st = statSync(filePath);
+    if (!st.isFile() || st.size === 0) return '';
+    const offset = Math.max(0, st.size - maxBytes);
+    fd = openSync(filePath, 'r');
+    const buf = readRangeSync(fd, offset, st.size - offset);
+    const raw = buf.toString('utf8');
+    return offset > 0 ? raw.slice(raw.indexOf('\n') + 1) : raw;
+  } catch {
+    return '';
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
+export function hasOutboundAgentApiReport(tp, recipientId) {
+  if (!tp || !recipientId || !existsSync(tp)) return false;
+  const tailText = readTailText(tp, TAIL_BYTES);
+  if (!tailText) return false;
+  const lines = tailText.split('\n').filter((l) => l.trim());
+  let lastTurnStart = 0;
+  const steps = [];
+  for (const line of lines) {
+    try {
+      const step = JSON.parse(line);
+      if (step && typeof step === 'object') {
+        if (String(step.type || '').toUpperCase() === 'USER_INPUT') {
+          lastTurnStart = steps.length;
+        }
+        steps.push(step);
+      }
+    } catch {
+      // ignore partial line
+    }
+  }
+  const targetFull = String(recipientId).trim().toLowerCase();
+  const targetPrefix = targetFull.slice(0, 8);
+  for (let i = lastTurnStart; i < steps.length; i += 1) {
+    const step = steps[i];
+    const stype = String(step.type || '').toUpperCase();
+    if (stype === 'USER_INPUT') continue;
+    const blob = JSON.stringify({
+      content: step.content || '',
+      tool_calls: step.tool_calls || null,
+    }).toLowerCase();
+    const hasRecipient =
+      blob.includes(targetFull) || (targetPrefix.length >= 8 && blob.includes(targetPrefix));
+    if (hasRecipient && (blob.includes('send-message') || blob.includes('[ct_report:'))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function inspectNativeSwarm(
+  controllerConvId,
+  { env = process.env, hintPath = '', cacheMap = null } = {}
+) {
+  const empty = { active: false, title: '', members: [], recentPosts: [] };
+  if (!controllerConvId || !isValidConvIdOrPrefix(controllerConvId)) return empty;
+  const appDirs = resolveAppDataDirs({ env, hintPath });
+  const targetLower = controllerConvId.trim().toLowerCase();
+
+  let swarmDir = '';
+  for (const appDir of appDirs) {
+    const brainDir = join(appDir, 'brain');
+    if (!existsSync(brainDir)) continue;
+    const exactSwarm = join(brainDir, controllerConvId.trim(), '.system_generated', 'swarm');
+    if (existsSync(join(exactSwarm, 'members.json'))) {
+      swarmDir = exactSwarm;
+      break;
+    }
+    try {
+      for (const ent of readdirSync(brainDir, { withFileTypes: true })) {
+        if (!ent.isDirectory()) continue;
+        if (!ent.name.toLowerCase().startsWith(targetLower)) continue;
+        const cand = join(brainDir, ent.name, '.system_generated', 'swarm');
+        if (existsSync(join(cand, 'members.json'))) {
+          swarmDir = cand;
+          break;
+        }
+      }
+    } catch {
+      // ignore unreadable brain dir
+    }
+    if (swarmDir) break;
+  }
+
+  if (!swarmDir) return empty;
+  const membersData = readJsonSafe(join(swarmDir, 'members.json'), null);
+  if (!membersData || typeof membersData !== 'object') return empty;
+
+  const rawMembers = membersData.members && typeof membersData.members === 'object' ? membersData.members : {};
+  const members = Object.entries(rawMembers).map(([name, meta]) => {
+    const m = meta && typeof meta === 'object' ? meta : {};
+    const cid = String(m.conversation_id || m.conversationId || '').trim();
+    const tel = cid ? inspectById(cid, { env, hintPath, cacheMap }) : null;
+    let role = String(m.role || '').trim().toLowerCase();
+    if (!role) {
+      if (/^narrator(-\d+)?$/i.test(name)) role = 'narrator';
+      else if (/^monitor(-\d+)?$/i.test(name)) role = 'monitor';
+      else role = 'worker';
+    }
+    let state = 'waiting';
+    if (m.killed) state = 'killed';
+    else if (tel?.exists && tel.lastStatus && !['DONE', 'IDLE', 'WAITING'].includes(tel.lastStatus.toUpperCase())) {
+      state = 'working';
+    } else if (!m.wait_since && tel?.exists && tel.lastStatus === 'RUNNING') {
+      state = 'working';
+    }
+    return {
+      name,
+      role,
+      conversationId: cid,
+      model: String(m.model || tel?.lastModel || '-'),
+      state,
+      compactions: tel?.compactions || 0,
+      steps: tel?.maxStepIndex || tel?.lineCount || 0,
+      lastError: tel?.lastError || '',
+    };
+  });
+
+  const boardTail = readTailText(join(swarmDir, 'board.jsonl'), SWARM_BOARD_TAIL_BYTES);
+  const recentPosts = [];
+  if (boardTail) {
+    for (const rawLine of boardTail.split('\n')) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      try {
+        const post = JSON.parse(line);
+        if (post && typeof post === 'object') {
+          recentPosts.push({
+            seq: Number(post.seq || 0),
+            agent: String(post.agent || '-'),
+            text: String(post.text || '').replace(/\s+/g, ' ').trim().slice(0, 140),
+            time: String(post.time || ''),
+          });
+        }
+      } catch {
+        // ignore partial line
+      }
+    }
+  }
+
+  return {
+    active: true,
+    title: String(membersData.title || 'Native Swarm'),
+    members,
+    recentPosts: recentPosts.slice(-5),
+  };
+}
+
 function pruneMapLru(obj, maxEntries = STATE_MAX_ENTRIES) {
   if (!obj || typeof obj !== 'object') return {};
   const entries = Object.entries(obj);
@@ -489,14 +676,23 @@ function pruneMapLru(obj, maxEntries = STATE_MAX_ENTRIES) {
   return Object.fromEntries(entries.slice(0, maxEntries));
 }
 
+function pruneAttentionList(list, maxEntries = ATTENTION_MAX_ENTRIES) {
+  if (!Array.isArray(list)) return [];
+  const filtered = list.filter((x) => x && typeof x === 'object' && x.id);
+  if (filtered.length <= maxEntries) return filtered;
+  return filtered.slice(-maxEntries);
+}
+
 export function loadPluginState(dataDir) {
   const filePath = join(dataDir, 'state.json');
   const raw = readJsonSafe(filePath, null);
   if (!raw || typeof raw !== 'object') {
-    return { controllers: {}, transcriptCache: {} };
+    return { controllers: {}, workers: {}, pendingAttention: [], transcriptCache: {} };
   }
   return {
     controllers: raw.controllers && typeof raw.controllers === 'object' ? raw.controllers : {},
+    workers: raw.workers && typeof raw.workers === 'object' ? raw.workers : {},
+    pendingAttention: pruneAttentionList(raw.pendingAttention),
     transcriptCache:
       raw.transcriptCache && typeof raw.transcriptCache === 'object' ? raw.transcriptCache : {},
   };
@@ -505,6 +701,8 @@ export function loadPluginState(dataDir) {
 export function savePluginState(dataDir, state) {
   const normalized = {
     controllers: pruneMapLru(state?.controllers, STATE_MAX_ENTRIES),
+    workers: pruneMapLru(state?.workers, STATE_MAX_ENTRIES),
+    pendingAttention: pruneAttentionList(state?.pendingAttention, ATTENTION_MAX_ENTRIES),
     transcriptCache: pruneMapLru(state?.transcriptCache, STATE_MAX_ENTRIES),
   };
   atomicWriteText(join(dataDir, 'state.json'), `${JSON.stringify(normalized, null, 2)}\n`);

@@ -20,7 +20,41 @@ export const REGISTRY_CANDIDATES = [
   'SESSION-REGISTRY.md',
 ];
 
+export const MANAGED_REGISTRY_VIRTUAL_REL = '@plugin_data/SESSION-REGISTRY.md';
+
 const ALLOWED_REGISTRY_SET = new Set(REGISTRY_CANDIDATES);
+
+export function getWorkspaceSettingsDir(dataDir, wsReal) {
+  return join(resolve(dataDir), 'workspaces', sha256(wsReal).slice(0, 16));
+}
+
+export function getManagedRegistryPath(dataDir, wsReal) {
+  return join(getWorkspaceSettingsDir(dataDir, wsReal), 'SESSION-REGISTRY.md');
+}
+
+export function validateCustomRegistryRelPath(relPath) {
+  if (typeof relPath !== 'string') {
+    throw new PathError(403, 'Custom registry path must be a string');
+  }
+  const trimmed = relPath.trim();
+  if (!trimmed || trimmed !== relPath || trimmed.length > 180) {
+    throw new PathError(403, 'Invalid custom registry relative path');
+  }
+  if (/[\u0000-\u001f\u007f\\]/.test(trimmed)) {
+    throw new PathError(403, 'Custom registry path contains disallowed characters');
+  }
+  if (trimmed.startsWith('/') || trimmed.startsWith('@') || /^[A-Za-z]:/.test(trimmed)) {
+    throw new PathError(403, 'Custom registry path must be workspace-relative');
+  }
+  if (!trimmed.endsWith('.md')) {
+    throw new PathError(403, 'Custom registry path must end with .md');
+  }
+  const segments = trimmed.split('/');
+  if (segments.some((seg) => !seg || seg === '.' || seg === '..')) {
+    throw new PathError(403, 'Path traversal blocked in custom registry path');
+  }
+  return trimmed;
+}
 
 export function sha256(text) {
   return createHash('sha256').update(String(text ?? ''), 'utf8').digest('hex');
@@ -152,15 +186,8 @@ export function normalizeWorkspaceInput(raw, { throwOnInvalid = false } = {}) {
   }
 }
 
-export function resolveRegistryTarget(wsReal, relPath, { allowMissing = false } = {}) {
-  if (typeof relPath !== 'string' || !ALLOWED_REGISTRY_SET.has(relPath)) {
-    throw new PathError(
-      403,
-      'Registry path must be one of .agents/SESSION-REGISTRY.md, research/SESSION-REGISTRY.md, or SESSION-REGISTRY.md'
-    );
-  }
-  const candidate = resolve(wsReal, relPath);
-  const rel = relative(wsReal, candidate);
+function assertSafeTargetWithinRoot(rootReal, candidate, { allowMissing = false, rootLabel = 'workspace' } = {}) {
+  const rel = relative(rootReal, candidate);
   if (rel.startsWith('..') || rel.includes(`..${sep}`) || isAbsolute(rel)) {
     throw new PathError(403, 'Path traversal blocked');
   }
@@ -168,9 +195,9 @@ export function resolveRegistryTarget(wsReal, relPath, { allowMissing = false } 
   const parent = dirname(candidate);
   if (existsSync(parent)) {
     const parentReal = realpathSync(parent);
-    const parentRel = relative(wsReal, parentReal);
+    const parentRel = relative(rootReal, parentReal);
     if (parentRel.startsWith('..') || isAbsolute(parentRel)) {
-      throw new PathError(403, 'Parent symlink escapes workspace');
+      throw new PathError(403, `Parent symlink escapes ${rootLabel}`);
     }
   }
 
@@ -178,9 +205,9 @@ export function resolveRegistryTarget(wsReal, relPath, { allowMissing = false } 
     const lst = lstatSync(candidate);
     if (lst.isSymbolicLink()) {
       const targetReal = realpathSync(candidate);
-      const tRel = relative(wsReal, targetReal);
+      const tRel = relative(rootReal, targetReal);
       if (tRel.startsWith('..') || isAbsolute(tRel)) {
-        throw new PathError(403, 'Registry symlink escapes workspace');
+        throw new PathError(403, `Registry symlink escapes ${rootLabel}`);
       }
     }
     if (!statSync(candidate).isFile()) {
@@ -192,25 +219,112 @@ export function resolveRegistryTarget(wsReal, relPath, { allowMissing = false } 
   return candidate;
 }
 
-export function findExistingRegistry(wsReal) {
+export function resolveRegistryTarget(
+  wsReal,
+  relPath,
+  { allowMissing = false, dataDir = '', allowCustomRel = false } = {}
+) {
+  if (relPath === MANAGED_REGISTRY_VIRTUAL_REL) {
+    if (!dataDir || typeof dataDir !== 'string') {
+      throw new PathError(400, 'Plugin data directory is required for managed registry');
+    }
+    const dataAbs = resolve(dataDir);
+    const dataRootReal = existsSync(dataAbs) ? realpathSync(dataAbs) : dataAbs;
+    const managedCandidate = getManagedRegistryPath(dataRootReal, wsReal);
+    return assertSafeTargetWithinRoot(dataRootReal, managedCandidate, {
+      allowMissing,
+      rootLabel: 'plugin_data',
+    });
+  }
+
+  if (typeof relPath !== 'string') {
+    throw new PathError(
+      403,
+      'Registry path must be one of .agents/SESSION-REGISTRY.md, research/SESSION-REGISTRY.md, or SESSION-REGISTRY.md'
+    );
+  }
+  if (!ALLOWED_REGISTRY_SET.has(relPath)) {
+    if (!allowCustomRel) {
+      throw new PathError(
+        403,
+        'Registry path must be one of .agents/SESSION-REGISTRY.md, research/SESSION-REGISTRY.md, or SESSION-REGISTRY.md'
+      );
+    }
+    validateCustomRegistryRelPath(relPath);
+  }
+  const candidate = resolve(wsReal, relPath);
+  return assertSafeTargetWithinRoot(wsReal, candidate, { allowMissing, rootLabel: 'workspace' });
+}
+
+function readWorkspaceSettingsSafe(dataDir, wsReal) {
+  if (!dataDir || !wsReal) return null;
+  const settingsPath = join(getWorkspaceSettingsDir(dataDir, wsReal), 'settings.json');
+  const raw = readJsonSafe(settingsPath, null);
+  return raw && typeof raw === 'object' ? raw : null;
+}
+
+export function findExistingRegistry(wsReal, { dataDir = '', workspaceSettings = null } = {}) {
   if (!wsReal) return null;
+  const wsCfg = workspaceSettings || readWorkspaceSettingsSafe(dataDir, wsReal);
+
+  if (wsCfg?.registryMode === 'plugin_data' && dataDir) {
+    const managedPath = getManagedRegistryPath(dataDir, wsReal);
+    if (existsSync(managedPath)) {
+      const target = resolveRegistryTarget(wsReal, MANAGED_REGISTRY_VIRTUAL_REL, {
+        allowMissing: false,
+        dataDir,
+      });
+      return { relPath: MANAGED_REGISTRY_VIRTUAL_REL, absPath: target, isManaged: true };
+    }
+  }
+
+  if (wsCfg?.registryMode === 'workspace_custom' && wsCfg?.customRegistryRelPath) {
+    try {
+      const customRel = validateCustomRegistryRelPath(wsCfg.customRegistryRelPath);
+      const customAbs = resolve(wsReal, customRel);
+      if (existsSync(customAbs)) {
+        const target = resolveRegistryTarget(wsReal, customRel, {
+          allowMissing: false,
+          allowCustomRel: true,
+        });
+        return { relPath: customRel, absPath: target, isManaged: false };
+      }
+    } catch (err) {
+      if (err instanceof PathError && err.message.includes('symlink')) {
+        throw err;
+      }
+    }
+  }
+
   for (const relPath of REGISTRY_CANDIDATES) {
     const p = resolve(wsReal, relPath);
     if (existsSync(p)) {
       const target = resolveRegistryTarget(wsReal, relPath, { allowMissing: false });
-      return { relPath, absPath: target };
+      return { relPath, absPath: target, isManaged: false };
     }
   }
+
+  if (dataDir) {
+    const managedPath = getManagedRegistryPath(dataDir, wsReal);
+    if (existsSync(managedPath)) {
+      const target = resolveRegistryTarget(wsReal, MANAGED_REGISTRY_VIRTUAL_REL, {
+        allowMissing: false,
+        dataDir,
+      });
+      return { relPath: MANAGED_REGISTRY_VIRTUAL_REL, absPath: target, isManaged: true };
+    }
+  }
+
   return null;
 }
 
-export function findRegistryInWorkspaces(workspacePaths) {
+export function findRegistryInWorkspaces(workspacePaths, { dataDir = '' } = {}) {
   if (!Array.isArray(workspacePaths)) return null;
   for (const raw of workspacePaths) {
     const wsReal = normalizeWorkspaceInput(raw, { throwOnInvalid: false });
     if (!wsReal) continue;
     try {
-      const found = findExistingRegistry(wsReal);
+      const found = findExistingRegistry(wsReal, { dataDir });
       if (found) return { workspace: wsReal, ...found };
     } catch {
       continue;

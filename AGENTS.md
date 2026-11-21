@@ -9,10 +9,10 @@
 | `package.json` | 仓根私有工程清单（定义 `test` / `selftest` / `validate` / `setup-hooks`，零第三方依赖） |
 | `plugin/` | Antigravity 官方标准原生插件纯净包（`agy plugin validate --strict ./plugin` 零警告通过） |
 | `plugin/plugin.json` | Antigravity 原生插件清单与唯一 SemVer 版本真源（仅使用官方白名单字段） |
-| `plugin/hooks.json` | 生命周期钩子配置（调用 `node ./scripts/ct-hook.mjs`，仅对现役总控激活） |
-| `plugin/lib/` | 零依赖共享核心（`paths.mjs`、`registry.mjs`、`transcript.mjs`），供 Hooks 与 Sidecar 共用 |
-| `plugin/scripts/ct-hook.mjs` | `SessionStart` 与 `PreInvocation` 统一钩子入口（裸 ID / 短口令多 ID 速查、压缩换届去重提醒） |
-| `plugin/sidecars/tower/` | 零依赖可读写 Aux Pane 总控看板（第 1~5 节全章节结构化运维、全路由 Token 鉴权、向总控投递裸 ID） |
+| `plugin/hooks.json` | 四事件生命周期钩子配置（`SessionStart`、`PreInvocation`、`PreToolUse`、`Stop` -> `node ./scripts/ct-hook.mjs`） |
+| `plugin/lib/` | 零依赖共享核心（`paths.mjs`、`registry.mjs`、`settings.mjs`、`transcript.mjs`），供 Hooks 与 Sidecar 共用 |
+| `plugin/scripts/ct-hook.mjs` | 四事件统一钩子入口（双角色感知、`PreToolUse` 台账写保护、裸/多 ID 与汇报速查、`Stop` 防漏报兜底、弹性换届提醒） |
+| `plugin/sidecars/tower/` | 零依赖可读写 Aux Pane 总控看板（实时监测与受控直派、第 1~5 节全结构化运维、三层隔离设置中心、全路由 Token 鉴权） |
 | `plugin/skills/control-tower/` | 总控核心规程、`model-routing.md` 路由手册与去硬编码 `templates.md` |
 | `scripts/cleanup-legacy-skill.sh` | 安全核查与清理旧散装 `$AGY_CONFIG_DIR/skills/control-tower`（消除双重发现） |
 | `scripts/check-legacy-refs.sh` | 源码仓专用只读工具：审计业务工作区残留旧全局路径引用 |

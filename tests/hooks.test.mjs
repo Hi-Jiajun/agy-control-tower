@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
+import { saveGlobalSettings, savePluginSettings } from '../plugin/lib/settings.mjs';
+import { loadPluginState, savePluginState } from '../plugin/lib/transcript.mjs';
 import { makeConvId, makeSandbox, makeTranscriptPath } from './helpers.mjs';
 
 const HOOK_SCRIPT = join(process.cwd(), 'plugin', 'scripts', 'ct-hook.mjs');
@@ -16,19 +18,53 @@ function callHook(eventName, payload, env) {
   return JSON.parse(out);
 }
 
-test('Hooks stay silent for non-controllers and support single/multi ID intake + deduped anti-aging', () => {
+function makeCompactedLog(count) {
+  const lines = [];
+  for (let i = 0; i < count; i += 1) {
+    lines.push(
+      JSON.stringify({
+        step_index: i * 2 + 1,
+        type: 'PLANNER_RESPONSE',
+        model: 'gemini-pro-orchestrator-neon',
+        input_tokens: 120000,
+        cache_read_tokens: 0,
+      })
+    );
+    lines.push(
+      JSON.stringify({
+        step_index: i * 2 + 2,
+        type: 'PLANNER_RESPONSE',
+        model: 'gemini-pro-orchestrator-neon',
+        input_tokens: 20000,
+        cache_read_tokens: 0,
+      })
+    );
+  }
+  return lines.join('\n') + '\n';
+}
+
+test('Hooks support dual-role SessionStart, PreToolUse registry guard, configurable 5-compaction handover + ignore, and Stop receipt batching', () => {
   const sb = makeSandbox();
   try {
     const ws = join(sb.dir, 'ws');
-    mkdirSync(join(ws, '.agents'), { recursive: true });
+    const regDir = join(ws, '.agents');
+    mkdirSync(regDir, { recursive: true });
     const appDir = join(sb.dir, 'app_data');
     const dataDir = join(sb.dir, 'plugin_data');
+    const cfgDir = join(sb.dir, 'cfg');
+    mkdirSync(cfgDir, { recursive: true });
+    writeFileSync(
+      join(cfgDir, 'config.json'),
+      JSON.stringify({ userSettings: { permissionPreset: 'AGENT_PERMISSION_PRESET_AUTO' } }),
+      'utf8'
+    );
 
     const ctrlId = makeConvId('c', '1', '4', '8', 'a');
     const workerA = makeConvId('a', '2', '4', '8', 'b');
     const workerB = makeConvId('b', '3', '4', '8', 'c');
     const otherId = makeConvId('e', '4', '4', '8', 'f');
 
+    const regPath = join(regDir, 'SESSION-REGISTRY.md');
     const regText = `# 台账
 ## 一、当前独占资源租约
 | 字段 | 当前值 |
@@ -38,8 +74,14 @@ test('Hooks stay silent for non-controllers and support single/multi ID intake +
 
 ## 二、常驻主交流总控会话
 - **当前现役总控会话**：\`${ctrlId}\`（状态：\`ONLINE\`）
+
+## 三、活跃 / 挂起专职会话台账
+| 会话链接与 ID | 任务编号 / 主题 | 模型与工具 | 资源锁状态 | 当前状态 | 工作目录与日志回查路径 |
+| --- | --- | --- | --- | --- | --- |
+| [\`${workerA.slice(0, 8)}\`](conversation://${workerA}) | 任务A | Orchestrator (Neon) | 纯离线无锁 | \`ACTIVE\` | - |
+| [\`${workerB.slice(0, 8)}\`](conversation://${workerB}) | 任务B | Orchestrator (Neon) | 纯离线无锁 | \`ACTIVE\` | - |
 `;
-    writeFileSync(join(ws, '.agents', 'SESSION-REGISTRY.md'), regText, 'utf8');
+    writeFileSync(regPath, regText, 'utf8');
 
     const wLogA = makeTranscriptPath(appDir, workerA);
     writeFileSync(
@@ -55,30 +97,37 @@ test('Hooks stay silent for non-controllers and support single/multi ID intake +
     writeFileSync(
       wLogB,
       [
-        JSON.stringify({ step_index: 0, type: 'USER_INPUT', content: '<USER_REQUEST>\n任务B待接锁\n</USER_REQUEST>' }),
-        JSON.stringify({ step_index: 4, type: 'PLANNER_RESPONSE', model: 'gemini-4-carbon-medium', status: 'DONE' }),
+        JSON.stringify({ step_index: 0, type: 'USER_INPUT', content: '<USER_REQUEST>\n任务B收口\n</USER_REQUEST>' }),
+        JSON.stringify({ step_index: 6, type: 'PLANNER_RESPONSE', model: 'gemini-4-carbon-medium', status: 'DONE' }),
       ].join('\n') + '\n',
       'utf8'
     );
 
     const cLog = makeTranscriptPath(appDir, ctrlId);
+    writeFileSync(cLog, makeCompactedLog(2), 'utf8');
+
+    // Mock agentapi executable to record Stop hook wake calls
+    const mockExe = join(sb.dir, 'mock-agentapi.mjs');
+    const mockLog = join(sb.dir, 'agentapi-calls.jsonl');
     writeFileSync(
-      cLog,
-      [
-        JSON.stringify({ step_index: 1, type: 'PLANNER_RESPONSE', model: 'gemini-4-neon', input_tokens: 120000, cache_read_tokens: 0 }),
-        JSON.stringify({ step_index: 2, type: 'PLANNER_RESPONSE', model: 'gemini-4-neon', input_tokens: 20000, cache_read_tokens: 0 }),
-        JSON.stringify({ step_index: 3, type: 'PLANNER_RESPONSE', model: 'gemini-4-neon', input_tokens: 110000, cache_read_tokens: 0 }),
-        JSON.stringify({ step_index: 4, type: 'PLANNER_RESPONSE', model: 'gemini-4-neon', input_tokens: 18000, cache_read_tokens: 0 }),
-      ].join('\n') + '\n',
+      mockExe,
+      `#!/usr/bin/env node
+import { appendFileSync } from 'node:fs';
+appendFileSync(${JSON.stringify(mockLog)}, JSON.stringify(process.argv.slice(2)) + '\\n', 'utf8');
+process.stdout.write(JSON.stringify({ ok: true }));
+`,
       'utf8'
     );
+    chmodSync(mockExe, 0o755);
 
     const env = {
       AGY_CONTROL_TOWER_DATA_DIR: dataDir,
       ANTIGRAVITY_APP_DATA_DIR: appDir,
+      AGY_CONFIG_DIR: cfgDir,
+      ANTIGRAVITY_AGENTAPI_EXE: mockExe,
     };
 
-    // 1) Non-controller must stay silent and NOT create plugin_data directory
+    // 1) Unenrolled session stays silent and NEVER creates plugin_data
     assert.deepEqual(
       callHook('SessionStart', { conversationId: otherId, workspacePaths: [ws] }, env),
       {}
@@ -98,12 +147,54 @@ test('Hooks stay silent for non-controllers and support single/multi ID intake +
     );
     assert.equal(existsSync(dataDir), false);
 
-    // 2) Active controller SessionStart brief
+    // 2) Enrolled worker gets SessionStart lock & reporting reminder, still no disk write
+    const workerSs = callHook('SessionStart', { conversationId: workerA, workspacePaths: [ws] }, env);
+    const workerSsMsg = workerSs.injectSteps[0].systemMessage.systemMessage;
+    assert.ok(workerSsMsg.includes('[control-tower 专职会话约束]') && workerSsMsg.includes(ctrlId));
+    assert.equal(existsSync(dataDir), false);
+
+    // 3) PreToolUse blocks/asks on non-controller editing registry, allows normal files & controller
+    assert.deepEqual(
+      callHook(
+        'PreToolUse',
+        {
+          conversationId: workerA,
+          workspacePaths: [ws],
+          toolCall: { name: 'edit_file', args: { Path: join(ws, 'src', 'index.js') } },
+        },
+        env
+      ),
+      { decision: 'allow' }
+    );
+    const preAsk = callHook(
+      'PreToolUse',
+      {
+        conversationId: workerA,
+        workspacePaths: [ws],
+        toolCall: { name: 'write_file', args: { Path: regPath } },
+      },
+      env
+    );
+    assert.equal(preAsk.decision, 'ask');
+    assert.deepEqual(
+      callHook(
+        'PreToolUse',
+        {
+          conversationId: ctrlId,
+          workspacePaths: [ws],
+          toolCall: { name: 'write_file', args: { Path: regPath } },
+        },
+        env
+      ),
+      { decision: 'allow' }
+    );
+
+    // 4) Active controller SessionStart brief shows 5-compaction default & balanced autonomy
     const ss = callHook('SessionStart', { conversationId: ctrlId, workspacePaths: [ws] }, env);
     const ssMsg = ss.injectSteps[0].systemMessage.systemMessage;
-    assert.ok(ssMsg.includes('[control-tower 总控就位]') && ssMsg.includes('IDLE'));
+    assert.ok(ssMsg.includes('[control-tower 总控就位]') && ssMsg.includes('5 次压缩') && ssMsg.includes('balanced'));
 
-    // 3) Short-command multi-ID lookup + first compaction alert
+    // 5) With 2 compactions (below default 5), multi-ID lookup triggers WITHOUT handover alert
     const p1 = callHook(
       'PreInvocation',
       {
@@ -116,11 +207,31 @@ test('Hooks stay silent for non-controllers and support single/multi ID intake +
     );
     const msgs1 = p1.injectSteps.map((s) => s.systemMessage.systemMessage);
     assert.ok(msgs1.some((m) => m.includes('[control-tower 裸ID速查]') && m.includes('任务A完成')));
-    assert.ok(msgs1.some((m) => m.includes('[control-tower 裸ID速查]') && m.includes('任务B待接锁')));
-    assert.ok(msgs1.some((m) => m.includes('[control-tower 换届提醒]') && m.includes('2 次')));
+    assert.ok(msgs1.some((m) => m.includes('[control-tower 裸ID速查]') && m.includes('任务B收口')));
+    assert.equal(msgs1.some((m) => m.includes('[control-tower 换届提醒]')), false);
 
-    // 4) Repeated turn with normal text (or non-brain git sha) dedupes handover warning and stays silent
-    const p2 = callHook(
+    // 6) Reaching 5 compactions triggers handover alert; ignoring suppresses further alerts
+    writeFileSync(cLog, makeCompactedLog(5), 'utf8');
+    const pHandover = callHook(
+      'PreInvocation',
+      {
+        conversationId: ctrlId,
+        workspacePaths: [ws],
+        lastUserInput: '继续看下状态',
+        transcriptPath: cLog,
+      },
+      env
+    );
+    assert.ok(
+      pHandover.injectSteps.some((s) => s.systemMessage.systemMessage.includes('[control-tower 换届提醒]') && s.systemMessage.systemMessage.includes('5 次'))
+    );
+
+    // Mark handoverIgnored for ctrlId & verify 6th compaction stays quiet
+    const stAfterHandover = loadPluginState(dataDir);
+    stAfterHandover.controllers[ctrlId].handoverIgnored = true;
+    savePluginState(dataDir, stAfterHandover);
+    writeFileSync(cLog, makeCompactedLog(6), 'utf8');
+    const pIgnored = callHook(
       'PreInvocation',
       {
         conversationId: ctrlId,
@@ -130,7 +241,83 @@ test('Hooks stay silent for non-controllers and support single/multi ID intake +
       },
       env
     );
-    assert.deepEqual(p2, {});
+    assert.deepEqual(pIgnored, {});
+
+    // 7) Decision report triggers co-decision guide; CT_AUTO_RECEIPT skips duplicate lookup
+    const pDecision = callHook(
+      'PreInvocation',
+      {
+        conversationId: ctrlId,
+        workspacePaths: [ws],
+        lastUserInput: `[CT_REPORT:DECISION] ${workerA} 接口拆分为两个文件`,
+        transcriptPath: cLog,
+      },
+      env
+    );
+    assert.ok(
+      pDecision.injectSteps.some((s) => s.systemMessage.systemMessage.includes('[control-tower 代决策指引]'))
+    );
+
+    const pReceipt = callHook(
+      'PreInvocation',
+      {
+        conversationId: ctrlId,
+        workspacePaths: [ws],
+        lastUserInput: `[CT_AUTO_RECEIPT] ${workerA} 与 ${workerB} 收口`,
+        transcriptPath: cLog,
+      },
+      env
+    );
+    const receiptMsgs = pReceipt.injectSteps.map((s) => s.systemMessage.systemMessage);
+    assert.ok(receiptMsgs.some((m) => m.includes('[control-tower 阶段收口指引]')));
+    assert.equal(receiptMsgs.some((m) => m.includes('[control-tower 裸ID速查]')), false);
+
+    // 8) Stop hook stays silent on first worker A (B still active), then batches A+B when B stops
+    callHook(
+      'Stop',
+      {
+        conversationId: workerA,
+        workspacePaths: [ws],
+        terminationReason: 'NO_TOOL_CALL',
+        fullyIdle: true,
+        transcriptPath: wLogA,
+      },
+      env
+    );
+    assert.equal(existsSync(mockLog), false);
+
+    callHook(
+      'Stop',
+      {
+        conversationId: workerB,
+        workspacePaths: [ws],
+        terminationReason: 'NO_TOOL_CALL',
+        fullyIdle: true,
+        transcriptPath: wLogB,
+      },
+      env
+    );
+    assert.equal(existsSync(mockLog), true);
+    const callLines = readFileSync(mockLog, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.equal(callLines.length, 1);
+    assert.equal(callLines[0][1], 'send-message');
+    assert.equal(callLines[0][4], ctrlId);
+    assert.ok(callLines[0][5].includes('[CT_AUTO_RECEIPT]'));
+    assert.ok(callLines[0][5].includes(workerA.slice(0, 8)) && callLines[0][5].includes(workerB.slice(0, 8)));
+
+    // 9) Settings override: PreToolUse deny mode + threshold lowered to 2 on a fresh controller
+    savePluginSettings(dataDir, { registryWriteGuard: 'deny' });
+    saveGlobalSettings(dataDir, { controllerCompactionThreshold: 2 });
+    const preDeny = callHook(
+      'PreToolUse',
+      {
+        conversationId: workerA,
+        workspacePaths: [ws],
+        toolCall: { name: 'edit_file', args: { Path: regPath } },
+      },
+      env
+    );
+    assert.equal(preDeny.decision, 'deny');
   } finally {
     sb.cleanup();
   }

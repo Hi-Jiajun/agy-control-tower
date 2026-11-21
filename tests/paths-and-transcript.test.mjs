@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import {
   findExistingRegistry,
+  MANAGED_REGISTRY_VIRTUAL_REL,
   PathError,
   resolveAppDataDirs,
   resolvePluginDataDir,
@@ -11,6 +12,8 @@ import {
 } from '../plugin/lib/paths.mjs';
 import {
   extractPromptSessionIds,
+  hasOutboundAgentApiReport,
+  inspectNativeSwarm,
   inspectTranscript,
   loadPluginState,
   resolveBrainTranscript,
@@ -168,6 +171,96 @@ test('inspectTranscript reads head/tail on large files, incrementally caches com
     assert.equal(Object.keys(loaded.transcriptCache).length, 200);
     assert.equal('/tmp/p-229' in loaded.transcriptCache, true);
     assert.equal('/tmp/p-0' in loaded.transcriptCache, false);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('Managed plugin_data registry, long-report ID filtering, outbound report detection, and native swarm inspection work', () => {
+  const sb = makeSandbox();
+  try {
+    const ws = join(sb.dir, 'ws');
+    const dataDir = join(sb.dir, 'pdata');
+    const appDir = join(sb.dir, 'app');
+    mkdirSync(ws, { recursive: true });
+
+    // Managed registry target
+    const managedTarget = resolveRegistryTarget(ws, MANAGED_REGISTRY_VIRTUAL_REL, {
+      allowMissing: true,
+      dataDir,
+    });
+    mkdirSync(join(managedTarget, '..'), { recursive: true });
+    writeFileSync(managedTarget, '# 台账\n', 'utf8');
+    const foundManaged = findExistingRegistry(ws, {
+      dataDir,
+      workspaceSettings: { registryMode: 'plugin_data' },
+    });
+    assert.equal(foundManaged?.isManaged, true);
+    assert.equal(foundManaged?.relPath, MANAGED_REGISTRY_VIRTUAL_REL);
+
+    // Custom relative path traversal rejection
+    assert.throws(
+      () => resolveRegistryTarget(ws, '../escape.md', { allowMissing: true, allowCustomRel: true }),
+      PathError
+    );
+    assert.throws(
+      () => resolveRegistryTarget(ws, 'notes/not-md.txt', { allowMissing: true, allowCustomRel: true }),
+      PathError
+    );
+
+    // Long prompt filtering skips incidental 8-char commit sha while keeping full UUID and knownIds
+    const idFull = makeConvId('a', '7', '4', '9', 'c');
+    const idKnown = makeConvId('b', '8', '4', '1', 'd');
+    const padding = '长汇报正文'.repeat(120);
+    const longPrompt = `${padding} commit deadbeef 已提交，会话 ${idFull} 与已知前缀 ${idKnown.slice(0, 8)} 完成核查`;
+    const rLong = extractPromptSessionIds(longPrompt, { knownIds: [idKnown] });
+    assert.deepEqual(rLong.ids, [idFull, idKnown.slice(0, 8)]);
+
+    // Outbound agentapi report detection + native swarm inspection
+    const ctrlId = makeConvId('c', '1', '4', '8', 'a');
+    const workerId = makeConvId('d', '2', '4', '8', 'b');
+    const wLog = makeTranscriptPath(appDir, workerId);
+    writeFileSync(
+      wLog,
+      [
+        JSON.stringify({ step_index: 0, type: 'USER_INPUT', content: '<USER_REQUEST>\nSwarm子任务\n</USER_REQUEST>' }),
+        JSON.stringify({
+          step_index: 1,
+          type: 'PLANNER_RESPONSE',
+          model: 'gemini-4-neon-high',
+          status: 'DONE',
+          tool_calls: [{ name: 'run_command', args: { CommandLine: `agentapi send-message ${ctrlId} "[CT_REPORT:DONE] ok"` } }],
+        }),
+      ].join('\n') + '\n',
+      'utf8'
+    );
+    assert.equal(hasOutboundAgentApiReport(wLog, ctrlId), true);
+    assert.equal(hasOutboundAgentApiReport(wLog, makeConvId('9', '9', '9', '9', '9')), false);
+
+    const swarmDir = join(appDir, 'brain', ctrlId, '.system_generated', 'swarm');
+    mkdirSync(swarmDir, { recursive: true });
+    writeFileSync(
+      join(swarmDir, 'members.json'),
+      JSON.stringify({
+        title: '重构集群',
+        members: {
+          parser: { conversation_id: workerId, model: 'gemini-4-neon-high', role: 'worker' },
+          narrator: { conversation_id: '', role: 'narrator', killed: false },
+        },
+      }),
+      'utf8'
+    );
+    writeFileSync(
+      join(swarmDir, 'board.jsonl'),
+      `${JSON.stringify({ seq: 1, agent: 'coordinator', text: '@parser 开始', time: '2026-11-22T00:00:00Z' })}\n`,
+      'utf8'
+    );
+    const swarmInfo = inspectNativeSwarm(ctrlId, { env: { ANTIGRAVITY_APP_DATA_DIR: appDir } });
+    assert.equal(swarmInfo.active, true);
+    assert.equal(swarmInfo.title, '重构集群');
+    assert.equal(swarmInfo.members.length, 2);
+    assert.equal(swarmInfo.members[0].steps, 1);
+    assert.equal(swarmInfo.recentPosts.length, 1);
   } finally {
     sb.cleanup();
   }
