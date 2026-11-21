@@ -41,8 +41,22 @@ test('resolveAppDataDirs & resolvePluginDataDir prioritize overrides and multi-h
     const pData = resolvePluginDataDir({ env: { HOME: fakeHome } });
     assert.equal(pData, join(fakeHome, '.gemini', 'antigravity-ide', 'plugin_data', 'control-tower'));
 
+    const pDataOtherPlugin = resolvePluginDataDir({
+      env: { HOME: fakeHome, PLUGIN_DATA: join(sb.dir, 'plugin_data', 'other-plugin') },
+    });
+    assert.equal(pDataOtherPlugin, join(fakeHome, '.gemini', 'antigravity-ide', 'plugin_data', 'control-tower'));
+
+    const pDataOwned = resolvePluginDataDir({
+      env: { HOME: fakeHome, PLUGIN_DATA: join(sb.dir, 'plugin_data', 'control-tower') },
+    });
+    assert.equal(pDataOwned, join(sb.dir, 'plugin_data', 'control-tower'));
+
     const pDataExplicit = resolvePluginDataDir({
-      env: { HOME: fakeHome, AGY_CONTROL_TOWER_DATA_DIR: join(sb.dir, 'custom-data') },
+      env: {
+        HOME: fakeHome,
+        PLUGIN_DATA: join(sb.dir, 'plugin_data', 'other-plugin'),
+        AGY_CONTROL_TOWER_DATA_DIR: join(sb.dir, 'custom-data'),
+      },
     });
     assert.equal(pDataExplicit, join(sb.dir, 'custom-data'));
   } finally {

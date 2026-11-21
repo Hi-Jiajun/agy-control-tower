@@ -5,6 +5,12 @@ All notable changes to `control-tower` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-11-22
+
+### Fixed
+- 加固 `plugin/lib/paths.mjs` 的 `resolvePluginDataDir()`：仅在 `PLUGIN_DATA` 环境变量尾段目录名为 `control-tower` 时采信，防止跨插件共享终端环境中 `PLUGIN_DATA` 指向其他插件目录导致的串目录风险（显式 `AGY_CONTROL_TOWER_DATA_DIR` 保持最高优先）。
+- 在 `plugin/scripts/ct-hook.mjs` 的现役总控 `SessionStart` 注入中新增标准台账结构合规自检提示（如第 1 节未匹配标准独占资源租约表头或第 3 节存在无有效会话 ID 占位行时发出温和对齐提醒，不破坏标准解析契约）。
+
 ## [1.2.0] - 2026-11-22
 
 ### Added

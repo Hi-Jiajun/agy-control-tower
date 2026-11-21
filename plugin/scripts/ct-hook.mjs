@@ -176,12 +176,23 @@ function handleSessionStart(regFound, parsedReg, resolved, convId) {
       );
     }
     const overrideSuffix = overrideNotes.length > 0 ? ` | ${overrideNotes.join(' | ')}` : '';
+    const schemaIssues = [];
+    if (resolved.effective.exclusiveLeaseEnabled !== false && !((parsedReg.lease || {}).lockStatus || '').trim()) {
+      schemaIssues.push('第 1 节未匹配标准独占资源租约结构');
+    }
+    if ((parsedReg.activeSessions || []).some((s) => !s.conversationId)) {
+      schemaIssues.push('第 3 节存在无有效会话 ID 的占位行');
+    }
+    const schemaHint =
+      schemaIssues.length > 0
+        ? ` | 台账格式提示: ${schemaIssues.join('；')}，建议按 control-tower 标准模板对齐`
+        : '';
     const msg =
       `[control-tower 总控就位] 已核验当前会话为工作区现役总控。` +
       `台账: ${regTag} | ${lockText} | 活跃专职会话: ${activeCount} 个 | ` +
       `代决策档位: ${resolved.effective.effectiveAutonomy} (${resolved.effective.autonomySource}) | ` +
       `换届阈值: ${resolved.effective.controllerCompactionThreshold} 次压缩` +
-      `${overrideSuffix}。`;
+      `${overrideSuffix}${schemaHint}。`;
     process.stdout.write(
       `${JSON.stringify({ injectSteps: [{ systemMessage: { systemMessage: msg } }] })}\n`
     );

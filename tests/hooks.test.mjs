@@ -189,10 +189,11 @@ process.stdout.write(JSON.stringify({ ok: true }));
       { decision: 'allow' }
     );
 
-    // 4) Active controller SessionStart brief shows 5-compaction default & balanced autonomy
+    // 4) Active controller SessionStart brief shows 5-compaction default & balanced autonomy (without schema warning)
     const ss = callHook('SessionStart', { conversationId: ctrlId, workspacePaths: [ws] }, env);
     const ssMsg = ss.injectSteps[0].systemMessage.systemMessage;
     assert.ok(ssMsg.includes('[control-tower 总控就位]') && ssMsg.includes('5 次压缩') && ssMsg.includes('balanced'));
+    assert.equal(ssMsg.includes('台账格式提示'), false);
 
     // 5) With 2 compactions (below default 5), multi-ID lookup triggers WITHOUT handover alert
     const p1 = callHook(
@@ -318,6 +319,46 @@ process.stdout.write(JSON.stringify({ ok: true }));
       env
     );
     assert.equal(preDeny.decision, 'deny');
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('SessionStart emits gentle schema alignment hint when registry deviates from standard template', () => {
+  const sb = makeSandbox();
+  try {
+    const ws = join(sb.dir, 'ws-nonstd');
+    mkdirSync(join(ws, '.agents'), { recursive: true });
+    const appDir = join(sb.dir, 'app_data');
+    const dataDir = join(sb.dir, 'plugin_data');
+    const ctrlId = makeConvId('d', '1', '4', '8', 'a');
+
+    const nonStdReg = `# 台账
+## 一、当前真机租约
+| 字段 | 当前值 |
+| --- | --- |
+| **锁状态** | \`IDLE\` |
+
+## 二、常驻主交流总控会话
+- **当前现役总控会话**：\`${ctrlId}\`（状态：\`ONLINE\`）
+
+## 三、活跃 / 挂起专职会话台账
+| 会话链接与 ID | 任务编号 / 主题 | 模型与工具 | 资源锁状态 | 当前状态 | 工作目录与日志回查路径 |
+| --- | --- | --- | --- | --- | --- |
+| 暂无活跃 | - | - | - | \`IDLE\` | - |
+`;
+    writeFileSync(join(ws, '.agents', 'SESSION-REGISTRY.md'), nonStdReg, 'utf8');
+
+    const ss = callHook(
+      'SessionStart',
+      { conversationId: ctrlId, workspacePaths: [ws] },
+      { AGY_CONTROL_TOWER_DATA_DIR: dataDir, ANTIGRAVITY_APP_DATA_DIR: appDir }
+    );
+    const msg = ss.injectSteps[0].systemMessage.systemMessage;
+    assert.ok(msg.includes('台账格式提示'));
+    assert.ok(msg.includes('第 1 节未匹配标准独占资源租约结构'));
+    assert.ok(msg.includes('第 3 节存在无有效会话 ID 的占位行'));
+    assert.equal(existsSync(dataDir), false);
   } finally {
     sb.cleanup();
   }

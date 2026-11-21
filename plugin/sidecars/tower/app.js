@@ -542,7 +542,7 @@
 
   function render(snap) {
     state.snap = snap;
-    $('version-badge').textContent = `v${snap.plugin?.version || '1.2.0'}`;
+    $('version-badge').textContent = `v${snap.plugin?.version || '1.2.1'}`;
     applyMotionSetting(snap);
     renderWorkspaces(snap);
     renderAttentionBanner(snap);

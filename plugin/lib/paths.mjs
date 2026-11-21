@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const REGISTRY_CANDIDATES = [
@@ -141,7 +141,10 @@ export function resolvePluginDataDir({ env = process.env, hintPath = '' } = {}) 
     return resolve(env.AGY_CONTROL_TOWER_DATA_DIR.trim());
   }
   if (env.PLUGIN_DATA && env.PLUGIN_DATA.trim()) {
-    return resolve(env.PLUGIN_DATA.trim());
+    const candidate = resolve(env.PLUGIN_DATA.trim());
+    if (basename(candidate) === 'control-tower') {
+      return candidate;
+    }
   }
   const appDirs = resolveAppDataDirs({ env, hintPath });
   return join(appDirs[0], 'plugin_data', 'control-tower');
