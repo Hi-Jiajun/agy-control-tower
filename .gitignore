@@ -1,0 +1,9 @@
+# Local agent workspace state (never commit)
+.agents/
+
+# Python bytecode & local artifacts
+__pycache__/
+*.pyc
+backup-*/
+tmp/
+.DS_Store
