@@ -1,0 +1,12 @@
+{
+  "name": "control-tower",
+  "displayName": "Control Tower",
+  "version": "1.0.0",
+  "description": "Universal Chief-of-Staff Control Tower plugin for Antigravity: role-based coordinator skill, interactive Aux Pane board for SESSION-REGISTRY.md and exclusive resource leases, and controller-scoped bare-ID and anti-aging hooks.",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "启用 control-tower 总控规程，对当前工作区执行纯只读冷启动盘点并初始化或核对 SESSION-REGISTRY.md。",
+    "按 control-tower 规范为新需求做新建/续接裁决、独占资源锁检查与纯 Gemini 4 + Orchestrator 6 要素派单。",
+    "按 control-tower 换届规程同步最新会话台账，并生成 25 行以内的总控换届交接卡。"
+  ]
+}

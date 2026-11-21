@@ -1,0 +1,21 @@
+{
+  "command": "node",
+  "args": ["main.mjs"],
+  "restart_policy": "always",
+  "display_name": "Control Tower",
+  "description": "通用常驻主交流总控看板：工作区 SESSION-REGISTRY.md 可视化读写、独占资源锁控制、活跃会话尾步与老化监测、模板一键复制。",
+  "has_web_ui": true,
+  "agent_permissions": {
+    "allows_user_interactions": false
+  },
+  "ui_config": {
+    "display_name": "Control Tower",
+    "views": [
+      {
+        "path": "/",
+        "entrypoint": "SIDECAR_UI_ENTRYPOINT_AUX_PANE",
+        "title": "Control Tower"
+      }
+    ]
+  }
+}

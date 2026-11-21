@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Control Tower 总控看板</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="/preload.js"></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand-row">
+        <div class="brand-title">
+          <span class="brand-dot"></span>
+          <strong>Control Tower</strong>
+          <span id="version-badge" class="badge">v1.0.0</span>
+        </div>
+        <button id="refresh-btn" class="btn btn-ghost btn-sm" title="刷新台账与会话态">刷新</button>
+      </div>
+      <div class="ws-row">
+        <select id="ws-select" class="select" aria-label="选择工作区">
+          <option value="">等待工作区绑定...</option>
+        </select>
+        <span id="reg-rel-badge" class="badge badge-muted hidden"></span>
+      </div>
+    </header>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="overview">总览与锁</button>
+      <button class="tab" data-tab="sessions">会话探针</button>
+      <button class="tab" data-tab="queue">任务队列</button>
+      <button class="tab" data-tab="raw">台账与模板</button>
+    </nav>
+
+    <main id="main-content" class="main">
+      <section id="empty-state" class="card hidden">
+        <h3>当前工作区尚未建立控制塔台账</h3>
+        <p class="muted" id="empty-ws-path"></p>
+        <div class="form-row">
+          <label for="init-relpath">选择初始化路径</label>
+          <select id="init-relpath" class="select">
+            <option value=".agents/SESSION-REGISTRY.md">.agents/SESSION-REGISTRY.md（推荐）</option>
+            <option value="research/SESSION-REGISTRY.md">research/SESSION-REGISTRY.md</option>
+            <option value="SESSION-REGISTRY.md">SESSION-REGISTRY.md</option>
+          </select>
+        </div>
+        <div class="actions">
+          <button id="init-registry-btn" class="btn btn-primary">一键初始化 SESSION-REGISTRY.md</button>
+          <button id="copy-bootstrap-empty-btn" class="btn btn-ghost">复制冷启动引导词</button>
+        </div>
+      </section>
+
+      <section id="tab-overview" class="tab-panel">
+        <div class="card">
+          <div class="card-head">
+            <h3>独占资源租约（全局单锁）</h3>
+            <span id="lease-status-pill" class="badge">-</span>
+          </div>
+          <div id="lease-view" class="kv-grid"></div>
+          <div class="actions">
+            <button id="edit-lease-btn" class="btn btn-ghost btn-sm">编辑租约</button>
+            <button id="release-lease-btn" class="btn btn-warn btn-sm">一键释放为 IDLE</button>
+          </div>
+          <form id="lease-form" class="subform hidden">
+            <label>锁状态 <input id="lf-lockStatus" class="input" required /></label>
+            <label>持锁会话 <input id="lf-holder" class="input" /></label>
+            <label>独占对象与任务 <input id="lf-resource" class="input" /></label>
+            <label>租约起始时间 <input id="lf-since" class="input" /></label>
+            <label>允许操作范围与保护现场 <input id="lf-scope" class="input" /></label>
+            <label>交还解锁判据 <input id="lf-releaseCriteria" class="input" /></label>
+            <div class="actions">
+              <button type="submit" class="btn btn-primary btn-sm">保存租约</button>
+              <button type="button" id="cancel-lease-btn" class="btn btn-ghost btn-sm">取消</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>现役主交流总控健康态</h3>
+            <span id="ctrl-comp-badge" class="badge">压缩 0 次</span>
+          </div>
+          <div id="ctrl-view" class="kv-grid"></div>
+          <div id="ctrl-alert" class="alert hidden">
+            当前总控会话已发生 >= 2 次上下文自动压缩，建议同步台账并生成换届交接卡。
+          </div>
+          <div class="actions">
+            <button id="jump-ctrl-btn" class="btn btn-ghost btn-sm">跳转总控会话</button>
+            <button id="copy-ctrl-id-btn" class="btn btn-ghost btn-sm">复制总控 ID</button>
+            <button id="copy-handover-btn" class="btn btn-primary btn-sm">复制预填换届交接卡</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-sessions" class="tab-panel hidden">
+        <div class="card">
+          <div class="card-head">
+            <h3>裸 ID 尾步探针</h3>
+          </div>
+          <div class="inline-row">
+            <input id="probe-id-input" class="input" placeholder="输入完整 conversationId 或至少 8 位前缀" />
+            <button id="probe-btn" class="btn btn-primary btn-sm">探查</button>
+          </div>
+          <div id="probe-result" class="probe-box hidden"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>活跃 / 挂起专职会话</h3>
+            <span id="active-count-badge" class="badge">0</span>
+          </div>
+          <div id="active-sessions-list" class="list-stack"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>近期已归档里程碑</h3>
+            <span id="archived-count-badge" class="badge badge-muted">0</span>
+          </div>
+          <div id="archived-sessions-list" class="list-stack"></div>
+        </div>
+      </section>
+
+      <section id="tab-queue" class="tab-panel hidden">
+        <div class="card">
+          <div class="card-head">
+            <h3>待调度任务队列</h3>
+            <span id="queue-count-badge" class="badge">0</span>
+          </div>
+          <div id="queue-list" class="list-stack"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3 id="queue-form-title">新增 / 更新调度任务</h3>
+          </div>
+          <form id="queue-form" class="subform">
+            <input type="hidden" id="qf-originalId" />
+            <label>任务编号 <input id="qf-id" class="input" placeholder="例如 T1" required /></label>
+            <label>模块 / 问题简述 <input id="qf-summary" class="input" placeholder="一句话明确唯一目标" required /></label>
+            <label>调度状态
+              <select id="qf-status" class="select">
+                <option value="QUEUED">QUEUED</option>
+                <option value="RUNNING">RUNNING</option>
+                <option value="BLOCKED">BLOCKED</option>
+                <option value="DONE">DONE</option>
+              </select>
+            </label>
+            <label>建议路线与模型 <input id="qf-route" class="input" value="L2 Orchestrator (Neon)" /></label>
+            <div class="actions">
+              <button type="submit" class="btn btn-primary btn-sm">保存任务行</button>
+              <button type="button" id="qf-reset-btn" class="btn btn-ghost btn-sm">清空</button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <section id="tab-raw" class="tab-panel hidden">
+        <div class="card">
+          <div class="card-head">
+            <h3>SESSION-REGISTRY.md 在线编辑</h3>
+            <span id="raw-hash-badge" class="badge badge-muted">-</span>
+          </div>
+          <div id="conflict-banner" class="alert hidden">
+            <span>检测到外部会话已更新台账，保存已中止以防覆盖。</span>
+            <button id="reload-latest-btn" class="btn btn-warn btn-sm">重载最新内容</button>
+          </div>
+          <textarea id="raw-editor" class="editor" spellcheck="false"></textarea>
+          <div class="actions">
+            <button id="save-raw-btn" class="btn btn-primary btn-sm">保存台账</button>
+            <button id="reset-raw-btn" class="btn btn-ghost btn-sm">放弃未保存修改</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>标准调度提示词一键复制</h3>
+          </div>
+          <div class="actions-grid">
+            <button class="btn btn-ghost btn-sm copy-tpl" data-tpl="bootstrapPrompt">复制冷启动引导词</button>
+            <button class="btn btn-ghost btn-sm" id="copy-handover-raw-btn">复制预填换届交接卡</button>
+            <button class="btn btn-ghost btn-sm copy-tpl" data-tpl="dispatchOfflineTemplate">复制模板 A（离线派单）</button>
+            <button class="btn btn-ghost btn-sm copy-tpl" data-tpl="dispatchGrantTemplate">复制模板 B（原会话授锁）</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

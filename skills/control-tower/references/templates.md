@@ -77,10 +77,10 @@
 从现在起，你作为当前工作区的「常驻主交流总控（Chief-of-Staff）」，与我保持长期单一主线沟通，并启用全局 control-tower 技能规范。
 
 【请先完成首轮纯只读冷启动与就位】：
-1. 通读全局总控技能及随附参考：
-   - ~/.gemini/config/skills/control-tower/SKILL.md
-   - ~/.gemini/config/skills/control-tower/references/model-routing.md
-   - ~/.gemini/config/skills/control-tower/references/templates.md
+1. 启用全局 control-tower 原生插件技能并通读核心规程与随附参考（默认路径锚点如下）：
+   - ~/.gemini/config/plugins/control-tower/skills/control-tower/SKILL.md
+   - ~/.gemini/config/plugins/control-tower/skills/control-tower/references/model-routing.md
+   - ~/.gemini/config/plugins/control-tower/skills/control-tower/references/templates.md
 2. 盘点当前工作区基线规则与已有文档（检查根目录 AGENTS.md / GEMINI.md / .agents/skills/ / README / 已有状态总账），确认两件事：
    a) 是否已有项目级控制塔规范或特殊红线（若有，以项目级规定为最高优先）；
    b) 本项目是否存在需要独占单锁管理的物理/测试/发布资源。
@@ -110,7 +110,7 @@
 - 近期用户约定与偏好：<如有则列，没有填 无>
 
 【首轮就位动作（轻量纯只读）】：
-1. 读取上述事实源与 ~/.gemini/config/skills/control-tower/SKILL.md。
+1. 启用全局 control-tower 原生插件技能并读取上述事实源（默认规程锚点：~/.gemini/config/plugins/control-tower/skills/control-tower/SKILL.md）。
 2. 在 SESSION-REGISTRY.md 更新现役总控槽位为本会话 conversationId 并追加换届历史。
 3. 严禁触碰独占资源，回复 5 行以内就位确认后等我发话。
 ```
