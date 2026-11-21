@@ -3,6 +3,9 @@
   "displayName": "Control Tower",
   "version": "1.2.0",
   "description": "Universal Chief-of-Staff Control Tower plugin for Antigravity: adaptive dispatch (native swarm / agentapi spawn), two-way co-decision, 4-event scoped hooks, and Aux Pane board with 3-tier isolated settings.",
+  "author": "Hi-Jiajun",
+  "homepage": "https://github.com/Hi-Jiajun/agy-control-tower",
+  "repository": "https://github.com/Hi-Jiajun/agy-control-tower",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [
     "启用 control-tower 总控规程，对当前工作区执行纯只读冷启动盘点并初始化或核对 SESSION-REGISTRY.md。",
