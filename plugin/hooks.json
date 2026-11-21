@@ -3,7 +3,7 @@
     "SessionStart": [
       {
         "type": "command",
-        "command": "python3 ./scripts/hook-session-start.py",
+        "command": "node ./scripts/ct-hook.mjs SessionStart",
         "timeout": 5
       }
     ]
@@ -12,7 +12,7 @@
     "PreInvocation": [
       {
         "type": "command",
-        "command": "python3 ./scripts/hook-pre-invocation.py",
+        "command": "node ./scripts/ct-hook.mjs PreInvocation",
         "timeout": 5
       }
     ]

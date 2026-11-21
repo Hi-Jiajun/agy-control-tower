@@ -1,98 +1,82 @@
 # control-tower
 
-面向 **Google Antigravity** 的通用常驻主交流总控（Chief-of-Staff）原生插件，用于在任意工作区建立轻量、常驻、不直接下场写重代码的调度主线，统一负责需求拆分、新建与续接会话裁决、独占资源单锁调度、纯 Gemini 4 与 Orchestrator 分层模型路由、裸 ID 秒登入账与总控换届。
+面向 **Google Antigravity** 的通用常驻主交流总控（Chief-of-Staff）原生插件，用于在任意工作区建立轻量、常驻、不亲自下场写重代码的调度主线，统一负责需求拆分、新建与续接会话裁决、独占资源单锁调度、纯 Gemini 4 与 Orchestrator 分层模型路由、裸 ID 秒登入账与总控换届。
 
-## 插件核心能力与组件边界
+## 插件核心能力与架构边界
 
-- **总控规程技能（`skills/control-tower/`）**：按需渐进式披露，包含核心调度规程、纯 Gemini 4 + Orchestrator 路由手册与 5 套即用模板。
-- **可读写 Aux Pane 总控看板（`sidecars/tower/`）**：零第三方依赖的 Node.js Sidecar，自动跟随当前打开的工作区（并支持切换近期工作区），提供 `SESSION-REGISTRY.md` 可视化读写、独占资源锁一键释放、现役总控与活跃会话尾步/压缩老化实时探查、任务队列增删改及标准模板一键复制；写操作支持 `x-sidecar-token` 鉴权、路径白名单防穿越、SHA256 乐观并发锁与原子落盘。
-- **总控定向轻量感知 Hooks（`hooks.json` + `scripts/hook-*.py`）**：仅当当前会话是工作区 `SESSION-REGISTRY.md` 登记的现役总控时激活，普通专职会话静音直通；支持单行裸 ID / 8+ 位前缀自动速查头尾步摘要，以及现役总控发生 `>= 2` 次上下文压缩时的防刷屏换届提醒。
-- **刻意零全局污染**：不包含 `rules/AGENTS.md`（不向普通专职会话注入 always-on 规则），不向 `~/.local/bin/` 安装终端命令，独立运行状态默认存于 `~/.local/share/agy-control-tower/`（支持 `AGY_CONTROL_TOWER_DATA_DIR` 覆盖）。
+- **标准 `./plugin/` 纯净包布局**：运行态全部资产收拢在 [plugin/](plugin/) 子目录，仓储研发文档与测试放在仓根，直接通过 `agy plugin validate --strict ./plugin` 零警告校验，并支持原生 `agy plugin install ./plugin` 安装与卸载。
+- **纯零依赖 Node.js ESM 单栈**：`plugin/lib/`（`paths.mjs`、`registry.mjs`、`transcript.mjs`）同时驱动 Hooks 与 Sidecar，彻底消除双语言重复解析；`transcript.jsonl` 采用头 `32KB` + 尾 `64KB` 分片及字节偏移增量扫描缓存。
+- **可读写 Aux Pane 总控看板（`plugin/sidecars/tower/`）**：自动跟随工作区并支持切换近期工作区；提供 `SESSION-REGISTRY.md` 第 1~5 节全结构化操作（独占租约锁、现役总控登记与换届历史、裸 ID 探针一键入账、活跃会话归档至里程碑、待调度队列增删、Markdown 在线编辑），支持一键向现役总控投递裸 ID（禁用默认 `flash` 快捷新建会话），且全部 `/api/*` 与 `/_sidecar/*` 路由强制校验 `x-sidecar-token`、路径白名单与 SHA256 乐观并发锁。
+- **总控定向轻量感知 Hooks（`plugin/hooks.json` + `plugin/scripts/ct-hook.mjs`）**：仅在当前会话是工作区 `SESSION-REGISTRY.md` 登记的现役总控时激活，普通专职会话静音直通且不建任何目录；支持单裸 ID 与短口令内多会话 ID 尾步速查，以及现役总控 `>= 2` 次上下文压缩防刷屏换届提醒。
+- **官方数据目录隔离**：刻意不包含 `rules/AGENTS.md`（不向普通专职会话注入 always-on 规则）；运行状态统一存于官方 `<appData>/plugin_data/control-tower/`（支持 `AGY_CONTROL_TOWER_DATA_DIR` / `PLUGIN_DATA` 覆盖）。
 
 ## 目录结构
 
 ```text
 control-tower/
-├── AGENTS.md                        # 本仓库独立工作区开发协作规则（不拷入运行态插件）
+├── AGENTS.md                        # 仓根独立工作区开发协作规则（不打入 ./plugin/ 运行包）
+├── CHANGELOG.md                     # 版本变更记录（Keep a Changelog）
 ├── LICENSE                          # MIT 许可证
-├── README.md                        # 说明与安装验收指南
-├── plugin.json                      # Antigravity 原生插件清单
-├── hooks.json                       # 生命周期钩子配置
-├── install.sh                       # 原生插件/兼容模式互斥安装脚本
-├── uninstall.sh                     # 身份校验安全卸载脚本
-├── assets/
-│   └── logo.svg                     # 128x128 矢量图标
+├── README.md                        # 本仓库说明与官方安装/研发规范指南
+├── package.json                     # 仓根私有工程清单（npm test / selftest / validate / setup-hooks）
+├── plugin/                          # Antigravity 官方标准原生插件纯净包
+│   ├── plugin.json                  # 唯一版本真源（SemVer）
+│   ├── hooks.json                   # SessionStart + PreInvocation -> node ./scripts/ct-hook.mjs
+│   ├── README.md
+│   ├── LICENSE
+│   ├── assets/logo.svg
+│   ├── lib/{paths,registry,transcript}.mjs
+│   ├── scripts/ct-hook.mjs
+│   ├── sidecars/tower/
+│   └── skills/control-tower/
 ├── scripts/
-│   ├── ctlib.py                     # 台账与 transcript.jsonl 共享解析库
-│   ├── hook-session-start.py        # SessionStart 现役总控简报钩子
-│   ├── hook-pre-invocation.py       # PreInvocation 裸 ID 速查与换届提醒钩子
 │   ├── check-legacy-refs.sh         # 只读审计工作区残留旧全局路径脚本
-│   └── selftest.sh                  # 隔离临时目录 12 项全自动自检套件
-├── sidecars/
-│   └── tower/                       # Aux Pane 总控看板 Sidecar（零外部依赖）
-│       ├── package.json
-│       ├── sidecar.json
-│       ├── main.mjs
-│       ├── index.html
-│       ├── styles.css
-│       └── app.js
-└── skills/
-    └── control-tower/
-        ├── SKILL.md                 # 全局总控核心规程
-        └── references/
-            ├── model-routing.md     # 纯 Gemini 4 + Orchestrator 路由与思考档位规范
-            └── templates.md         # 通用 SESSION-REGISTRY 骨架、派单卡与换届模板
+│   ├── cleanup-legacy-skill.sh      # 安全清理旧散装 ~/.gemini/config/skills/control-tower
+│   ├── git-hooks/pre-commit         # 提交前自动脱敏、版本一致性与严格校验门禁
+│   └── selftest.sh                  # 兼容自检入口
+└── tests/                           # 零外部依赖 node:test 分层单测与沙箱 E2E 套件
 ```
 
-## 安装、版本校验、兼容迁移与卸载
+## 官方安装、升级、旧版清理与卸载
 
-默认安装原生插件至 `~/.gemini/config/plugins/control-tower/`（可通过环境变量 `AGY_CONFIG_DIR` 覆盖目标配置根目录）：
+本插件严格遵循 Antigravity 官方 `agy plugin` 工具链安装与管理。
 
 ```bash
-# 1. 仅预览安装计划与冲突清理动作（不创建或写入任何文件）
-./install.sh --dry-run
+# 1. 官方严格模式校验纯净插件包
+agy plugin validate --strict ./plugin
 
-# 2. 只读查看当前已安装插件与旧全局 Skill 状态
-./install.sh --status
+# 2. 若本机曾安装旧版散装全局 Skill（~/.gemini/config/skills/control-tower），先只读核查并安全清理防双重发现
+bash scripts/cleanup-legacy-skill.sh --status
+bash scripts/cleanup-legacy-skill.sh --dry-run
+bash scripts/cleanup-legacy-skill.sh
 
-# 3. 隔离目录测试安装（安全验证用，不触碰真实配置）
-AGY_CONFIG_DIR=/tmp/agy-test-config ./install.sh
+# 3. 使用官方 CLI 安装或更新插件（需在符合工作区发布门禁许可后执行）
+agy plugin install ./plugin
 
-# 4. 实装或平滑升级至默认配置目录（需先获得发布门禁许可）
-#    若检测到托管中的旧 ~/.gemini/config/skills/control-tower，将在同步插件后自动原子移除，杜绝同名 Skill 双重发现
-./install.sh
+# 4. 核验安装状态
+agy plugin list --json
 
-# 5. 极端场景回退至旧散装全局 Skill 形态（保持单份互斥，自动移除插件目录）
-./install.sh --mode legacy-skill
-
-# 6. 安全卸载（默认仅卸载插件目录，保留数据目录与各工作区台账；--include-legacy 可一并移除旧 Skill）
-./uninstall.sh --dry-run
-./uninstall.sh
+# 5. 卸载插件
+agy plugin uninstall control-tower
 ```
 
 ### 旧路径引用迁移审计
 
-插件化后新路径锚点为 `~/.gemini/config/plugins/control-tower/skills/control-tower/`。可使用只读审计工具盘点任意业务工作区中尚未更新的旧 `skills/control-tower` 引用（自动排除已更新的新路径）：
+若历史工作区文档仍显式引用旧全局 Skill 路径 `skills/control-tower`，可使用只读审计工具扫描：
 
 ```bash
 bash scripts/check-legacy-refs.sh /path/to/workspace-a /path/to/workspace-b
 ```
 
-## 沙箱自检与官方插件校验
-
-改动源码后请在发布前先运行全隔离自检套件（全程写入临时沙箱并在退出时自动清理，不触碰真实 `~/.gemini/config/` 与 `~/.local/share/`）：
+## 规范化研发与质量门禁
 
 ```bash
+# 启用本地提交前脱敏、零间隔号、版本一致性与 agy strict 校验门禁
+npm run setup-hooks
+
+# 运行模块化 node:test 全部测试（全沙箱隔离，零污染本机真实配置）
+npm test
+
+# 或运行兼容自检入口
 bash scripts/selftest.sh
 ```
-
-若本机已安装 Antigravity CLI（`agy`），自检套件会自动对沙箱安装态执行严格模式校验；也可手动对隔离安装目标执行：
-
-```bash
-agy plugin validate --strict --json /tmp/agy-test-config/plugins/control-tower
-```
-
-## 演进路线（Roadmap）
-
-- **T1（已完成源码落地，待发布门禁实装）**：完成 Antigravity 原生插件化（`plugin.json`、`hooks.json`、总控定向 Hooks、可读写 Aux Pane 看板、身份归属与版本互斥安装/卸载、只读旧引用审计与 12 项沙箱自检）。
-- **后续演进**：获准发布门禁后完成本机实装与业务工作区旧路径引用的批量收口，并视需要扩展只读多工作区聚合视图或公开远端发布。

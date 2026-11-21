@@ -1,0 +1,13 @@
+{
+  "name": "control-tower-workspace",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Development workspace for the control-tower Antigravity plugin",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "selftest": "bash scripts/selftest.sh",
+    "validate": "agy plugin validate --strict ./plugin",
+    "setup-hooks": "git config core.hooksPath scripts/git-hooks && chmod +x scripts/git-hooks/pre-commit"
+  }
+}

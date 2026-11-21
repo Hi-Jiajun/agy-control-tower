@@ -14,7 +14,7 @@
         <div class="brand-title">
           <span class="brand-dot"></span>
           <strong>Control Tower</strong>
-          <span id="version-badge" class="badge">v1.0.0</span>
+          <span id="version-badge" class="badge">v1.1.0</span>
         </div>
         <button id="refresh-btn" class="btn btn-ghost btn-sm" title="刷新台账与会话态">刷新</button>
       </div>
@@ -88,8 +88,26 @@
           <div class="actions">
             <button id="jump-ctrl-btn" class="btn btn-ghost btn-sm">跳转总控会话</button>
             <button id="copy-ctrl-id-btn" class="btn btn-ghost btn-sm">复制总控 ID</button>
+            <button id="edit-ctrl-btn" class="btn btn-ghost btn-sm">登记 / 换届总控</button>
             <button id="copy-handover-btn" class="btn btn-primary btn-sm">复制预填换届交接卡</button>
           </div>
+          <form id="ctrl-form" class="subform hidden">
+            <label>现役总控 conversationId <input id="cf-controllerId" class="input" placeholder="输入总控会话 UUID" required /></label>
+            <label>总控状态
+              <select id="cf-status" class="select">
+                <option value="ONLINE">ONLINE</option>
+                <option value="STANDBY">STANDBY</option>
+                <option value="HANDOVER">HANDOVER</option>
+              </select>
+            </label>
+            <label>常驻模型配置 <input id="cf-defaultModel" class="input" placeholder="Orchestrator (Neon)" /></label>
+            <label class="inline-check"><input type="checkbox" id="cf-appendHistory" /> 同步追加至第 2 节换届历史表</label>
+            <label>换届原因与产出摘要（勾选追加时生效） <input id="cf-summary" class="input" placeholder="例如：首任入驻 / 第 2 任接班" /></label>
+            <div class="actions">
+              <button type="submit" class="btn btn-primary btn-sm">保存总控配置</button>
+              <button type="button" id="cancel-ctrl-btn" class="btn btn-ghost btn-sm">取消</button>
+            </div>
+          </form>
         </div>
       </section>
 
@@ -99,7 +117,7 @@
             <h3>裸 ID 尾步探针</h3>
           </div>
           <div class="inline-row">
-            <input id="probe-id-input" class="input" placeholder="输入完整 conversationId 或至少 8 位前缀" />
+            <input id="probe-id-input" class="input" placeholder="输入完整 conversationId 或至少 8 位十六进制前缀" />
             <button id="probe-btn" class="btn btn-primary btn-sm">探查</button>
           </div>
           <div id="probe-result" class="probe-box hidden"></div>
@@ -108,8 +126,30 @@
         <div class="card">
           <div class="card-head">
             <h3>活跃 / 挂起专职会话</h3>
-            <span id="active-count-badge" class="badge">0</span>
+            <div class="actions">
+              <button id="toggle-session-form-btn" class="btn btn-ghost btn-sm">手动登记</button>
+              <span id="active-count-badge" class="badge">0</span>
+            </div>
           </div>
+          <form id="session-form" class="subform hidden">
+            <label>会话 conversationId <input id="sf-id" class="input" required /></label>
+            <label>任务编号 / 主题 <input id="sf-topic" class="input" required /></label>
+            <label>模型与工具 <input id="sf-modelTool" class="input" value="Orchestrator (Neon)" /></label>
+            <label>资源锁状态 <input id="sf-lockStatus" class="input" value="纯离线无锁" /></label>
+            <label>当前状态
+              <select id="sf-status" class="select">
+                <option value="ACTIVE">ACTIVE</option>
+                <option value="PAUSED">PAUSED</option>
+                <option value="BLOCKED">BLOCKED</option>
+                <option value="DONE">DONE</option>
+              </select>
+            </label>
+            <label>工作目录与日志回查路径 <input id="sf-paths" class="input" value="-" /></label>
+            <div class="actions">
+              <button type="submit" class="btn btn-primary btn-sm">入账活跃表</button>
+              <button type="button" id="cancel-session-form-btn" class="btn btn-ghost btn-sm">取消</button>
+            </div>
+          </form>
           <div id="active-sessions-list" class="list-stack"></div>
         </div>
 

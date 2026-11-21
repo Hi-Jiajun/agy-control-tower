@@ -1,7 +1,8 @@
 # Local agent workspace state (never commit)
 .agents/
 
-# Python bytecode & local artifacts
+# Node & Python local artifacts
+node_modules/
 __pycache__/
 *.pyc
 backup-*/

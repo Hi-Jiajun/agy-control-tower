@@ -1,7 +1,7 @@
 {
   "name": "control-tower",
   "displayName": "Control Tower",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Universal Chief-of-Staff Control Tower plugin for Antigravity: role-based coordinator skill, interactive Aux Pane board for SESSION-REGISTRY.md and exclusive resource leases, and controller-scoped bare-ID and anti-aging hooks.",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [

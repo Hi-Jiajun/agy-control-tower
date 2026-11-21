@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 只读审计指定目录中残留的旧全局 Skill 路径引用（skills/control-tower）
-# 自动排除已迁移的原生插件新路径（plugins/control-tower/skills/control-tower）
+# 自动排除原生插件合法路径（plugins/control-tower/skills/control-tower 与 plugin/skills/control-tower）
 # 用法: bash scripts/check-legacy-refs.sh [--fail-on-match] <目录1> [目录2 ...]
 set -euo pipefail
 
@@ -50,50 +50,81 @@ for d in "${DIRS[@]}"; do
   fi
 done
 
-PYTHON_BIN="$(command -v python3 || echo /usr/bin/python3)"
+NODE_BIN="$(command -v node || true)"
+if [ -z "$NODE_BIN" ]; then
+  echo "错误: 未找到 node 运行时" >&2
+  exit 2
+fi
 
-"$PYTHON_BIN" - "$FAIL_ON_MATCH" "${DIRS[@]}" <<'PY'
-import os
-import pathlib
-import sys
+exec "$NODE_BIN" - "$FAIL_ON_MATCH" "${DIRS[@]}" <<'JS'
+import { lstatSync, readdirSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 
-fail_on_match = sys.argv[1] == "1"
-roots = [pathlib.Path(p).resolve() for p in sys.argv[2:]]
+const failOnMatch = process.argv[2] === '1';
+const roots = process.argv.slice(3).map((p) => resolve(p));
 
-SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "dist", "build", "target"}
-OLD_TOKEN = "skills/control-tower"
-NEW_TOKEN = "plugins/control-tower/skills/control-tower"
+const SKIP_DIRS = new Set(['.git', 'node_modules', '__pycache__', '.venv', 'dist', 'build', 'target']);
+const OLD_TOKEN = 'skills/control-tower';
+const VALID_TOKENS = [
+  'plugins/control-tower/skills/control-tower',
+  'plugin/skills/control-tower',
+];
 
-hits = []
+const hits = [];
 
-for root in roots:
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in sorted(dirnames) if d not in SKIP_DIRS]
-        for fname in sorted(filenames):
-            fpath = pathlib.Path(dirpath) / fname
-            if fpath.is_symlink() or not fpath.is_file():
-                continue
-            try:
-                raw = fpath.read_bytes()
-            except OSError:
-                continue
-            if b"\x00" in raw:
-                continue
-            text = raw.decode("utf-8", errors="ignore")
-            if OLD_TOKEN not in text:
-                continue
-            for idx, line in enumerate(text.splitlines(), start=1):
-                stripped_new = line.replace(NEW_TOKEN, "").replace(NEW_TOKEN.replace("/", "\\"), "")
-                if OLD_TOKEN in stripped_new:
-                    hits.append((str(fpath), idx, line.strip()))
+function walk(dir) {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+  } catch {
+    return;
+  }
+  for (const ent of entries) {
+    const full = join(dir, ent.name);
+    if (ent.isSymbolicLink()) continue;
+    if (ent.isDirectory()) {
+      if (!SKIP_DIRS.has(ent.name)) walk(full);
+      continue;
+    }
+    let st;
+    try {
+      st = lstatSync(full);
+    } catch {
+      continue;
+    }
+    if (st.isSymbolicLink() || !st.isFile()) continue;
+    let raw;
+    try {
+      raw = readFileSync(full);
+    } catch {
+      continue;
+    }
+    if (raw.includes(0)) continue;
+    const text = raw.toString('utf8');
+    if (!text.includes(OLD_TOKEN)) continue;
+    const lines = text.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i += 1) {
+      let cleaned = lines[i];
+      for (const tok of VALID_TOKENS) {
+        cleaned = cleaned.split(tok).join('').split(tok.replace(/\//g, '\\')).join('');
+      }
+      if (cleaned.includes(OLD_TOKEN)) {
+        hits.push({ file: full, line: i + 1, content: lines[i].trim() });
+      }
+    }
+  }
+}
 
-if not hits:
-    print("OK: 未检出残留旧路径 skills/control-tower 引用。")
-    sys.exit(0)
+for (const root of roots) walk(root);
 
-print(f"检出 {len(hits)} 处旧路径引用（请更新为 ~/.gemini/config/plugins/control-tower/skills/control-tower/）：")
-for fpath, lineno, content in hits:
-    print(f"  {fpath}:{lineno}: {content}")
+if (hits.length === 0) {
+  console.log('OK: 未检出残留旧路径 skills/control-tower 引用。');
+  process.exit(0);
+}
 
-sys.exit(1 if fail_on_match else 0)
-PY
+console.log(`检出 ${hits.length} 处旧路径引用（请更新为 control-tower 原生技能引用或 plugins/control-tower/skills/control-tower/）：`);
+for (const h of hits) {
+  console.log(`  ${h.file}:${h.line}: ${h.content}`);
+}
+process.exit(failOnMatch ? 1 : 0);
+JS

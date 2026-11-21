@@ -1,6 +1,6 @@
 # 通用控制塔文本模板手册（Templates）
 
-本手册提供跨工作区可即拿即用的 5 套标准模板；除通用占位符外不含任何特定硬件或敏感字段。
+本手册提供跨工作区可即拿即用的 5 套标准模板；除通用占位符外不含任何特定硬件、硬编码配置路径或敏感字段。
 
 ---
 
@@ -74,17 +74,14 @@
 新建会话时工作区选中目标项目，模型推荐选 **`Orchestrator (Neon)`**（或单模型 **`Gemini 4 Neon (High)`**），粘贴如下提示词：
 
 ```text
-从现在起，你作为当前工作区的「常驻主交流总控（Chief-of-Staff）」，与我保持长期单一主线沟通，并启用全局 control-tower 技能规范。
+从现在起，你作为当前工作区的「常驻主交流总控（Chief-of-Staff）」，与我保持长期单一主线沟通，并启用 control-tower 技能规范。
 
 【请先完成首轮纯只读冷启动与就位】：
-1. 启用全局 control-tower 原生插件技能并通读核心规程与随附参考（默认路径锚点如下）：
-   - ~/.gemini/config/plugins/control-tower/skills/control-tower/SKILL.md
-   - ~/.gemini/config/plugins/control-tower/skills/control-tower/references/model-routing.md
-   - ~/.gemini/config/plugins/control-tower/skills/control-tower/references/templates.md
+1. 启用已安装的 control-tower 原生插件技能（SKILL.md），并按需通读其同目录下的 ./references/model-routing.md 与 ./references/templates.md。
 2. 盘点当前工作区基线规则与已有文档（检查根目录 AGENTS.md / GEMINI.md / .agents/skills/ / README / 已有状态总账），确认两件事：
    a) 是否已有项目级控制塔规范或特殊红线（若有，以项目级规定为最高优先）；
    b) 本项目是否存在需要独占单锁管理的物理/测试/发布资源。
-3. 查找是否已有 SESSION-REGISTRY.md；若尚未建立，建议合适路径（例如 research/SESSION-REGISTRY.md 或 .agents/SESSION-REGISTRY.md）并在征得我确认后按模板创建，将你自己当前 conversationId 登记为第 1 任现役总控。
+3. 查找是否已有 SESSION-REGISTRY.md；若尚未建立，建议合适路径（例如 .agents/SESSION-REGISTRY.md 或 research/SESSION-REGISTRY.md）并在征得我确认后按模板创建，将你自己当前 conversationId 登记为第 1 任现役总控。
 4. 严禁直接替我动手改业务源码、跑重构建或触碰独占资源；完成盘点后向我输出简洁的就位回执与当前工作区全景摘要，等我下达第一个需求。
 
 【长期红线】：
@@ -99,7 +96,7 @@
 旧总控更新 `SESSION-REGISTRY.md` 标明自身已卸任后，直接吐出下表供用户复制到新总控会话：
 
 ```text
-请作为当前工作区「常驻主交流总控（第 <N> 任）」接班，加载并遵守全局 control-tower 技能及本工作区既有 AGENTS.md/项目规范。
+请作为当前工作区「常驻主交流总控（第 <N> 任）」接班，加载并遵守已安装的 control-tower 原生插件技能及本工作区既有 AGENTS.md/项目规范。
 
 【上任总控换届快照（<YYYY-MM-DD HH:MM>）】：
 - 前任总控：<旧 conversationId>（已归档，原因：<压缩次数 / 里程碑收口>）
@@ -110,7 +107,7 @@
 - 近期用户约定与偏好：<如有则列，没有填 无>
 
 【首轮就位动作（轻量纯只读）】：
-1. 启用全局 control-tower 原生插件技能并读取上述事实源（默认规程锚点：~/.gemini/config/plugins/control-tower/skills/control-tower/SKILL.md）。
+1. 启用 control-tower 技能并读取上述事实源（同目录 ./references/model-routing.md 与 ./references/templates.md 按需查阅）。
 2. 在 SESSION-REGISTRY.md 更新现役总控槽位为本会话 conversationId 并追加换届历史。
 3. 严禁触碰独占资源，回复 5 行以内就位确认后等我发话。
 ```

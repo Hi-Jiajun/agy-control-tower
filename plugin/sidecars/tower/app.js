@@ -9,6 +9,7 @@
     snap: null,
     toastTimer: null,
     rawDirty: false,
+    lastProbe: null,
   };
 
   function syncTheme() {
@@ -62,7 +63,8 @@
     const headers = {};
     if (uiToken) headers['x-sidecar-token'] = uiToken;
     if (body !== undefined) headers['Content-Type'] = 'application/json';
-    const res = await fetch(path, {
+    const fetchFn = window.sidecar?.fetch || fetch;
+    const res = await fetchFn(path, {
       method,
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -75,6 +77,20 @@
       throw err;
     }
     return data;
+  }
+
+  async function sendToActiveController(message) {
+    const ctrlId = state.snap?.parsed?.controller?.currentControllerId;
+    if (!ctrlId) {
+      throw new Error('当前台账未登记现役总控 conversationId');
+    }
+    if (window.sidecar?.agent?.sendMessage) {
+      return await window.sidecar.agent.sendMessage(message, ctrlId);
+    }
+    return await api('/_sidecar/send-message', {
+      method: 'POST',
+      body: { conversationId: ctrlId, message },
+    });
   }
 
   function switchTab(tab) {
@@ -154,6 +170,10 @@
     ]
       .map(([k, v]) => `<div class="kv-k">${esc(k)}</div><div class="kv-v">${esc(v)}</div>`)
       .join('');
+
+    $('cf-controllerId').value = ctrl.currentControllerId || window.sidecar?.conversationId || '';
+    $('cf-status').value = ctrl.currentControllerStatus || 'ONLINE';
+    $('cf-defaultModel').value = ctrl.defaultModel || 'Orchestrator (Neon)';
   }
 
   function renderSessions(snap) {
@@ -181,6 +201,8 @@
               <div class="actions">
                 <button class="btn btn-ghost btn-sm jump-conv-btn" data-id="${esc(s.conversationId)}">跳转会话</button>
                 <button class="btn btn-ghost btn-sm copy-conv-btn" data-id="${esc(s.conversationId)}">复制 ID</button>
+                <button class="btn btn-ghost btn-sm notify-ctrl-btn" data-id="${esc(s.conversationId)}">通知总控</button>
+                <button class="btn btn-warn btn-sm archive-conv-btn" data-id="${esc(s.conversationId)}" data-topic="${esc(s.topic)}">归档里程碑</button>
               </div>
             </div>
           `;
@@ -243,7 +265,7 @@
 
   function render(snap) {
     state.snap = snap;
-    $('version-badge').textContent = `v${snap.plugin?.version || '1.0.0'}`;
+    $('version-badge').textContent = `v${snap.plugin?.version || '1.1.0'}`;
     renderWorkspaces(snap);
 
     const hasReg = Boolean(snap.registryExists);
@@ -259,11 +281,20 @@
     }
   }
 
-  async function refresh(wsOverride) {
+  async function refresh(wsOverride, { recordSelection = false } = {}) {
     const targetWs = wsOverride !== undefined ? wsOverride : state.workspace;
-    const qs = targetWs ? `?workspace=${encodeURIComponent(targetWs)}` : '';
     try {
-      const snap = await api(`/api/snapshot${qs}`);
+      let snap;
+      if (recordSelection && targetWs) {
+        const res = await api('/api/workspace/select', {
+          method: 'POST',
+          body: { workspace: targetWs },
+        });
+        snap = res.snapshot;
+      } else {
+        const qs = targetWs ? `?workspace=${encodeURIComponent(targetWs)}` : '';
+        snap = await api(`/api/snapshot${qs}`);
+      }
       state.workspace = snap.workspace || '';
       state.rawDirty = false;
       $('conflict-banner').classList.add('hidden');
@@ -299,7 +330,7 @@
 
   $('refresh-btn').addEventListener('click', () => refresh());
   $('ws-select').addEventListener('change', (e) => {
-    if (e.target.value) refresh(e.target.value);
+    if (e.target.value) refresh(e.target.value, { recordSelection: true });
   });
 
   $('init-registry-btn').addEventListener('click', async () => {
@@ -368,6 +399,34 @@
     }
   });
 
+  $('edit-ctrl-btn').addEventListener('click', () => $('ctrl-form').classList.toggle('hidden'));
+  $('cancel-ctrl-btn').addEventListener('click', () => $('ctrl-form').classList.add('hidden'));
+
+  $('ctrl-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const res = await api('/api/controller/update', {
+        method: 'POST',
+        body: {
+          workspace: state.workspace,
+          relPath: state.snap.registryRelPath,
+          expectedHash: state.snap.hash,
+          controllerId: $('cf-controllerId').value.trim(),
+          status: $('cf-status').value,
+          defaultModel: $('cf-defaultModel').value.trim(),
+          appendHistory: $('cf-appendHistory').checked,
+          summary: $('cf-summary').value.trim(),
+        },
+      });
+      $('ctrl-form').classList.add('hidden');
+      render(res.snapshot);
+      showToast('已更新现役总控配置');
+    } catch (err) {
+      if (err.status === 409) $('conflict-banner').classList.remove('hidden');
+      showToast(err.message, true);
+    }
+  });
+
   $('jump-ctrl-btn').addEventListener('click', () => {
     const id = state.snap?.parsed?.controller?.currentControllerId;
     if (!id) return showToast('未登记总控 ID', true);
@@ -387,6 +446,36 @@
   $('copy-handover-btn').addEventListener('click', handleCopyHandover);
   $('copy-handover-raw-btn').addEventListener('click', handleCopyHandover);
 
+  $('toggle-session-form-btn').addEventListener('click', () => $('session-form').classList.toggle('hidden'));
+  $('cancel-session-form-btn').addEventListener('click', () => $('session-form').classList.add('hidden'));
+
+  $('session-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const res = await api('/api/sessions/upsert', {
+        method: 'POST',
+        body: {
+          workspace: state.workspace,
+          relPath: state.snap.registryRelPath,
+          expectedHash: state.snap.hash,
+          conversationId: $('sf-id').value.trim(),
+          topic: $('sf-topic').value.trim(),
+          modelTool: $('sf-modelTool').value.trim(),
+          lockStatus: $('sf-lockStatus').value.trim(),
+          status: $('sf-status').value,
+          paths: $('sf-paths').value.trim(),
+        },
+      });
+      $('session-form').classList.add('hidden');
+      $('session-form').reset();
+      render(res.snapshot);
+      showToast('已入账活跃专职会话');
+    } catch (err) {
+      if (err.status === 409) $('conflict-banner').classList.remove('hidden');
+      showToast(err.message, true);
+    }
+  });
+
   $('probe-btn').addEventListener('click', async () => {
     const id = $('probe-id-input').value.trim();
     if (!id) return;
@@ -394,6 +483,7 @@
     box.classList.remove('hidden');
     try {
       const data = await api(`/api/session/inspect?id=${encodeURIComponent(id)}`);
+      state.lastProbe = data.status === 'ok' ? data : null;
       if (data.status !== 'ok') {
         box.innerHTML = `<div class="item-meta">状态: ${esc(data.status)} ${data.matches?.length ? `| 匹配: ${esc(data.matches.join(', '))}` : ''}</div>`;
         return;
@@ -404,7 +494,11 @@
         <div class="item-meta">目标: ${esc(info.goal || '-')}</div>
         <div class="item-meta">步数: ${esc(info.maxStepIndex || info.lineCount)} | 模型: ${esc(info.lastModel || '-')} | 压缩: ${esc(info.compactions)} 次</div>
         <div class="item-meta">更新: ${esc(info.lastUpdatedAt || '-')} | 状态: ${esc(info.lastStatus || '-')}</div>
-        <div class="actions"><button class="btn btn-ghost btn-sm jump-conv-btn" data-id="${esc(data.conversationId)}">跳转会话</button></div>
+        <div class="actions">
+          <button class="btn btn-primary btn-sm enroll-probe-btn">一键入账活跃表</button>
+          <button class="btn btn-ghost btn-sm notify-ctrl-btn" data-id="${esc(data.conversationId)}">投递裸 ID 给总控</button>
+          <button class="btn btn-ghost btn-sm jump-conv-btn" data-id="${esc(data.conversationId)}">跳转会话</button>
+        </div>
       `;
     } catch (err) {
       box.innerHTML = `<div class="item-meta">${esc(err.message)}</div>`;
@@ -412,6 +506,71 @@
   });
 
   document.body.addEventListener('click', async (e) => {
+    const enrollBtn = e.target.closest('.enroll-probe-btn');
+    if (enrollBtn && state.lastProbe?.status === 'ok') {
+      const p = state.lastProbe;
+      const info = p.info || {};
+      try {
+        const res = await api('/api/sessions/upsert', {
+          method: 'POST',
+          body: {
+            workspace: state.workspace,
+            relPath: state.snap.registryRelPath,
+            expectedHash: state.snap.hash,
+            conversationId: p.conversationId,
+            topic: info.goal || '专职会话',
+            modelTool: info.lastModel || '-',
+            lockStatus: '纯离线无锁',
+            status: info.lastStatus === 'DONE' ? 'DONE' : 'ACTIVE',
+            paths: '-',
+          },
+        });
+        render(res.snapshot);
+        showToast(`已入账会话 ${p.conversationId.slice(0, 8)}`);
+      } catch (err) {
+        showToast(err.message, true);
+      }
+      return;
+    }
+
+    const notifyBtn = e.target.closest('.notify-ctrl-btn');
+    if (notifyBtn?.dataset.id) {
+      try {
+        await sendToActiveController(notifyBtn.dataset.id);
+        showToast(`已向现役总控投递 ${notifyBtn.dataset.id.slice(0, 8)}`);
+      } catch (err) {
+        showToast(err.message, true);
+      }
+      return;
+    }
+
+    const archiveBtn = e.target.closest('.archive-conv-btn');
+    if (archiveBtn?.dataset.id) {
+      const summary = window.prompt(
+        `请输入会话 ${archiveBtn.dataset.id.slice(0, 8)} 的归档产出摘要：`,
+        '已完成验证并收口'
+      );
+      if (summary === null) return;
+      try {
+        const res = await api('/api/sessions/archive', {
+          method: 'POST',
+          body: {
+            workspace: state.workspace,
+            relPath: state.snap.registryRelPath,
+            expectedHash: state.snap.hash,
+            conversationId: archiveBtn.dataset.id,
+            milestone: archiveBtn.dataset.topic || '已完成里程碑',
+            summary: summary.trim() || '已完成验证并收口',
+          },
+        });
+        render(res.snapshot);
+        showToast(`已归档会话 ${archiveBtn.dataset.id.slice(0, 8)}`);
+      } catch (err) {
+        showToast(err.message, true);
+      }
+      return;
+    }
+
     const jump = e.target.closest('.jump-conv-btn');
     if (jump?.dataset.id) {
       window.sidecar?.ui?.toggleConversation?.(jump.dataset.id);
@@ -531,7 +690,7 @@
   if (window.sidecar?.onWorkspaceChange) {
     window.sidecar.onWorkspaceChange((uris) => {
       if (Array.isArray(uris) && uris.length > 0) {
-        refresh(uris[0]);
+        refresh(uris[0], { recordSelection: true });
       } else {
         refresh('');
       }

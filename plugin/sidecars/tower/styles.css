@@ -247,6 +247,13 @@ body {
   color: var(--ct-muted);
 }
 
+.subform label.inline-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  color: var(--ct-fg);
+}
+
 .editor {
   min-height: 260px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
