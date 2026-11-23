@@ -14,5 +14,8 @@ if [ -z "$NODE_BIN" ]; then
 fi
 
 "$NODE_BIN" --test tests/*.test.mjs
+"$NODE_BIN" scripts/ct-replay.mjs
+"$NODE_BIN" scripts/ct-skill-eval.mjs
+"$NODE_BIN" scripts/ct-ui-smoke.mjs
 echo "----"
 echo "ALL PASS"

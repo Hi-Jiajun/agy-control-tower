@@ -1,0 +1,19 @@
+{
+  "id": "INC-004",
+  "title": "Long report containing 40-char Git SHAs must not trigger false bare-ID lookups",
+  "incidentDate": "2026-11-22",
+  "category": "transcript",
+  "description": "When a long status message contains Git commit hashes plus one known worker ID, extractPromptSessionIds must skip Git SHAs and return only valid session IDs.",
+  "kind": "transcript_extract_ids",
+  "action": {
+    "input": "本次合入提交 deadbeef0123456789abcdef0123456789abcdef 与 0123456789abcdef0123456789abcdef01234567 已通过验证，同步检查会话 ${WORKER_A} 的交付状态与全部单元测试结果，确认无回归问题后即可推进下一阶段任务并整理变更说明文档以供审阅。",
+    "options": {
+      "maxCandidates": 6,
+      "maxInputLength": 2000,
+      "knownIds": ["${WORKER_A}"]
+    }
+  },
+  "expect": {
+    "ids": ["${WORKER_A}"]
+  }
+}

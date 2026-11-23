@@ -5,7 +5,7 @@
 ## 内置组件
 
 - **总控规程技能（`skills/control-tower/`）**：按需渐进式加载，包含核心调度规程、`model-routing.md` 路由手册与即用中文模板；支持全局/工作区级在线覆盖。
-- **可读写 Aux Pane 总控看板（`sidecars/tower/`）**：支持实时无感监测（同步聚合独立专职会话与原生 `swarm` 集群）、按路由护栏校验的一键直派新会话、`SESSION-REGISTRY.md` 第 1~5 节全结构化运维（支持 `PLUGIN_DATA` 零侵入托管台账与关闭独占资源锁），以及严格物理隔离的「插件 / 全局 / 当前工作区」三层设置中心。
+- **可读写 Aux Pane 总控看板（`sidecars/tower/`）**：支持实时无感监测（同步聚合独立专职会话与原生 `swarm` 集群）、按路由护栏校验的一键直派新会话、`SESSION-REGISTRY.md` 第 1~5 节全结构化运维（支持 `PLUGIN_DATA` 零侵入托管台账与关闭独占资源锁）、黑匣子飞行诊断日志视图，以及严格物理隔离的「插件 / 全局 / 当前工作区」三层设置中心。
 - **四事件定向感知 Hooks（`hooks.json` + `scripts/ct-hook.mjs`）**：覆盖 `SessionStart`（现役总控与已入账专职会话双角色注入）、`PreInvocation`（裸/多 ID 速查、代决策指引与弹性换届提醒）、`PreToolUse`（防非总控误改台账保护）与 `Stop`（专职会话漏报阶段收口自动回执兜底）。
 
 ## 常用总控口令

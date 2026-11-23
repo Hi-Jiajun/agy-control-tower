@@ -9,6 +9,10 @@ import {
   resolvePluginDataDir,
 } from '../lib/paths.mjs';
 import {
+  appendFlightEvent,
+  SLOW_OP_THRESHOLD_MS,
+} from '../lib/logger.mjs';
+import {
   findActiveWorkerSession,
   isActiveController,
   parseRegistry,
@@ -128,7 +132,7 @@ function sendAgentApiMessage(recipientId, title, message) {
   });
 }
 
-function handlePreToolUse(payload, regFound, parsedReg, resolved, convId) {
+function handlePreToolUse(payload, regFound, parsedReg, resolved, dataDir, convId) {
   const guardMode = resolved.plugin.registryWriteGuard || 'ask';
   if (guardMode === 'off') {
     process.stdout.write('{"decision":"allow"}\n');
@@ -156,6 +160,19 @@ function handlePreToolUse(payload, regFound, parsedReg, resolved, convId) {
   }
 
   const decision = guardMode === 'deny' ? 'deny' : 'ask';
+  appendFlightEvent(dataDir, {
+    level: 'warn',
+    source: 'hook',
+    event: 'write_guard_triggered',
+    ok: false,
+    conv: convId,
+    message: `PreToolUse ${decision} on ${regFound.relPath}`,
+    detail: {
+      decision,
+      toolName: payload?.toolCall?.name || '',
+      relPath: regFound.relPath,
+    },
+  });
   const reason =
     `[control-tower 台账写保护] SESSION-REGISTRY.md 已由现役总控会话接管，` +
     `当前会话非现役总控。如需入账或换届，请由现役总控更新或在 Control Tower 看板操作。`;
@@ -336,6 +353,14 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
         `请在本轮处理前重读最新版 control-tower 技能规范（SKILL.md、references/model-routing.md 与 references/templates.md），` +
         `同步最新模型路由、协同矩阵、缓存保护护栏、执行层精确读行纪律及账号无 Carbon 临时降档策略。`;
       injectSteps.push({ systemMessage: { systemMessage: syncMsg } });
+      appendFlightEvent(dataDir, {
+        level: 'info',
+        source: 'hook',
+        event: 'version_sync_notified',
+        conv: convId,
+        message: `Notified controller of v${currentVersion}`,
+        detail: { prevVersion: prevCtrlEntry.lastSyncedVersion || '', currentVersion },
+      });
     }
     nextCtrlEntry.lastSyncedVersion = currentVersion;
     nextCtrlEntry.updatedAt = Date.now();
@@ -352,6 +377,14 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
         `请通过 ask_question 询问用户：选择立即换届（同步 ${regFound.absPath}、输出交接卡并可用 agentapi new-conversation 一键拉起新总控接班），` +
         `或选择「本会话忽略不再提醒」（也可在总控看板顶部一键忽略）。`;
       injectSteps.push({ systemMessage: { systemMessage: warn } });
+      appendFlightEvent(dataDir, {
+        level: 'warn',
+        source: 'hook',
+        event: 'handover_warned',
+        conv: convId,
+        message: `Controller compactions ${comps} reached threshold ${threshold}`,
+        detail: { compactions: comps, threshold },
+      });
       nextCtrlEntry.lastWarnedCompactions = comps;
       nextCtrlEntry.updatedAt = Date.now();
       ctrlDirty = true;
@@ -377,8 +410,15 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
   if (stateDirty) {
     try {
       savePluginState(dataDir, state);
-    } catch {
-      // ignore disk errors inside hook
+    } catch (err) {
+      appendFlightEvent(dataDir, {
+        level: 'error',
+        source: 'hook',
+        event: 'state_save_failed',
+        ok: false,
+        conv: convId,
+        message: err?.message || 'Failed to save state in PreInvocation',
+      });
     }
   }
 
@@ -439,10 +479,25 @@ function handleStop(payload, regFound, parsedReg, resolved, dataDir, hintPath, c
       pendingSilentDone: false,
       updatedAt: Date.now(),
     };
+    appendFlightEvent(dataDir, {
+      level: 'info',
+      source: 'hook',
+      event: 'stop_wake_skipped',
+      conv: convId,
+      message: 'Worker already sent outbound report to active controller',
+      detail: { reason: 'already_reported', currentStep },
+    });
     try {
       savePluginState(dataDir, state);
-    } catch {
-      // ignore
+    } catch (err) {
+      appendFlightEvent(dataDir, {
+        level: 'error',
+        source: 'hook',
+        event: 'state_save_failed',
+        ok: false,
+        conv: convId,
+        message: err?.message || 'Failed to save state in Stop (already_reported)',
+      });
     }
     process.stdout.write('{}\n');
     return;
@@ -490,20 +545,53 @@ function handleStop(payload, regFound, parsedReg, resolved, dataDir, hintPath, c
       for (const id of completedIds) {
         if (state.workers[id]) state.workers[id].pendingSilentDone = false;
       }
-    } catch {
-      // keep pendingSilentDone=true if agentapi is unavailable in current environment
+      appendFlightEvent(dataDir, {
+        level: 'info',
+        source: 'hook',
+        event: 'stop_receipt_sent',
+        conv: convId,
+        message: `Sent batched Stop receipt for ${completedIds.length} worker(s)`,
+        detail: { completedCount: completedIds.length, isLockedWorker, allOthersDone },
+      });
+    } catch (err) {
+      appendFlightEvent(dataDir, {
+        level: 'error',
+        source: 'hook',
+        event: 'stop_agentapi_failed',
+        ok: false,
+        conv: convId,
+        message: err?.message || 'agentapi send-message failed in Stop hook',
+        detail: { completedCount: completedIds.length },
+      });
     }
+  } else {
+    appendFlightEvent(dataDir, {
+      level: 'info',
+      source: 'hook',
+      event: 'stop_wake_skipped',
+      conv: convId,
+      message: 'Deferred wake waiting for peer active workers',
+      detail: { reason: 'silent_batch_pending', remainingPeers: otherActive.length },
+    });
   }
 
   try {
     savePluginState(dataDir, state);
-  } catch {
-    // ignore
+  } catch (err) {
+    appendFlightEvent(dataDir, {
+      level: 'error',
+      source: 'hook',
+      event: 'state_save_failed',
+      ok: false,
+      conv: convId,
+      message: err?.message || 'Failed to save state in Stop',
+    });
   }
   process.stdout.write('{}\n');
 }
 
 function run() {
+  const startedAt = Date.now();
   const raw = readStdinSync();
   let payload = {};
   if (raw.trim()) {
@@ -535,7 +623,16 @@ function run() {
   let parsedReg;
   try {
     parsedReg = parseRegistry(readFileSync(regFound.absPath, 'utf8'));
-  } catch {
+  } catch (err) {
+    appendFlightEvent(dataDir, {
+      level: 'error',
+      source: 'hook',
+      event: 'registry_parse_failed',
+      ok: false,
+      conv: convId,
+      message: err?.message || 'Failed to parse SESSION-REGISTRY.md',
+      detail: { eventName, relPath: regFound.relPath },
+    });
     if (eventName === 'PreToolUse') {
       process.stdout.write('{"decision":"allow"}\n');
     } else {
@@ -551,23 +648,29 @@ function run() {
   });
 
   if (eventName === 'PreToolUse') {
-    handlePreToolUse(payload, regFound, parsedReg, resolved, convId);
-    return;
-  }
-  if (eventName === 'SessionStart') {
+    handlePreToolUse(payload, regFound, parsedReg, resolved, dataDir, convId);
+  } else if (eventName === 'SessionStart') {
     handleSessionStart(regFound, parsedReg, resolved, convId);
-    return;
-  }
-  if (eventName === 'PreInvocation') {
+  } else if (eventName === 'PreInvocation') {
     handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hintPath, convId);
-    return;
-  }
-  if (eventName === 'Stop') {
+  } else if (eventName === 'Stop') {
     handleStop(payload, regFound, parsedReg, resolved, dataDir, hintPath, convId);
-    return;
+  } else {
+    process.stdout.write('{}\n');
   }
 
-  process.stdout.write('{}\n');
+  const elapsedMs = Date.now() - startedAt;
+  if (elapsedMs >= SLOW_OP_THRESHOLD_MS) {
+    appendFlightEvent(dataDir, {
+      level: 'warn',
+      source: 'hook',
+      event: 'slow_hook',
+      conv: convId,
+      durationMs: elapsedMs,
+      message: `Hook ${eventName || 'unknown'} took ${elapsedMs}ms`,
+      detail: { eventName },
+    });
+  }
 }
 
 run();

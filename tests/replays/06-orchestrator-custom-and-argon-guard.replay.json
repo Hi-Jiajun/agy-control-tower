@@ -1,0 +1,21 @@
+{
+  "id": "INC-006",
+  "title": "Customizable Orchestrator thinking variants map cleanly while Argon, flash, and 3.8 remain blocked",
+  "incidentDate": "2026-11-23",
+  "category": "settings",
+  "description": "New customizable Orchestrator display names (e.g. Orchestrator Neon Extra High / Carbon High) must pass model guard and map to valid CLI IDs, while Argon, 3.8, and bare flash remain strictly rejected.",
+  "kind": "settings_validate_model",
+  "expect": {
+    "cases": [
+      { "model": "Orchestrator (Neon Extra High)", "ok": true, "cliModel": "gemini-pro-orchestrator-neon" },
+      { "model": "Orchestrator (Carbon High)", "ok": true, "cliModel": "gemini-pro-orchestrator" },
+      { "model": "Orchestrator", "ok": true, "cliModel": "gemini-pro-orchestrator-neon" },
+      { "model": "Gemini 4 Neon Extra High", "ok": true, "cliModel": "gemini-4-neon-xhigh" },
+      { "model": "Gemini 4 Hydrogen Extra High", "ok": true, "cliModel": "gemini-4-hydrogen-xhigh" },
+      { "model": "Orchestrator (Argon)", "ok": false },
+      { "model": "Gemini 4 Argon (High)", "ok": false },
+      { "model": "Gemini 3.8 Flash (High)", "ok": false },
+      { "model": "flash", "ok": false }
+    ]
+  }
+}

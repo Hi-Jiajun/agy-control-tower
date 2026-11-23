@@ -24,17 +24,25 @@
 
 ---
 
-## 3. 单模型 vs `Orchestrator` 选用边界
+## 3. 单模型 vs 新版可自定义 `Orchestrator` 选用边界
 
-本机实测表明：**同模型连续执行缓存命中率可达 `94%+`**，而 `Orchestrator` 规划层与执行层来回切换时缓存命中会骤降至 `~41%`（单步冷输入放大约 10 倍）。因此选型遵循「单模型优先吃满缓存，重型规划/执行分离再用 `Orchestrator`」原则：
+### 3.1 新版 `Orchestrator` 双层自定义机制与推荐基线
+Antigravity 客户端已支持在「设置 -> 模型与用量 -> **Orchestrator 设置**」中**分别自定义规划模型与执行模型（均含思考档位，支持 `Extra High`）**，且可在模型下拉菜单的 `Orchestrator` 行内为单个会话单独覆盖规划模型：
+- **推荐全局默认组合**：
+  - **规划模型**：日常主力推荐 **`Gemini 4 Neon (High / Extra High)`**，重度跨层架构或疑难攻坚可选 **`Gemini 4 Carbon (High)`**（亦可按单会话在菜单临时切换）；
+  - **执行模型**：推荐 **`Gemini 4 Hydrogen (High)`** 或 **`Gemini 4 Hydrogen (Extra High)`**（复杂代码精准编辑优先 `Extra High`，相比早期固定弱执行层显著降低编辑失配率）。
+- **CLI / `agentapi` 直派兼容**：命令行直派时仍映射为官方稳定 ID（`Orchestrator (Carbon)` -> `gemini-pro-orchestrator`、`Orchestrator (Neon)` -> `gemini-pro-orchestrator-neon`），并在客户端内自动套用你的 Orchestrator 设置。
+
+### 3.2 选用判据（兼顾双层能力与连续缓存）
+本机实测表明：**同模型连续执行缓存命中率可达 `94%+`**；当 `Orchestrator` 处于高频碎片化切层时会触发额外冷输入，而升级后的新版可自定义 `Orchestrator` 在规划一次写透、配合强执行层（`Hydrogen High / Extra High`）一气呵成时，综合缓存与编辑精度已大幅改善。因此选型遵循「轻量/短交互/单模块优先单模型吃满缓存，中大型跨文件与疑难攻坚充分善用新版 `Orchestrator`」原则：
 
 - **优先用单模型的 4 种明确场景**：
   1. **L0 常驻总控与高频短交互**：总控以需求拆解、尾步核查、改台账与派单为主，首选单模型 **`Gemini 4 Neon (High)`**（工具报错率极低且零切层冷输入损耗）；极轻量短问答可选 **`Gemini 4 Neon (Medium)`**。
   2. **L1 纯轻量扫描 / 提取 / 文档归档**：直接用单模型 **`Gemini 4 Hydrogen (Low / Medium)`**，避免双层握手开销。
-  3. **L2 边界清晰的常规单模块编码与局部修复**：直接用单模型 **`Gemini 4 Neon (High)`** 或 **`Gemini 4 Hydrogen (High)`**，吃满 `91%~97%` 连续缓存并减少执行层编辑失误。
-  4. **需全程锁死思考深度或跑含写盘 `self` 的 `run_workflow`**：`Orchestrator` 自动托管思考深度且双模型 `plan_execute` 会触发 `[plan review due]` 阻塞 `self` 写盘 worker；遇到此类场景必须选用单模型（`Carbon (High)` / `Neon (High / XHigh)` / `Hydrogen (High)`）。
-- **优先用 `Orchestrator (Carbon / Neon)` 的场景**：
-  - 适合「需要强判断架构规划/复核纠偏 + 大量跨多文件动手实现与验证」的中大型复合开发与 L3 跨层排障；规划阶段应一次把目标文件、符号与验证命令写透，尽量减少执行中途反复切回规划层。
+  3. **L2 边界清晰的常规单模块编码与局部修复**：直接用单模型 **`Gemini 4 Neon (High)`** 或 **`Gemini 4 Hydrogen (High)`**，吃满 `91%~97%` 连续缓存。
+  4. **需全程锁死单一模型深度或跑含写盘 `self` 的 `run_workflow`**：双模型 `plan_execute` 可能触发 `[plan review due]` 阻塞无交互 `self` 写盘 worker；此类场景必须选用单模型（`Carbon (High)` / `Neon (High / XHigh)` / `Hydrogen (High)`）。
+- **优先用新版 `Orchestrator`（自定义规划+执行层）的场景**：
+  - 适合「需要旗舰/高思考规划与复核纠偏 + 大量跨多文件动手实现与验证」的中大型复合开发、跨模块重构、L3 跨层排障与 L4 集成；规划阶段应一次把目标文件、符号与验证命令写透，配合 `Hydrogen (High / Extra High)` 执行层减少中途切回规划层。
 
 ---
 

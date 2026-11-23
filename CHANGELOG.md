@@ -5,6 +5,20 @@ All notable changes to `control-tower` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-11-23
+
+### Added
+- **第一阶段：五环自演化研发闭环底座（Self-Evolving Plugin Foundry）**：
+  - **环 1（零侵入黑匣子飞行记录仪）**：新增零依赖轮转脱敏 JSONL 日志模块 `plugin/lib/logger.mjs`（落盘 `<PLUGIN_DATA>/logs/ct-flight.jsonl`，2MB 轮转保留 3 份，自动脱敏路径、内网 IP 与敏感凭据）；全面消除 `ct-hook.mjs` 与 Sidecar `main.mjs` 的静默错误吞没，记录异常、慢调用（`>= 100ms`）、写保护拦截与 `Stop` 唤醒跳过原因；看板「插件设置」新增轻量只读「黑匣子飞行诊断日志」面板与 `/api/diagnostics` 接口。
+  - **环 2（本机遥测复盘与改进提案引擎）**：新增仓根只读分析器 `scripts/ct-miner.mjs`（`npm run mine`），聚合本机近期 `transcript.jsonl` 与黑匣子日志，自动聚类缓存穿透、`edit_file` 失配、高压缩老化与运行态异常并输出脱敏实证改进提案。
+  - **环 3（隔离沙箱与事故轨迹回放库）**：新增 `scripts/ct-replay.mjs`（`npm run replay`）及 `tests/replays/` 6 份脱敏真实历史事故样本（覆盖跨插件 `PLUGIN_DATA` 隔离、收件人校验、旧版台账提示、Git SHA 过滤、一次性版本同步与新版 Orchestrator 护栏），并支持 `--freeze-latest` 从黑匣子异常冻结生成新回放骨架。
+  - **环 4（四维立体自动化门禁）**：抽离纯前端状态逻辑至 `plugin/sidecars/tower/ui-logic.mjs` 并补充 L1 单测（`tests/ui-logic.test.mjs`、`tests/logger-and-miner.test.mjs`）；接入 L2 回放回归测试（`tests/replays.test.mjs`）；新增零依赖无头 Chrome CDP 真浏览器 UI 冒烟测试 `scripts/ct-ui-smoke.mjs`（`npm run test:ui`，校验 Aux Pane `390x844` 暗/亮双主题与 `960x844` 宽栏 0 Console Error 与 0 横向溢出）；新增 10 项黄金场景 Skill 与 Prompt 行为契约评测套件 `scripts/ct-skill-eval.mjs`（`npm run test:eval`）。
+  - **环 5（发布前快照、实装健康体检与一键秒回滚）**：新增 `scripts/ct-doctor.mjs`（`npm run doctor`）校验已装版本一致性、无旧散装 Skill 残留、无失效 Sidecar 进程与黑匣子 24h 健康度；新增 `scripts/ct-release.mjs` 支持实装前自动备份最近 3 版快照至 `<PLUGIN_DATA>/releases/`，支持一键经官方 `agy plugin install` 回滚与复检（附全沙箱测试 `tests/release-and-doctor.test.mjs`）。
+- 新增仓根三阶段演进战略蓝图文档 `docs/ARCHITECTURE-ROADMAP.md`（不打入 `./plugin/` 运行包）。
+
+### Changed
+- 适配 Antigravity 客户端新版 **Orchestrator 双层自定义能力**（支持分别自定义规划模型与执行模型及含 `Extra High` 的思考档位，并支持单会话菜单覆盖规划模型）：同步更新 `plugin/skills/control-tower/references/model-routing.md`、`SKILL.md` 及 `plugin/lib/settings.mjs`（新增 `Orchestrator (Neon Extra High)`、`Orchestrator (Carbon High)`、`Gemini 4 Neon/Hydrogen Extra High` 等别名映射与预设）。
+
 ## [1.2.3] - 2026-11-23
 
 ### Added

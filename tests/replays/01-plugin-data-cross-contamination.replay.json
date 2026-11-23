@@ -1,0 +1,18 @@
+{
+  "id": "INC-001",
+  "title": "Cross-plugin PLUGIN_DATA env must not hijack control-tower data directory",
+  "incidentDate": "2026-11-22",
+  "category": "paths",
+  "description": "When shell env PLUGIN_DATA points to another plugin such as agy-powertools, resolvePluginDataDir must ignore it and fall back to appData/plugin_data/control-tower.",
+  "kind": "paths_resolve_data_dir",
+  "action": {
+    "env": {
+      "ANTIGRAVITY_APP_DATA_DIR": "${APP_DATA}",
+      "PLUGIN_DATA": "${APP_DATA}/plugin_data/agy-powertools"
+    }
+  },
+  "expect": {
+    "equals": "${APP_DATA}/plugin_data/control-tower",
+    "notEquals": "${APP_DATA}/plugin_data/agy-powertools"
+  }
+}

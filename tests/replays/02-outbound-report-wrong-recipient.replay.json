@@ -1,0 +1,38 @@
+{
+  "id": "INC-002",
+  "title": "Outbound [CT_REPORT:DONE] to a different recipient must not silence Stop hook for active controller",
+  "incidentDate": "2026-11-22",
+  "category": "transcript",
+  "description": "hasOutboundAgentApiReport must match target recipientId alongside report marker rather than returning true for any recipient.",
+  "kind": "transcript_outbound_report",
+  "setup": {
+    "transcriptLines": [
+      {
+        "step_index": 1,
+        "type": "PLANNER_RESPONSE",
+        "tool_calls": [
+          {
+            "name": "run_command",
+            "args": {
+              "CommandLine": "agentapi send-message \"${OTHER_ID}\" \"[CT_REPORT:DONE] finished\""
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "checks": [
+      {
+        "label": "wrong recipient (active controller)",
+        "recipientId": "${CTRL_ID}",
+        "expected": false
+      },
+      {
+        "label": "exact recipient (other id)",
+        "recipientId": "${OTHER_ID}",
+        "expected": true
+      }
+    ]
+  }
+}

@@ -14,7 +14,7 @@
         <div class="brand-title">
           <span id="live-dot" class="brand-dot" title="监测指示"></span>
           <strong>Control Tower</strong>
-          <span id="version-badge" class="badge">v1.2.3</span>
+          <span id="version-badge" class="badge">v1.3.0</span>
         </div>
         <div class="actions">
           <button id="poll-toggle-btn" class="pill-btn" title="切换实时自动监测">实时监测</button>
@@ -128,7 +128,7 @@
                 <option value="HANDOVER">HANDOVER</option>
               </select>
             </label>
-            <label>常驻模型配置 <input id="cf-defaultModel" class="input" list="ct-model-presets" placeholder="Orchestrator (Neon)" /></label>
+            <label>常驻模型配置 <input id="cf-defaultModel" class="input" list="ct-model-presets" placeholder="Gemini 4 Neon (High)" /></label>
             <label class="inline-check"><input type="checkbox" id="cf-appendHistory" /> 同步追加至第 2 节换届历史表</label>
             <label>换届原因与产出摘要（勾选追加时生效） <input id="cf-summary" class="input" placeholder="例如：首任入驻 / 第 2 任接班" /></label>
             <div class="actions">
@@ -149,7 +149,7 @@
             <label>任务主题 / 标题 <input id="df-topic" class="input" placeholder="例如：M2 协议解析修复" required /></label>
             <div class="two-col">
               <label>选定模型（受路由护栏校验）
-                <input id="df-model" class="input" list="ct-model-presets" value="Orchestrator (Neon)" required />
+                <input id="df-model" class="input" list="ct-model-presets" value="Gemini 4 Neon (High)" required />
               </label>
               <label>斜杠工作流前缀
                 <select id="df-slash" class="select">
@@ -208,7 +208,7 @@
           <form id="session-form" class="subform hidden">
             <label>会话 conversationId <input id="sf-id" class="input" required /></label>
             <label>任务编号 / 主题 <input id="sf-topic" class="input" required /></label>
-            <label>模型与工具 <input id="sf-modelTool" class="input" list="ct-model-presets" value="Orchestrator (Neon)" /></label>
+            <label>模型与工具 <input id="sf-modelTool" class="input" list="ct-model-presets" value="Gemini 4 Neon (High)" /></label>
             <label>资源锁状态 <input id="sf-lockStatus" class="input" value="纯离线无锁" /></label>
             <label>当前状态
               <select id="sf-status" class="select">
@@ -261,7 +261,7 @@
                 <option value="DONE">DONE</option>
               </select>
             </label>
-            <label>建议路线与模型 <input id="qf-route" class="input" list="ct-model-presets" value="L2 Orchestrator (Neon)" /></label>
+            <label>建议路线与模型 <input id="qf-route" class="input" list="ct-model-presets" value="L2 Gemini 4 Neon (High)" /></label>
             <div class="actions">
               <button type="submit" class="btn btn-primary btn-sm">保存任务行</button>
               <button type="button" id="qf-reset-btn" class="btn btn-ghost btn-sm">清空</button>
@@ -377,6 +377,24 @@
                 <button type="button" id="clear-cache-btn" class="btn btn-warn btn-sm">清理遥测缓存</button>
               </div>
             </form>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h3>黑匣子飞行诊断日志</h3>
+              <span id="diag-health-badge" class="badge badge-muted">未加载</span>
+            </div>
+            <p class="muted" id="diag-stats">记录 Hook 与 Sidecar 异常、慢调用与写保护拦截（已自动脱敏）。</p>
+            <div class="inline-row">
+              <select id="diag-level-filter" class="select" aria-label="日志级别筛选">
+                <option value="">全部级别</option>
+                <option value="warn_or_error">仅警告与错误</option>
+                <option value="error">仅错误</option>
+              </select>
+              <button type="button" id="diag-refresh-btn" class="btn btn-ghost btn-sm">刷新</button>
+              <button type="button" id="diag-clear-btn" class="btn btn-warn btn-sm">清空</button>
+            </div>
+            <div id="diag-events-list" class="diag-list"></div>
           </div>
         </div>
 
@@ -601,9 +619,10 @@
     <option value="Gemini 4 Carbon (Medium)"></option>
     <option value="Orchestrator (Carbon)"></option>
     <option value="Orchestrator (Neon)"></option>
+    <option value="Orchestrator (Neon Extra High)"></option>
   </datalist>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/app.js"></script>
+  <script type="module" src="/app.js"></script>
 </body>
 </html>

@@ -1,0 +1,57 @@
+{
+  "id": "INC-005",
+  "title": "Upgraded plugin sends one-shot version sync notice to existing controller and deduplicates second turn",
+  "incidentDate": "2026-11-23",
+  "category": "hook",
+  "description": "PreInvocation notifies an existing controller once after plugin upgrade, records flight event, and does not repeat on the next turn.",
+  "kind": "hook",
+  "setup": {
+    "registryRelPath": ".agents/SESSION-REGISTRY.md",
+    "registryMarkdown": "# 台账\n## 一、当前独占资源租约\n| 字段 | 当前值 |\n| --- | --- |\n| **锁状态** | `IDLE（空闲待分配）` |\n| **持锁会话** | - |\n\n## 二、常驻主交流总控会话\n- **当前现役总控会话**：`${CTRL_ID}`（状态：`ONLINE`）\n",
+    "transcripts": {
+      "${CTRL_ID}": [
+        { "step_index": 0, "type": "USER_INPUT", "content": "冷启动" },
+        { "step_index": 1, "type": "PLANNER_RESPONSE", "model": "gemini-4-neon-high", "status": "DONE" }
+      ]
+    },
+    "stateJson": {
+      "controllers": {
+        "${CTRL_ID}": {
+          "lastSyncedVersion": "1.2.2"
+        }
+      },
+      "workers": {},
+      "transcriptCache": {},
+      "pendingAttention": []
+    }
+  },
+  "action": {
+    "calls": [
+      {
+        "eventName": "PreInvocation",
+        "payload": {
+          "conversationId": "${CTRL_ID}",
+          "workspacePaths": ["${WORKSPACE}"],
+          "lastUserInput": "继续检查任务",
+          "invocationNum": 3
+        },
+        "expect": {
+          "contains": ["[control-tower 版本同步]"],
+          "flightEvent": "version_sync_notified"
+        }
+      },
+      {
+        "eventName": "PreInvocation",
+        "payload": {
+          "conversationId": "${CTRL_ID}",
+          "workspacePaths": ["${WORKSPACE}"],
+          "lastUserInput": "下一轮继续",
+          "invocationNum": 4
+        },
+        "expect": {
+          "notContains": ["[control-tower 版本同步]"]
+        }
+      }
+    ]
+  }
+}

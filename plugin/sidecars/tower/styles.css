@@ -575,6 +575,49 @@ body {
   font-size: 12px;
 }
 
+.diag-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.diag-row {
+  border: 1px solid var(--ct-border);
+  border-radius: 7px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11.5px;
+  min-width: 0;
+}
+
+.diag-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+
+.diag-title {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--ct-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diag-msg {
+  color: var(--ct-muted);
+  font-size: 11px;
+  word-break: break-word;
+}
+
 .muted {
   color: var(--ct-muted);
   margin: 0;

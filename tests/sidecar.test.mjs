@@ -315,6 +315,23 @@ if (args.includes('new-conversation')) {
     });
     assert.equal(msgRes.status, 200);
     assert.deepEqual(msgRes.data.forwarded, ['agentapi', 'send-message', ctrlId, workerId]);
+
+    // 13) Flight diagnostics API + static ui-logic.mjs asset
+    const uiLogicRes = await fetch(`${base}/ui-logic.mjs`);
+    assert.equal(uiLogicRes.status, 200);
+    assert.ok((await uiLogicRes.text()).includes('computeTabVisibility'));
+
+    const diagUnauth = await fetch(`${base}/api/diagnostics`);
+    assert.equal(diagUnauth.status, 401);
+
+    const diag = await req('GET', '/api/diagnostics?limit=20');
+    assert.equal(diag.status, 200);
+    assert.equal(diag.data.ok, true);
+    assert.ok(diag.data.events.some((ev) => ev.event === 'auth_rejected'));
+
+    const diagClear = await req('POST', '/api/diagnostics/clear', {});
+    assert.equal(diagClear.status, 200);
+    assert.equal(diagClear.data.events.length, 0);
   } finally {
     if (server) await server.close();
     process.env = prevEnv;

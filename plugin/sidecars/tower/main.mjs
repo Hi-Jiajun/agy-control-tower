@@ -17,6 +17,13 @@ import {
   sha256,
 } from '../../lib/paths.mjs';
 import {
+  appendFlightEvent,
+  clearFlightLogs,
+  readFlightEvents,
+  SLOW_OP_THRESHOLD_MS,
+  summarizeFlightEvents,
+} from '../../lib/logger.mjs';
+import {
   archiveActiveSession,
   deleteQueueRow,
   extractTemplatesFromMarkdown,
@@ -106,7 +113,7 @@ function readPluginMeta() {
   return {
     name: raw?.name || 'control-tower',
     displayName: raw?.displayName || 'Control Tower',
-    version: raw?.version || '1.2.3',
+    version: raw?.version || '1.3.0',
   };
 }
 
@@ -206,6 +213,7 @@ class ControlTowerServer {
       ['/index.html', { file: join(__dirname, 'index.html'), type: 'text/html; charset=utf-8' }],
       ['/styles.css', { file: join(__dirname, 'styles.css'), type: 'text/css; charset=utf-8' }],
       ['/app.js', { file: join(__dirname, 'app.js'), type: 'application/javascript; charset=utf-8' }],
+      ['/ui-logic.mjs', { file: join(__dirname, 'ui-logic.mjs'), type: 'application/javascript; charset=utf-8' }],
     ]);
   }
 
@@ -518,6 +526,15 @@ class ControlTowerServer {
       return this.#sendJson(res, 200, { ...resolved, modelPresets: MODEL_PRESETS });
     }
 
+    if (req.method === 'GET' && url.pathname === '/api/diagnostics') {
+      const limit = Math.max(1, Math.min(200, Number.parseInt(url.searchParams.get('limit') || '60', 10) || 60));
+      const level = (url.searchParams.get('level') || '').trim();
+      const source = (url.searchParams.get('source') || '').trim();
+      const summary = summarizeFlightEvents(dataDir);
+      const events = readFlightEvents(dataDir, { limit, level, source });
+      return this.#sendJson(res, 200, { ok: true, summary, events });
+    }
+
     if (req.method === 'GET' && url.pathname === '/api/session/inspect') {
       const q = (url.searchParams.get('id') || '').trim();
       const resInspect = resolveBrainTranscript(q, { env: process.env });
@@ -654,6 +671,15 @@ class ControlTowerServer {
       });
     }
 
+    if (url.pathname === '/api/diagnostics/clear') {
+      clearFlightLogs(dataDir);
+      return this.#sendJson(res, 200, {
+        ok: true,
+        summary: summarizeFlightEvents(dataDir),
+        events: [],
+      });
+    }
+
     if (url.pathname === '/api/cache/clear') {
       const wsReal = body.workspace
         ? normalizeWorkspaceInput(body.workspace, { throwOnInvalid: false })
@@ -744,6 +770,15 @@ class ControlTowerServer {
         atomicWriteText(regFound.absPath, nextMd.endsWith('\n') ? nextMd : `${nextMd}\n`);
         enrolled = true;
       }
+
+      appendFlightEvent(dataDir, {
+        level: 'info',
+        source: 'sidecar',
+        event: 'dispatch_created',
+        conv: newConvId,
+        message: `Dispatched worker via ${cliModel}`,
+        detail: { cliModel, enrolled, hasSlash: Boolean(body.slashPrefix) },
+      });
 
       return this.#sendJson(res, 200, {
         ok: true,
@@ -901,6 +936,16 @@ class ControlTowerServer {
         url.pathname.startsWith('/api/') || url.pathname.startsWith('/_sidecar/');
 
       if (isProtectedRoute && !this.#validToken(req, url)) {
+        const d = getDataDir();
+        if (existsSync(d)) {
+          appendFlightEvent(d, {
+            level: 'warn',
+            source: 'sidecar',
+            event: 'auth_rejected',
+            ok: false,
+            message: `401 unauthorized on ${req.method} ${url.pathname}`,
+          });
+        }
         return this.#sendJson(res, 401, { error: 'unauthorized' });
       }
 
@@ -917,38 +962,103 @@ class ControlTowerServer {
           res.writeHead(200, { 'Content-Type': asset.type });
           res.end(buf);
         } catch (err) {
+          appendFlightEvent(getDataDir(), {
+            level: 'error',
+            source: 'sidecar',
+            event: 'static_asset_error',
+            ok: false,
+            message: err?.message || `Failed reading ${url.pathname}`,
+          });
           this.#sendJson(res, 500, { error: err.message });
         }
         return;
       }
 
       if (url.pathname.startsWith('/_sidecar/')) {
+        const t0 = Date.now();
         try {
           await this.#handleSidecarBridge(req, res, url);
+          const elapsed = Date.now() - t0;
+          if (elapsed >= SLOW_OP_THRESHOLD_MS) {
+            appendFlightEvent(getDataDir(), {
+              level: 'warn',
+              source: 'sidecar',
+              event: 'slow_api',
+              durationMs: elapsed,
+              message: `${req.method} ${url.pathname} took ${elapsed}ms`,
+            });
+          }
         } catch (err) {
           if (err instanceof HttpError || err instanceof PathError) {
+            if (err.status >= 400) {
+              appendFlightEvent(getDataDir(), {
+                level: err.status >= 500 ? 'error' : 'warn',
+                source: 'sidecar',
+                event: 'bridge_error',
+                ok: false,
+                durationMs: Date.now() - t0,
+                message: `${err.status} ${url.pathname}: ${err.message}`,
+              });
+            }
             return this.#sendJson(res, err.status, {
               error: err.extra?.error || 'error',
               message: err.message,
               ...(err.extra || {}),
             });
           }
+          appendFlightEvent(getDataDir(), {
+            level: 'error',
+            source: 'sidecar',
+            event: 'bridge_internal_error',
+            ok: false,
+            durationMs: Date.now() - t0,
+            message: `${url.pathname}: ${err?.message || 'internal error'}`,
+          });
           return this.#sendJson(res, 500, { error: 'internal', message: err.message });
         }
         return;
       }
 
       if (url.pathname.startsWith('/api/')) {
+        const t0 = Date.now();
         try {
           await this.#handleApi(req, res, url);
+          const elapsed = Date.now() - t0;
+          if (elapsed >= SLOW_OP_THRESHOLD_MS && url.pathname !== '/api/diagnostics') {
+            appendFlightEvent(getDataDir(), {
+              level: 'warn',
+              source: 'sidecar',
+              event: 'slow_api',
+              durationMs: elapsed,
+              message: `${req.method} ${url.pathname} took ${elapsed}ms`,
+            });
+          }
         } catch (err) {
           if (err instanceof HttpError || err instanceof PathError) {
+            if (err.status >= 400) {
+              appendFlightEvent(getDataDir(), {
+                level: err.status >= 500 ? 'error' : 'warn',
+                source: 'sidecar',
+                event: 'api_error',
+                ok: false,
+                durationMs: Date.now() - t0,
+                message: `${err.status} ${url.pathname}: ${err.message}`,
+              });
+            }
             return this.#sendJson(res, err.status, {
               error: err.extra?.error || 'error',
               message: err.message,
               ...(err.extra || {}),
             });
           }
+          appendFlightEvent(getDataDir(), {
+            level: 'error',
+            source: 'sidecar',
+            event: 'api_internal_error',
+            ok: false,
+            durationMs: Date.now() - t0,
+            message: `${url.pathname}: ${err?.message || 'internal error'}`,
+          });
           return this.#sendJson(res, 500, { error: 'internal', message: err.message });
         }
         return;

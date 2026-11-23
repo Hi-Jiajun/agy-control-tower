@@ -1,19 +1,30 @@
-(() => {
-  const $ = (id) => document.getElementById(id);
-  const params = new URLSearchParams(location.search);
-  const uiToken = params.get('token') || '';
+import {
+  buildPrefilledHandoverText,
+  computeControllerHealth,
+  computeLivePollPlan,
+  computeTabVisibility,
+  escHtml,
+  formatFlightEventRow,
+  isLeaseIdle,
+  summarizeDiagnosticsBadge,
+} from './ui-logic.mjs';
 
-  const state = {
-    tab: 'overview',
-    settingsScope: 'plugin',
-    workspace: '',
-    snap: null,
-    toastTimer: null,
-    pollTimer: null,
-    pollPausedByUser: false,
-    rawDirty: false,
-    lastProbe: null,
-  };
+const $ = (id) => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const uiToken = params.get('token') || '';
+
+const state = {
+  tab: 'overview',
+  settingsScope: 'plugin',
+  workspace: '',
+  snap: null,
+  toastTimer: null,
+  pollTimer: null,
+  pollPausedByUser: false,
+  rawDirty: false,
+  lastProbe: null,
+  diagLoaded: false,
+};
 
   function syncTheme() {
     const probe = document.createElement('span');
@@ -35,14 +46,7 @@
     attributeFilter: ['style'],
   });
 
-  const esc = (s) =>
-    String(s ?? '').replace(/[&<>"']/g, (c) => ({
-      '&': '&amp;',
-      '<': '&lt;',
-      '>': '&gt;',
-      '"': '&quot;',
-      "'": '&#39;',
-    }[c]));
+  const esc = escHtml;
 
   function showToast(msg, isErr = false) {
     const el = $('toast');
@@ -106,14 +110,18 @@
     document.querySelectorAll('.tab').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.tab === tab);
     });
-    const hasReg = Boolean(state.snap?.registryExists);
-    const showEmpty = !hasReg && Boolean(state.snap?.workspace) && tab !== 'settings';
-    $('empty-state').classList.toggle('hidden', !showEmpty);
-    ['overview', 'sessions', 'queue', 'raw', 'settings'].forEach((name) => {
-      const panel = $(`tab-${name}`);
-      const visible = name === 'settings' ? tab === 'settings' : hasReg && name === tab;
-      panel.classList.toggle('hidden', !visible);
+    const vis = computeTabVisibility({
+      tab,
+      hasReg: Boolean(state.snap?.registryExists),
+      hasWorkspace: Boolean(state.snap?.workspace),
     });
+    $('empty-state').classList.toggle('hidden', !vis.showEmpty);
+    Object.entries(vis.visibleTabs).forEach(([name, visible]) => {
+      $(`tab-${name}`).classList.toggle('hidden', !visible);
+    });
+    if (tab === 'settings' && state.settingsScope === 'plugin') {
+      loadDiagnostics({ silent: true });
+    }
   }
 
   function switchSettingsScope(scope) {
@@ -124,6 +132,9 @@
     ['plugin', 'global', 'workspace'].forEach((name) => {
       $(`settings-scope-${name}`).classList.toggle('hidden', name !== scope);
     });
+    if (scope === 'plugin') {
+      loadDiagnostics({ silent: true });
+    }
   }
 
   function renderWorkspaces(snap) {
@@ -191,7 +202,7 @@
     const statusText = leaseEnabled ? lease.lockStatus || '-' : '无独占资源模式';
     const pill = $('lease-status-pill');
     pill.textContent = statusText;
-    const isIdle = !leaseEnabled || /IDLE|空闲|无独占/i.test(statusText);
+    const isIdle = isLeaseIdle(statusText, leaseEnabled);
     pill.className = `badge ${isIdle ? 'badge-ok' : 'badge-warn'}`;
 
     $('lease-disabled-note').classList.toggle('hidden', leaseEnabled);
@@ -219,16 +230,16 @@
 
     const ctrl = snap.parsed?.controller || {};
     const tel = ctrl.telemetry || {};
-    const comps = Number(tel.compactions || 0);
-    const threshold = Number(eff.controllerCompactionThreshold || 5);
-    const ignored = Boolean(snap?.attention?.handoverIgnored);
+    const health = computeControllerHealth({
+      compactions: Number(tel.compactions || 0),
+      threshold: Number(eff.controllerCompactionThreshold || 5),
+      ignored: Boolean(snap?.attention?.handoverIgnored),
+    });
     const compBadge = $('ctrl-comp-badge');
-    compBadge.textContent = ignored
-      ? `压缩 ${comps} 次 (已忽略)`
-      : `压缩 ${comps} / ${threshold} 次`;
-    compBadge.className = `badge ${!ignored && comps >= threshold ? 'badge-danger' : 'badge-ok'}`;
-    $('ctrl-alert').classList.toggle('hidden', ignored || comps < threshold);
-    $('ctrl-alert-text').textContent = `当前总控已累计 ${comps} 次压缩（阈值 ${threshold} 次），可一键拉起新总控接班或忽略。`;
+    compBadge.textContent = health.badgeText;
+    compBadge.className = `badge ${health.badgeClass}`;
+    $('ctrl-alert').classList.toggle('hidden', !health.showAlert);
+    $('ctrl-alert-text').textContent = health.alertText;
 
     const autoBadge = $('ctrl-autonomy-badge');
     const autoLabel = eff.effectiveAutonomy || 'balanced';
@@ -511,20 +522,21 @@
   }
 
   function updateLivePollControls(snap) {
-    const pluginPoll = snap?.settings?.plugin?.livePollEnabled !== false;
-    const sec = Number(snap?.settings?.plugin?.livePollIntervalSec || 4);
-    const hasActiveWork = Boolean(
-      (snap?.parsed?.activeSessions || []).length > 0 || snap?.nativeSwarm?.active
-    );
-    const isLive = pluginPoll && !state.pollPausedByUser;
-    $('live-dot').classList.toggle('live', isLive && hasActiveWork);
+    const plan = computeLivePollPlan({
+      pluginPollEnabled: snap?.settings?.plugin?.livePollEnabled !== false,
+      pausedByUser: state.pollPausedByUser,
+      intervalSec: Number(snap?.settings?.plugin?.livePollIntervalSec || 4),
+      activeSessionCount: (snap?.parsed?.activeSessions || []).length,
+      swarmActive: Boolean(snap?.nativeSwarm?.active),
+    });
+    $('live-dot').classList.toggle('live', plan.dotLive);
     const btn = $('poll-toggle-btn');
-    btn.classList.toggle('active', isLive);
-    btn.textContent = isLive ? `监测 ${sec}s` : '监测暂停';
+    btn.classList.toggle('active', plan.isLive);
+    btn.textContent = plan.buttonText;
 
     clearInterval(state.pollTimer);
     state.pollTimer = null;
-    if (isLive && hasActiveWork) {
+    if (plan.shouldSchedule) {
       state.pollTimer = setInterval(() => {
         if (document.visibilityState !== 'visible') return;
         const activeTag = document.activeElement?.tagName;
@@ -536,13 +548,61 @@
           !$('session-form').classList.contains('hidden');
         if (editingFormOpen) return;
         refresh(undefined, { silent: true });
-      }, Math.max(2, sec) * 1000);
+      }, plan.intervalMs);
+    }
+  }
+
+  function renderDiagnostics(payload) {
+    const summary = payload?.summary || null;
+    const events = Array.isArray(payload?.events) ? payload.events : [];
+    const badge = summarizeDiagnosticsBadge(summary);
+    const badgeEl = $('diag-health-badge');
+    badgeEl.textContent = badge.text;
+    badgeEl.className = `badge ${badge.badgeClass}`;
+
+    if (summary) {
+      $('diag-stats').textContent =
+        `近 ${summary.windowHours || 24}h: 共 ${summary.total || 0} 条 | ` +
+        `慢调用 ${summary.slowCount || 0} | 写保护拦截 ${summary.guardBlockedCount || 0} | ` +
+        `跳过唤醒 ${summary.wakeSkippedCount || 0}`;
+    }
+
+    const listEl = $('diag-events-list');
+    if (events.length === 0) {
+      listEl.innerHTML = '<p class="muted">暂无匹配的飞行诊断事件。</p>';
+      return;
+    }
+    listEl.innerHTML = events
+      .map((ev) => {
+        const row = formatFlightEventRow(ev);
+        return `
+          <div class="diag-row">
+            <div class="diag-head">
+              <span class="diag-title">${esc(row.timeLabel)} | ${esc(row.title)}</span>
+              <span class="badge ${row.levelClass}">${esc(row.level)}</span>
+            </div>
+            ${row.message ? `<div class="diag-msg">${esc(row.message)}</div>` : ''}
+          </div>
+        `;
+      })
+      .join('');
+  }
+
+  async function loadDiagnostics({ silent = false } = {}) {
+    try {
+      const level = $('diag-level-filter')?.value || '';
+      const qs = level ? `?limit=60&level=${encodeURIComponent(level)}` : '?limit=60';
+      const data = await api(`/api/diagnostics${qs}`);
+      state.diagLoaded = true;
+      renderDiagnostics(data);
+    } catch (err) {
+      if (!silent) showToast(err.message, true);
     }
   }
 
   function render(snap) {
     state.snap = snap;
-    $('version-badge').textContent = `v${snap.plugin?.version || '1.2.3'}`;
+    $('version-badge').textContent = `v${snap.plugin?.version || '1.3.0'}`;
     applyMotionSetting(snap);
     renderWorkspaces(snap);
     renderAttentionBanner(snap);
@@ -587,27 +647,7 @@
   }
 
   function buildPrefilledHandover() {
-    const snap = state.snap;
-    const raw = snap?.templates?.handoverTemplate || '';
-    if (!snap || !snap.registryExists) return raw;
-    const ctrl = snap.parsed?.controller || {};
-    const eff = snap.settings?.effective || {};
-    const nextTerm = (ctrl.handoverHistory?.length || 0) + 1;
-    const lease = snap.parsed?.lease || {};
-    const activeText =
-      (snap.parsed?.activeSessions || [])
-        .slice(0, 3)
-        .map((s) => `${s.conversationId} (${s.topic})`)
-        .join('; ') || '无';
-    const swarmPart = snap.nativeSwarm?.active ? ` | Swarm: ${snap.nativeSwarm.title}` : '';
-    const settingsSnapshot = `${eff.exclusiveLeaseEnabled === false ? '无独占锁' : '单锁开启'} | ${eff.effectiveAutonomy || 'balanced'} | 阈值 ${eff.controllerCompactionThreshold || 5} 次`;
-    return raw
-      .replace('<N>', String(nextTerm))
-      .replace('<旧 conversationId>', ctrl.currentControllerId || '<旧 conversationId>')
-      .replace('<列出 AGENTS.md / 状态总账 / SESSION-REGISTRY.md（含托管标记）精确路径>', snap.registryPath || snap.registryRelPath || 'SESSION-REGISTRY.md')
-      .replace('<独占锁开启或关闭 | 代决策档位 autonomous/balanced/strict | 换届阈值 | 生效覆盖文档路径>', settingsSnapshot)
-      .replace('<无独占资源模式 / IDLE / 会话 conversationId（任务编号）>', eff.exclusiveLeaseEnabled === false ? '无独占资源模式' : `${lease.lockStatus || 'IDLE'} | ${lease.holder || '-'}`)
-      .replace('<列出仍在推进的 conversationId 或活跃原生 swarm 标题与停靠点，没有填 无>', `${activeText}${swarmPart}`);
+    return buildPrefilledHandoverText(state.snap);
   }
 
   async function spawnHandoverController(oldCtrlId) {
@@ -956,6 +996,18 @@
       });
       render(res.snapshot);
       showToast('已清理遥测缓存');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  $('diag-level-filter').addEventListener('change', () => loadDiagnostics());
+  $('diag-refresh-btn').addEventListener('click', () => loadDiagnostics());
+  $('diag-clear-btn').addEventListener('click', async () => {
+    try {
+      const data = await api('/api/diagnostics/clear', { method: 'POST', body: {} });
+      renderDiagnostics(data);
+      showToast('已清空黑匣子诊断日志');
     } catch (err) {
       showToast(err.message, true);
     }
@@ -1405,4 +1457,3 @@
   } else {
     refresh('');
   }
-})();

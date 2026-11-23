@@ -1,0 +1,27 @@
+{
+  "id": "INC-003",
+  "title": "Non-standard registry Section 1 / placeholder Section 3 triggers gentle SessionStart alignment hint",
+  "incidentDate": "2026-11-22",
+  "category": "hook",
+  "description": "When an older workspace registry uses custom Section 1 headings or placeholder rows without conversation IDs, SessionStart emits a gentle alignment hint without crashing.",
+  "kind": "hook",
+  "setup": {
+    "registryRelPath": ".agents/SESSION-REGISTRY.md",
+    "registryMarkdown": "# 旧版台账\n\n## 一、设备资源总览\n暂无标准表格\n\n## 二、常驻主交流总控会话\n- **当前现役总控会话**：`${CTRL_ID}`（状态：`ONLINE`）\n\n## 三、活跃 / 挂起专职会话台账\n| 会话链接与 ID | 任务 | 模型 | 锁 | 状态 | 路径 |\n| --- | --- | --- | --- | --- | --- |\n| 待补充 | 示例任务 | Neon | 无锁 | ACTIVE | - |\n"
+  },
+  "action": {
+    "eventName": "SessionStart",
+    "payload": {
+      "conversationId": "${CTRL_ID}",
+      "workspacePaths": ["${WORKSPACE}"]
+    }
+  },
+  "expect": {
+    "contains": [
+      "[control-tower 总控就位]",
+      "台账格式提示",
+      "第 1 节未匹配标准独占资源租约结构",
+      "第 3 节存在无有效会话 ID 的占位行"
+    ]
+  }
+}
