@@ -14,11 +14,14 @@ export function escHtml(value) {
 }
 
 export function computeTabVisibility({ tab = 'overview', hasReg = false, hasWorkspace = false } = {}) {
-  const showEmpty = !hasReg && Boolean(hasWorkspace) && tab !== 'settings';
-  const tabs = ['overview', 'sessions', 'queue', 'raw', 'settings'];
+  const alwaysAllowed = tab === 'settings' || tab === 'roadmap';
+  const showEmpty = !hasReg && Boolean(hasWorkspace) && !alwaysAllowed;
+  const tabs = ['overview', 'sessions', 'roadmap', 'queue', 'raw', 'settings'];
   const visibleTabs = {};
   for (const name of tabs) {
-    visibleTabs[name] = name === 'settings' ? tab === 'settings' : Boolean(hasReg) && name === tab;
+    if (name === 'settings') visibleTabs[name] = tab === 'settings';
+    else if (name === 'roadmap') visibleTabs[name] = tab === 'roadmap' && Boolean(hasWorkspace);
+    else visibleTabs[name] = Boolean(hasReg) && name === tab;
   }
   return { showEmpty, visibleTabs };
 }
@@ -163,4 +166,34 @@ export function summarizeExecutionSurfaces(surfaces) {
     hiddenTotal: swarmAlive + subagents + workflows,
     sidebarWarning: topLevel >= 3,
   };
+}
+
+export function formatRoadmapStatusBadge(effectiveStatus) {
+  switch (String(effectiveStatus || 'planned').toLowerCase()) {
+    case 'ready':
+      return { text: 'READY 可并行', badgeClass: 'badge-ok' };
+    case 'active':
+      return { text: 'ACTIVE 推进中', badgeClass: 'badge-warn' };
+    case 'blocked':
+      return { text: 'BLOCKED 等前置', badgeClass: 'badge-danger' };
+    case 'verified':
+      return { text: 'VERIFIED 已验', badgeClass: 'badge-ok' };
+    case 'done':
+      return { text: 'DONE 已结项', badgeClass: 'badge-muted' };
+    default:
+      return { text: 'PLANNED', badgeClass: 'badge-muted' };
+  }
+}
+
+export function formatIsolationLabel(mode) {
+  if (mode === 'branch') return 'branch (独立克隆)';
+  if (mode === 'inherit') return 'inherit (共享目录)';
+  return 'share (独立工作树)';
+}
+
+export function formatCollabLabel(mode) {
+  if (mode === 'workflow_pipeline') return 'Workflow 契约流水线';
+  if (mode === 'handoff_file') return '契约文件接力';
+  if (mode === 'solo') return '独立单线';
+  return 'Swarm 频道直聊';
 }

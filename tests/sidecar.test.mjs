@@ -349,6 +349,57 @@ if (args.includes('new-conversation')) {
 
     const inboxAck = await req('POST', '/api/inbox/ack', { workspace: ws, ackAll: true });
     assert.equal(inboxAck.status, 200);
+
+    // 15) Phase 3: Roadmap APIs (init, node upsert, cycle 400 guard, contract prompt, status unlock, delete)
+    const rmInit = await req('POST', '/api/roadmap/init', { workspace: ws, storageMode: 'workspace', projectName: 'SidecarProj' });
+    assert.equal(rmInit.status, 200);
+    assert.equal(rmInit.data.snapshot.roadmap.exists, true);
+
+    const rmN1 = await req('POST', '/api/roadmap/node/upsert', {
+      workspace: ws,
+      id: 'W1',
+      title: '基础节点',
+      status: 'active',
+      isolation: 'share',
+      collaboration: 'swarm_channel',
+      ownership: 'src/a/',
+      acceptance: 'npm test',
+    });
+    assert.equal(rmN1.status, 200);
+
+    const rmN2 = await req('POST', '/api/roadmap/node/upsert', {
+      workspace: ws,
+      id: 'W2',
+      title: '下游节点',
+      status: 'planned',
+      dependsOn: 'W1',
+      isolation: 'share',
+      collaboration: 'handoff_file',
+      ownership: 'src/b/',
+      acceptance: 'npm test',
+    });
+    assert.equal(rmN2.status, 200);
+
+    const rmCycle = await req('POST', '/api/roadmap/node/upsert', {
+      workspace: ws,
+      id: 'W1',
+      title: '循环测试',
+      dependsOn: 'W2',
+    });
+    assert.equal(rmCycle.status, 400);
+
+    const rmContract = await req('POST', '/api/roadmap/node/contract', { workspace: ws, id: 'W2' });
+    assert.equal(rmContract.status, 200);
+    assert.ok(rmContract.data.contractPrompt.includes('workspace: "share"'));
+
+    const rmDone = await req('POST', '/api/roadmap/node/status', { workspace: ws, id: 'W1', status: 'done' });
+    assert.equal(rmDone.status, 200);
+    assert.equal(rmDone.data.newlyUnlocked.length, 1);
+    assert.equal(rmDone.data.newlyUnlocked[0].id, 'W2');
+
+    const rmDel = await req('POST', '/api/roadmap/node/delete', { workspace: ws, id: 'W2' });
+    assert.equal(rmDel.status, 200);
+    assert.equal(rmDel.data.snapshot.roadmap.graph.counts.total, 1);
   } finally {
     if (server) await server.close();
     process.env = prevEnv;

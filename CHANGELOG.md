@@ -5,6 +5,18 @@ All notable changes to `control-tower` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-11-23
+
+### Added
+- **第三阶段（方向三）：子会话四象限物理隔离与协作契约协议**
+  - 在 `plugin/lib/roadmap.mjs` 实现文件所有权边界（Ownership Map）重叠冲突检测 `detectOwnershipOverlaps()` 与四象限契约派单词生成器 `buildWorkstreamContractPrompt()`（内嵌 `workspace: share/branch/inherit` 隔离档位、Swarm 频道 / Workflow 流水线 / `.agents/handoffs/` 协作拓扑、所有权边界、验收命令与 L4 统一合流门禁）。
+  - 在 `plugin/skills/control-tower/SKILL.md` 新增第 7 节「子会话四象限隔离与协作协议」并在 `references/templates.md` 新增「模板 D：跨波次接力契约卡片」。
+- **第三阶段（方向四）：大型长期项目三层混合存储路线图（L1 + L2 + L3）与看板联动**
+  - 新增 `plugin/lib/roadmap.mjs`：按需启用（小项目零负担），支持工作区 `.agents/` 与 `PLUGIN_DATA` 零侵入托管双落点；管理 L1 战略北极星 `ROADMAP.md` 与 L2 结构化分支依赖图 `roadmap.json`（含循环依赖拦截、自动就绪度计算、分支标记完成后的下游新解锁分支提示与里程碑进度汇总）。
+  - 升级 `plugin/scripts/ct-hook.mjs`：`SessionStart` 为已启用路线图的工作区现役总控自动注入 1 行 L1/L2 进度、就绪并行分支与所有权冲突速览，防多轮换届战略漂移。
+  - 升级 Aux Pane 看板 `plugin/sidecars/tower/`：新增 6 标签响应式导航（窄栏 3x2 零溢出）与「路线图」交互树页签（含里程碑进度条、L1 在线编辑、所有权冲突预警横幅、分支依赖树与一键复制四象限契约派单词 / 标记完成自动解锁下游），并新增 `/api/roadmap/*` 全套鉴权路由及 `/api/dispatch/create` 的 `workstreamId` 自动回链。
+- 扩充四维自动化门禁：新增 `tests/roadmap.test.mjs`、`tests/inbox-and-surfaces.test.mjs`、2 份新回放样本（`INC-007` 焦点门禁暂缓唤醒与 `INC-008` 路线图循环依赖/所有权冲突），L3 无头 Chrome CDP 真浏览器冒烟覆盖全部 6 标签与路线图交互初始化，L4 Skill 行为契约评测扩充至 14 项黄金场景。
+
 ## [1.4.0] - 2026-11-23
 
 ### Added

@@ -19,6 +19,7 @@ import {
   recordControllerFocus,
   upsertInboxItem,
 } from '../lib/inbox.mjs';
+import { loadWorkspaceRoadmap } from '../lib/roadmap.mjs';
 import {
   findActiveWorkerSession,
   isActiveController,
@@ -186,7 +187,7 @@ function handlePreToolUse(payload, regFound, parsedReg, resolved, dataDir, convI
   process.stdout.write(`${JSON.stringify({ decision, reason })}\n`);
 }
 
-function handleSessionStart(regFound, parsedReg, resolved, convId) {
+function handleSessionStart(regFound, parsedReg, resolved, dataDir, convId) {
   const isCtrl = isActiveController(convId, parsedReg);
   if (isCtrl) {
     const leaseStatus = ((parsedReg.lease || {}).lockStatus || '未知').trim();
@@ -209,6 +210,23 @@ function handleSessionStart(regFound, parsedReg, resolved, convId) {
       );
     }
     const overrideSuffix = overrideNotes.length > 0 ? ` | ${overrideNotes.join(' | ')}` : '';
+    let roadmapSuffix = '';
+    try {
+      const rm = loadWorkspaceRoadmap(regFound.workspace, {
+        dataDir,
+        workspaceSettings: resolved.workspace,
+      });
+      if (rm.exists && rm.graph) {
+        const readyLabel = rm.graph.readyIds.slice(0, 4).join(', ') || '无';
+        const overlapLabel =
+          rm.graph.overlaps.length > 0 ? ` | 所有权冲突预警: ${rm.graph.overlaps.length} 组` : '';
+        roadmapSuffix =
+          ` | 路线图(${rm.isManaged ? '托管' : '工作区'}): ${rm.graph.counts.done}/${rm.graph.counts.total} 完成` +
+          ` | 就绪可并行分支: ${readyLabel}${overlapLabel}`;
+      }
+    } catch {
+      // ignore roadmap read error in SessionStart
+    }
     const schemaIssues = [];
     if (resolved.effective.exclusiveLeaseEnabled !== false && !((parsedReg.lease || {}).lockStatus || '').trim()) {
       schemaIssues.push('第 1 节未匹配标准独占资源租约结构');
@@ -225,7 +243,7 @@ function handleSessionStart(regFound, parsedReg, resolved, convId) {
       `台账: ${regTag} | ${lockText} | 活跃专职会话: ${activeCount} 个 | ` +
       `代决策档位: ${resolved.effective.effectiveAutonomy} (${resolved.effective.autonomySource}) | ` +
       `换届阈值: ${resolved.effective.controllerCompactionThreshold} 次压缩` +
-      `${overrideSuffix}${schemaHint}。`;
+      `${roadmapSuffix}${overrideSuffix}${schemaHint}。`;
     process.stdout.write(
       `${JSON.stringify({ injectSteps: [{ systemMessage: { systemMessage: msg } }] })}\n`
     );
@@ -748,7 +766,7 @@ function run() {
   if (eventName === 'PreToolUse') {
     handlePreToolUse(payload, regFound, parsedReg, resolved, dataDir, convId);
   } else if (eventName === 'SessionStart') {
-    handleSessionStart(regFound, parsedReg, resolved, convId);
+    handleSessionStart(regFound, parsedReg, resolved, dataDir, convId);
   } else if (eventName === 'PreInvocation') {
     handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hintPath, convId);
   } else if (eventName === 'Stop') {

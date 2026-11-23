@@ -1,0 +1,54 @@
+{
+  "id": "INC-008",
+  "title": "Roadmap DAG detects cyclic dependency and overlapping file ownership across parallel branches",
+  "incidentDate": "2026-11-23",
+  "category": "roadmap",
+  "description": "evaluateRoadmapGraph must detect cyclic dependencies and flag overlapping Ownership Map directories between concurrent ready/active workstreams.",
+  "kind": "roadmap_dag",
+  "action": {
+    "roadmap": {
+      "version": 1,
+      "projectName": "OverlapTest",
+      "milestones": [{ "id": "M1", "title": "M1", "dod": "green", "status": "active" }],
+      "nodes": [
+        {
+          "id": "W1",
+          "title": "Branch 1",
+          "milestoneId": "M1",
+          "status": "active",
+          "dependsOn": [],
+          "ownership": ["plugin/lib/"]
+        },
+        {
+          "id": "W2",
+          "title": "Branch 2",
+          "milestoneId": "M1",
+          "status": "planned",
+          "dependsOn": [],
+          "ownership": ["plugin/lib/roadmap.mjs"]
+        },
+        {
+          "id": "W3",
+          "title": "Cycle A",
+          "milestoneId": "M1",
+          "status": "planned",
+          "dependsOn": ["W4"],
+          "ownership": ["tests/"]
+        },
+        {
+          "id": "W4",
+          "title": "Cycle B",
+          "milestoneId": "M1",
+          "status": "planned",
+          "dependsOn": ["W3"],
+          "ownership": ["scripts/"]
+        }
+      ]
+    }
+  },
+  "expect": {
+    "hasCycle": true,
+    "overlapCount": 1,
+    "readyIds": ["W2"]
+  }
+}

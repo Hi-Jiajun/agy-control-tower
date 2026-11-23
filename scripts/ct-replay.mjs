@@ -11,6 +11,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFlightEvents, sanitizeLogString } from '../plugin/lib/logger.mjs';
 import { resolvePluginDataDir } from '../plugin/lib/paths.mjs';
+import { evaluateRoadmapGraph } from '../plugin/lib/roadmap.mjs';
 import { normalizeModelForAgentApi, validateDispatchModel } from '../plugin/lib/settings.mjs';
 import { extractPromptSessionIds, hasOutboundAgentApiReport } from '../plugin/lib/transcript.mjs';
 import { makeConvId, makeSandbox, makeTranscriptPath } from '../tests/helpers.mjs';
@@ -125,6 +126,20 @@ export function runReplayFixture(fixture) {
         if (c.cliModel !== undefined) {
           assert.equal(normalizeModelForAgentApi(c.model), c.cliModel, `Alias mismatch for "${c.model}"`);
         }
+      }
+      return { id: spec.id, ok: true };
+    }
+
+    if (kind === 'roadmap_dag') {
+      const graph = evaluateRoadmapGraph(spec.action?.roadmap || {});
+      if (spec.expect?.hasCycle !== undefined) {
+        assert.equal(graph.hasCycle, spec.expect.hasCycle);
+      }
+      if (spec.expect?.overlapCount !== undefined) {
+        assert.equal(graph.overlaps.length, spec.expect.overlapCount);
+      }
+      if (Array.isArray(spec.expect?.readyIds)) {
+        assert.deepEqual(graph.readyIds, spec.expect.readyIds);
       }
       return { id: spec.id, ok: true };
     }

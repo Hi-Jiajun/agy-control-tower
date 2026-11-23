@@ -14,7 +14,7 @@
         <div class="brand-title">
           <span id="live-dot" class="brand-dot" title="监测指示"></span>
           <strong>Control Tower</strong>
-          <span id="version-badge" class="badge">v1.4.0</span>
+          <span id="version-badge" class="badge">v1.5.0</span>
         </div>
         <div class="actions">
           <button id="poll-toggle-btn" class="pill-btn" title="切换实时自动监测">实时监测</button>
@@ -36,6 +36,7 @@
     <nav class="tabs" role="tablist">
       <button class="tab active" data-tab="overview">总览与锁</button>
       <button class="tab" data-tab="sessions">监测派遣</button>
+      <button class="tab" data-tab="roadmap">路线图</button>
       <button class="tab" data-tab="queue">任务队列</button>
       <button class="tab" data-tab="raw">台账模板</button>
       <button class="tab" data-tab="settings">设置中心</button>
@@ -267,6 +268,123 @@
             <span id="archived-count-badge" class="badge badge-muted">0</span>
           </div>
           <div id="archived-sessions-list" class="list-stack"></div>
+        </div>
+      </section>
+
+      <section id="tab-roadmap" class="tab-panel hidden">
+        <div id="rm-empty" class="card">
+          <div class="card-head">
+            <h3>三层长期项目路线图（按需启用）</h3>
+            <span class="badge badge-muted">未启用</span>
+          </div>
+          <p class="muted">小项目零强制开销。大型长期项目启用后自动建立 L1 战略北极星（ROADMAP.md）与 L2 结构化依赖图（roadmap.json），支持分支依赖解锁与文件所有权冲突检测。</p>
+          <div class="actions">
+            <button id="rm-init-ws-btn" class="btn btn-primary btn-sm">初始化工作区路线图 (.agents/)</button>
+            <button id="rm-init-managed-btn" class="btn btn-ghost btn-sm">零侵入托管 (@plugin_data/)</button>
+          </div>
+        </div>
+
+        <div id="rm-body" class="hidden">
+          <div class="card">
+            <div class="card-head">
+              <h3>L1 战略北极星与阶段里程碑</h3>
+              <span id="rm-storage-badge" class="badge badge-muted">-</span>
+            </div>
+            <div id="rm-milestones-list" class="list-stack"></div>
+            <div class="actions">
+              <button id="rm-toggle-l1-btn" class="btn btn-ghost btn-sm">编辑 L1 ROADMAP.md</button>
+              <button id="rm-toggle-ms-form-btn" class="btn btn-ghost btn-sm">新增里程碑</button>
+            </div>
+            <div id="rm-l1-wrap" class="subform hidden">
+              <textarea id="rm-l1-editor" class="editor editor-md" spellcheck="false"></textarea>
+              <div class="actions">
+                <button id="rm-l1-save-btn" type="button" class="btn btn-primary btn-sm">保存 L1 北极星</button>
+              </div>
+            </div>
+            <form id="rm-ms-form" class="subform hidden">
+              <div class="two-col">
+                <label>里程碑 ID <input id="rms-id" class="input" placeholder="如 M2" required /></label>
+                <label>状态
+                  <select id="rms-status" class="select">
+                    <option value="planned">planned</option>
+                    <option value="active">active</option>
+                    <option value="done">done</option>
+                  </select>
+                </label>
+              </div>
+              <label>标题 <input id="rms-title" class="input" placeholder="阶段目标简述" required /></label>
+              <label>验收定义 (DoD) <input id="rms-dod" class="input" placeholder="客观验收标准" /></label>
+              <div class="actions">
+                <button type="submit" class="btn btn-primary btn-sm">保存里程碑</button>
+                <button type="button" id="rm-ms-cancel-btn" class="btn btn-ghost btn-sm">取消</button>
+              </div>
+            </form>
+          </div>
+
+          <div id="rm-overlap-banner" class="alert hidden">
+            <span id="rm-overlap-text">检测到并行分支文件所有权边界存在重叠，请调整路径归属或改为串行依赖。</span>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h3>L2 分支细化与依赖就绪树</h3>
+              <div class="actions">
+                <button id="rm-toggle-node-form-btn" class="btn btn-primary btn-sm">新增分支</button>
+                <span id="rm-nodes-badge" class="badge">0</span>
+              </div>
+            </div>
+            <form id="rm-node-form" class="subform hidden">
+              <input type="hidden" id="rnf-originalId" />
+              <div class="two-col">
+                <label>分支 ID <input id="rnf-id" class="input" placeholder="如 W1" required /></label>
+                <label>归属里程碑 <input id="rnf-milestoneId" class="input" value="M1" /></label>
+              </div>
+              <label>分支目标标题 <input id="rnf-title" class="input" placeholder="一句话明确该分支唯一交付目标" required /></label>
+              <div class="two-col">
+                <label>所属史诗/子线 <input id="rnf-epic" class="input" value="Core" /></label>
+                <label>当前状态
+                  <select id="rnf-status" class="select">
+                    <option value="planned">planned (按依赖自动算就绪)</option>
+                    <option value="active">active (推进中)</option>
+                    <option value="verified">verified (已验)</option>
+                    <option value="done">done (已结项)</option>
+                  </select>
+                </label>
+              </div>
+              <div class="two-col">
+                <label>物理隔离档位
+                  <select id="rnf-isolation" class="select">
+                    <option value="share">share (独立工作树，默认)</option>
+                    <option value="branch">branch (完全独立克隆)</option>
+                    <option value="inherit">inherit (共享目录/只读)</option>
+                  </select>
+                </label>
+                <label>协作拓扑协议
+                  <select id="rnf-collaboration" class="select">
+                    <option value="swarm_channel">Swarm 频道直聊</option>
+                    <option value="workflow_pipeline">Workflow 契约流水线</option>
+                    <option value="handoff_file">契约文件接力</option>
+                    <option value="solo">独立单线</option>
+                  </select>
+                </label>
+              </div>
+              <label>前置依赖 ID（逗号分隔，如 W1, W2）
+                <input id="rnf-dependsOn" class="input" placeholder="无前置依赖则留空" />
+              </label>
+              <label>文件所有权边界 Ownership Map（逗号分隔目录/文件）
+                <input id="rnf-ownership" class="input" placeholder="例如 src/auth/, tests/auth/" />
+              </label>
+              <div class="two-col">
+                <label>建议模型 <input id="rnf-model" class="input" list="ct-model-presets" value="Gemini 4 Neon (High)" /></label>
+                <label>客观验收命令 <input id="rnf-acceptance" class="input" placeholder="如 npm test" /></label>
+              </div>
+              <div class="actions">
+                <button type="submit" class="btn btn-primary btn-sm">保存分支节点</button>
+                <button type="button" id="rm-node-cancel-btn" class="btn btn-ghost btn-sm">取消</button>
+              </div>
+            </form>
+            <div id="rm-nodes-list" class="list-stack"></div>
+          </div>
         </div>
       </section>
 

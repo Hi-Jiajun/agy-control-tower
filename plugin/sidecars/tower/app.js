@@ -4,9 +4,12 @@ import {
   computeLivePollPlan,
   computeTabVisibility,
   escHtml,
+  formatCollabLabel,
   formatFlightEventRow,
   formatFocusGateBadge,
   formatInboxPriorityClass,
+  formatIsolationLabel,
+  formatRoadmapStatusBadge,
   isLeaseIdle,
   summarizeDiagnosticsBadge,
   summarizeExecutionSurfaces,
@@ -481,6 +484,85 @@ const state = {
             .join('');
   }
 
+  function renderRoadmap(snap) {
+    const rm = snap.roadmap || { exists: false };
+    $('rm-empty').classList.toggle('hidden', Boolean(rm.exists));
+    $('rm-body').classList.toggle('hidden', !rm.exists);
+    if (!rm.exists) return;
+
+    $('rm-storage-badge').textContent = rm.isManaged ? '@plugin_data 托管' : '.agents/ 工作区';
+    if (document.activeElement !== $('rm-l1-editor')) {
+      $('rm-l1-editor').value = rm.l1Content || '';
+    }
+
+    const graph = rm.graph || { milestoneStats: [], overlaps: [], nodes: [], counts: { total: 0, done: 0, ready: 0 } };
+    const msBox = $('rm-milestones-list');
+    if (graph.milestoneStats.length === 0) {
+      msBox.innerHTML = '<p class="muted">暂无里程碑记录</p>';
+    } else {
+      msBox.innerHTML = graph.milestoneStats
+        .map(
+          (m) => `
+          <div class="item-box">
+            <div class="card-head">
+              <strong>${esc(m.id)} | ${esc(m.title)}</strong>
+              <span class="badge ${m.pct === 100 ? 'badge-ok' : 'badge-muted'}">${esc(m.done)}/${esc(m.total)} (${esc(m.pct)}%)</span>
+            </div>
+            <div class="progress-track"><div class="progress-fill" style="width:${Math.min(100, Math.max(0, m.pct))}%"></div></div>
+            <div class="item-meta">DoD: ${esc(m.dod)} | 就绪 ${esc(m.ready)} / 进行中 ${esc(m.active)} / 阻塞 ${esc(m.blocked)}</div>
+          </div>
+        `
+        )
+        .join('');
+    }
+
+    const overlaps = graph.overlaps || [];
+    $('rm-overlap-banner').classList.toggle('hidden', overlaps.length === 0);
+    if (overlaps.length > 0) {
+      $('rm-overlap-text').textContent = `所有权冲突预警 (${overlaps.length} 组): ${overlaps
+        .map((o) => `${o.nodeA}/${o.nodeB} [${o.paths.join(', ')}]`)
+        .join('；')}`;
+    }
+
+    $('rm-nodes-badge').textContent = `${graph.counts.done}/${graph.counts.total} | 就绪 ${graph.counts.ready}`;
+    const nodesBox = $('rm-nodes-list');
+    if (graph.nodes.length === 0) {
+      nodesBox.innerHTML = '<p class="muted">暂无分支工作包，点击右上角「新增分支」开始渐进式细化。</p>';
+      return;
+    }
+    nodesBox.innerHTML = graph.nodes
+      .map((n) => {
+        const st = formatRoadmapStatusBadge(n.effectiveStatus);
+        const depsLine =
+          n.unmetDeps?.length > 0
+            ? `阻塞前置: ${n.unmetDeps.join(', ')}`
+            : n.dependsOn?.length > 0
+              ? `前置已满足: ${n.dependsOn.join(', ')}`
+              : '无前置依赖';
+        const ownLine = n.ownership?.length > 0 ? n.ownership.join(', ') : '未限定';
+        const isDone = n.status === 'done' || n.status === 'verified';
+        return `
+          <div class="item-box">
+            <div class="card-head">
+              <strong>${esc(n.id)} | ${esc(n.title)}</strong>
+              <span class="badge ${st.badgeClass}">${esc(st.text)}</span>
+            </div>
+            <div class="item-meta">${esc(n.milestoneId)} / ${esc(n.epic)} | ${esc(formatIsolationLabel(n.isolation))} | ${esc(formatCollabLabel(n.collaboration))}</div>
+            <div class="item-meta">所有权: ${esc(ownLine)} | ${esc(depsLine)}</div>
+            <div class="item-meta">验收: ${esc(n.acceptance || '-')} | 模型: ${esc(n.recommendedModel || '-')}</div>
+            <div class="actions">
+              <button class="btn btn-primary btn-sm rm-copy-contract-btn" data-id="${esc(n.id)}">复制契约派单词</button>
+              ${!isDone ? `<button class="btn btn-ghost btn-sm rm-mark-done-btn" data-id="${esc(n.id)}">标记完成</button>` : ''}
+              ${n.linkedConvId ? `<button class="btn btn-ghost btn-sm jump-conv-btn" data-id="${esc(n.linkedConvId)}">跳转会话</button>` : ''}
+              <button class="btn btn-ghost btn-sm rm-edit-node-btn" data-id="${esc(n.id)}">编辑</button>
+              <button class="btn btn-danger btn-sm rm-del-node-btn" data-id="${esc(n.id)}">删除</button>
+            </div>
+          </div>
+        `;
+      })
+      .join('');
+  }
+
   function renderQueue(snap) {
     const queue = snap.parsed?.queue || [];
     const eff = snap.settings?.effective || {};
@@ -722,7 +804,7 @@ const state = {
 
   function render(snap) {
     state.snap = snap;
-    $('version-badge').textContent = `v${snap.plugin?.version || '1.4.0'}`;
+    $('version-badge').textContent = `v${snap.plugin?.version || '1.5.0'}`;
     applyMotionSetting(snap);
     renderWorkspaces(snap);
     renderAttentionBanner(snap);
@@ -731,6 +813,7 @@ const state = {
     $('empty-ws-path').textContent = snap.workspace ? `当前工作区: ${snap.workspace}` : '';
     switchTab(state.tab);
     renderSettings(snap);
+    renderRoadmap(snap);
 
     if (hasReg) {
       renderOverview(snap);
@@ -1335,6 +1418,113 @@ const state = {
     }
   });
 
+  $('rm-init-ws-btn').addEventListener('click', async () => {
+    if (!state.workspace) return;
+    try {
+      const res = await api('/api/roadmap/init', {
+        method: 'POST',
+        body: { workspace: state.workspace, storageMode: 'workspace' },
+      });
+      render(res.snapshot);
+      showToast('已初始化工作区三层路线图 (.agents/)');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  $('rm-init-managed-btn').addEventListener('click', async () => {
+    if (!state.workspace) return;
+    try {
+      const res = await api('/api/roadmap/init', {
+        method: 'POST',
+        body: { workspace: state.workspace, storageMode: 'plugin_data' },
+      });
+      render(res.snapshot);
+      showToast('已初始化零侵入托管路线图 (@plugin_data/)');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  $('rm-toggle-l1-btn').addEventListener('click', () => $('rm-l1-wrap').classList.toggle('hidden'));
+  $('rm-toggle-ms-form-btn').addEventListener('click', () => $('rm-ms-form').classList.toggle('hidden'));
+  $('rm-ms-cancel-btn').addEventListener('click', () => $('rm-ms-form').classList.add('hidden'));
+  $('rm-toggle-node-form-btn').addEventListener('click', () => $('rm-node-form').classList.toggle('hidden'));
+  $('rm-node-cancel-btn').addEventListener('click', () => {
+    $('rm-node-form').reset();
+    $('rnf-originalId').value = '';
+    $('rm-node-form').classList.add('hidden');
+  });
+
+  $('rm-l1-save-btn').addEventListener('click', async () => {
+    if (!state.workspace) return;
+    try {
+      const res = await api('/api/roadmap/l1/save', {
+        method: 'POST',
+        body: { workspace: state.workspace, content: $('rm-l1-editor').value },
+      });
+      render(res.snapshot);
+      showToast('已保存 L1 战略北极星 ROADMAP.md');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  $('rm-ms-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!state.workspace) return;
+    try {
+      const res = await api('/api/roadmap/milestone/upsert', {
+        method: 'POST',
+        body: {
+          workspace: state.workspace,
+          id: $('rms-id').value.trim(),
+          title: $('rms-title').value.trim(),
+          dod: $('rms-dod').value.trim(),
+          status: $('rms-status').value,
+        },
+      });
+      $('rm-ms-form').reset();
+      $('rm-ms-form').classList.add('hidden');
+      render(res.snapshot);
+      showToast('已保存阶段里程碑');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  $('rm-node-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!state.workspace) return;
+    try {
+      const res = await api('/api/roadmap/node/upsert', {
+        method: 'POST',
+        body: {
+          workspace: state.workspace,
+          originalId: $('rnf-originalId').value || undefined,
+          id: $('rnf-id').value.trim(),
+          milestoneId: $('rnf-milestoneId').value.trim() || 'M1',
+          title: $('rnf-title').value.trim(),
+          epic: $('rnf-epic').value.trim() || 'Core',
+          status: $('rnf-status').value,
+          isolation: $('rnf-isolation').value,
+          collaboration: $('rnf-collaboration').value,
+          dependsOn: $('rnf-dependsOn').value.trim(),
+          ownership: $('rnf-ownership').value.trim(),
+          recommendedModel: $('rnf-model').value.trim(),
+          acceptance: $('rnf-acceptance').value.trim(),
+        },
+      });
+      $('rm-node-form').reset();
+      $('rnf-originalId').value = '';
+      $('rm-node-form').classList.add('hidden');
+      render(res.snapshot);
+      showToast('已保存路线图分支节点');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
   $('sentinel-sweep-btn').addEventListener('click', async () => {
     if (!state.workspace) return;
     try {
@@ -1401,6 +1591,77 @@ const state = {
           body: { workspace: state.workspace, id: inbAck.dataset.id },
         });
         render(res.snapshot);
+      } catch (err) {
+        showToast(err.message, true);
+      }
+      return;
+    }
+
+    const rmCopy = e.target.closest('.rm-copy-contract-btn');
+    if (rmCopy?.dataset.id && state.workspace) {
+      try {
+        const res = await api('/api/roadmap/node/contract', {
+          method: 'POST',
+          body: { workspace: state.workspace, id: rmCopy.dataset.id },
+        });
+        const ok = await copyText(res.contractPrompt || '');
+        showToast(ok ? `已复制 ${rmCopy.dataset.id} 四象限契约派单词` : '复制失败', !ok);
+      } catch (err) {
+        showToast(err.message, true);
+      }
+      return;
+    }
+
+    const rmDone = e.target.closest('.rm-mark-done-btn');
+    if (rmDone?.dataset.id && state.workspace) {
+      try {
+        const res = await api('/api/roadmap/node/status', {
+          method: 'POST',
+          body: { workspace: state.workspace, id: rmDone.dataset.id, status: 'done' },
+        });
+        render(res.snapshot);
+        const unlocked = Array.isArray(res.newlyUnlocked) ? res.newlyUnlocked : [];
+        showToast(
+          unlocked.length > 0
+            ? `${rmDone.dataset.id} 已完成，新解锁可并行分支: ${unlocked.map((u) => u.id).join(', ')}`
+            : `${rmDone.dataset.id} 已标记完成`
+        );
+      } catch (err) {
+        showToast(err.message, true);
+      }
+      return;
+    }
+
+    const rmEdit = e.target.closest('.rm-edit-node-btn');
+    if (rmEdit?.dataset.id) {
+      const node = (state.snap?.roadmap?.graph?.nodes || []).find((n) => n.id === rmEdit.dataset.id);
+      if (node) {
+        $('rnf-originalId').value = node.id;
+        $('rnf-id').value = node.id;
+        $('rnf-milestoneId').value = node.milestoneId || 'M1';
+        $('rnf-title').value = node.title || '';
+        $('rnf-epic').value = node.epic || 'Core';
+        $('rnf-status').value = node.status || 'planned';
+        $('rnf-isolation').value = node.isolation || 'share';
+        $('rnf-collaboration').value = node.collaboration || 'swarm_channel';
+        $('rnf-dependsOn').value = (node.dependsOn || []).join(', ');
+        $('rnf-ownership').value = (node.ownership || []).join(', ');
+        $('rnf-model').value = node.recommendedModel || 'Gemini 4 Neon (High)';
+        $('rnf-acceptance').value = node.acceptance || '';
+        $('rm-node-form').classList.remove('hidden');
+      }
+      return;
+    }
+
+    const rmDel = e.target.closest('.rm-del-node-btn');
+    if (rmDel?.dataset.id && state.workspace) {
+      try {
+        const res = await api('/api/roadmap/node/delete', {
+          method: 'POST',
+          body: { workspace: state.workspace, id: rmDel.dataset.id },
+        });
+        render(res.snapshot);
+        showToast(`已删除分支节点 ${rmDel.dataset.id}`);
       } catch (err) {
         showToast(err.message, true);
       }

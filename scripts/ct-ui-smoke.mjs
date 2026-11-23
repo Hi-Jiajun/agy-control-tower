@@ -358,8 +358,8 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
 
     const checks = [];
 
-    // 1) Check all 5 tabs in narrow 390px dark theme (zero overflow)
-    for (const tab of ['overview', 'sessions', 'queue', 'raw', 'settings']) {
+    // 1) Check all 6 tabs in narrow 390px dark theme (zero overflow)
+    for (const tab of ['overview', 'sessions', 'roadmap', 'queue', 'raw', 'settings']) {
       await cdp.evaluate(`document.querySelector('.tab[data-tab="${tab}"]')?.click()`);
       await new Promise((r) => setTimeout(r, 80));
       const metrics = await cdp.evaluate(`({
@@ -374,6 +374,22 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
       );
       checks.push(`narrow-dark:${tab}`);
     }
+
+    // 1b) Interactive Roadmap init in narrow 390px viewport
+    await cdp.evaluate(`document.querySelector('.tab[data-tab="roadmap"]')?.click()`);
+    await new Promise((r) => setTimeout(r, 60));
+    await cdp.evaluate(`document.getElementById('rm-init-ws-btn')?.click()`);
+    await waitForCondition(
+      async () => Boolean(await cdp.evaluate(`!document.getElementById('rm-body')?.classList.contains('hidden')`)),
+      { label: 'roadmap interactive init' }
+    );
+    const rmOverflow = await cdp.evaluate(`document.documentElement.scrollWidth <= window.innerWidth + 2`);
+    assert.equal(rmOverflow, true, 'Narrow 390px overflow after roadmap init');
+    checks.push('roadmap-interactive-init');
+
+    // Return to settings tab for diagnostics checks
+    await cdp.evaluate(`document.querySelector('.tab[data-tab="settings"]')?.click()`);
+    await new Promise((r) => setTimeout(r, 80));
 
     // 2) Verify diagnostics card renders real flight events & filtering works
     await waitForCondition(

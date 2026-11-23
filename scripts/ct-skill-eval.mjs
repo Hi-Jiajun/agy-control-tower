@@ -14,6 +14,8 @@ import {
   normalizeModelForAgentApi,
   validateDispatchModel,
 } from '../plugin/lib/settings.mjs';
+import { evaluateFocusGate } from '../plugin/lib/inbox.mjs';
+import { buildWorkstreamContractPrompt, evaluateRoadmapGraph } from '../plugin/lib/roadmap.mjs';
 import { makeConvId, makeSandbox } from '../tests/helpers.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -215,6 +217,66 @@ export function runSkillEval() {
         assert.ok(skillMd.includes('本会话忽略'));
         assert.ok(routingMd.includes('临时替补') && routingMd.includes('Neon (XHigh)'));
         assert.equal(DEFAULT_GLOBAL_SETTINGS.controllerCompactionThreshold, 5);
+      },
+    },
+    {
+      id: 'EVAL-11',
+      title: '方向一：隐藏执行面优先与顶层会话白名单瘦身契约',
+      run() {
+        assert.ok(skillMd.includes('隐藏面优先') && skillMd.includes('白名单'));
+        assert.ok(skillMd.includes('invoke_subagent') && skillMd.includes('run_workflow'));
+        assert.equal(DEFAULT_GLOBAL_SETTINGS.dispatchSurfacePolicy, 'hidden_first');
+      },
+    },
+    {
+      id: 'EVAL-12',
+      title: '方向二：冷热解耦零 Token 哨兵、焦点防打扰门禁与按需域分总控',
+      run() {
+        assert.ok(skillMd.includes('零 Token') && skillMd.includes('Focus Gate'));
+        assert.ok(skillMd.includes('域分总控') && templatesMd.includes('域分总控'));
+        const now = 1_700_000_000_000;
+        const gateBusy = evaluateFocusGate(
+          { inFlight: false, lastUserInputAt: now, lastTurnEndAt: now },
+          { nowMs: now + 30_000, focusCooldownSec: 180 }
+        );
+        assert.equal(gateBusy.isForegroundBusy, true);
+        assert.equal(gateBusy.shouldInterruptFor('P2'), false);
+      },
+    },
+    {
+      id: 'EVAL-13',
+      title: '方向三：子会话四象限物理隔离、协作拓扑与文件所有权契约',
+      run() {
+        assert.ok(skillMd.includes('workspace: "share"') && skillMd.includes('workspace: "branch"'));
+        assert.ok(skillMd.includes('Ownership Map') && templatesMd.includes('接力契约'));
+        const contract = buildWorkstreamContractPrompt({
+          id: 'W1',
+          title: '模块实现',
+          isolation: 'share',
+          collaboration: 'swarm_channel',
+          ownership: ['src/core/'],
+          acceptance: 'npm test',
+        });
+        assert.ok(contract.includes('workspace: "share"') && contract.includes('src/core/'));
+      },
+    },
+    {
+      id: 'EVAL-14',
+      title: '方向四：三层混合存储长期路线图 DAG 与所有权冲突预警',
+      run() {
+        assert.ok(skillMd.includes('ROADMAP.md') && skillMd.includes('roadmap.json'));
+        assert.ok(skillMd.includes('Rolling Wave'));
+        const g = evaluateRoadmapGraph({
+          milestones: [{ id: 'M1', title: 'M1', status: 'active' }],
+          nodes: [
+            { id: 'A', title: 'A', status: 'active', ownership: ['lib/'] },
+            { id: 'B', title: 'B', status: 'planned', dependsOn: ['A'], ownership: ['tests/'] },
+            { id: 'C', title: 'C', status: 'planned', dependsOn: [], ownership: ['lib/a.mjs'] },
+          ],
+        });
+        assert.equal(g.hasCycle, false);
+        assert.deepEqual(g.readyIds, ['C']);
+        assert.equal(g.overlaps.length, 1);
       },
     },
   ];

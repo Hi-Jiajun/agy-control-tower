@@ -5,9 +5,11 @@
 ## 插件核心能力与架构边界
 
 - **标准 `./plugin/` 纯净包布局**：运行态全部资产收拢在 [plugin/](plugin/) 子目录，仓储研发文档与测试放在仓根，直接通过 `agy plugin validate --strict ./plugin` 零警告校验，并支持原生 `agy plugin install ./plugin` 安装与卸载。
-- **纯零依赖 Node.js ESM 单栈**：`plugin/lib/`（`paths.mjs`、`logger.mjs`、`registry.mjs`、`settings.mjs`、`transcript.mjs`）同时驱动 Hooks 与 Sidecar，彻底消除双语言重复解析；`transcript.jsonl` 采用头 `32KB` + 尾 `64KB` 分片及字节偏移增量扫描缓存；内置零侵入轮转脱敏黑匣子飞行日志（`<PLUGIN_DATA>/logs/ct-flight.jsonl`）。
-- **可读写 Aux Pane 总控看板（`plugin/sidecars/tower/`）**：支持实时无感监测（同时聚合独立专职会话与原生 `swarm` 集群）、按路由护栏校验的受控直派新会话（`/api/dispatch/create`）、`SESSION-REGISTRY.md` 第 1~5 节全结构化操作、黑匣子飞行诊断日志视图（`/api/diagnostics`）以及严格物理隔离的「插件 / 全局 / 当前工作区」三层设置中心（含 `PLUGIN_DATA` 零侵入托管台账模式与文档在线覆盖）。
-- **五环自演化研发门禁体系（仓根 `scripts/` & `tests/`）**：涵盖黑匣子日志、只读遥测复盘提案（`npm run mine`）、脱敏事故轨迹回放库（`npm run replay`）、四维自动化门禁（L1 单测与前端纯逻辑 / L2 事故回放 / L3 零依赖 Chrome CDP 窄栏 UI 冒烟 `npm run test:ui` / L4 Skill 契约评测 `npm run test:eval`），以及实装健康体检 `npm run doctor` 与发布快照一键回滚。
+- **纯零依赖 Node.js ESM 单栈**：`plugin/lib/`（`paths.mjs`、`logger.mjs`、`inbox.mjs`、`roadmap.mjs`、`registry.mjs`、`settings.mjs`、`transcript.mjs`）同时驱动 Hooks 与 Sidecar；`transcript.jsonl` 采用头 `32KB` + 尾 `64KB` 分片与增量扫描缓存；内置零侵入轮转脱敏黑匣子飞行日志（`<PLUGIN_DATA>/logs/ct-flight.jsonl`）。
+- **隐藏执行面优先与四执行面统一导航**：默认通过原生 `swarm` / `invoke_subagent` / `run_workflow` 零左侧栏污染执行，`agentapi` 顶层会话实行白名单与固定槽位复用；看板自动聚合四类执行面并提供统一状态导航。
+- **冷热解耦零 Token 后台哨兵与焦点防打扰门禁（Focus Gate）**：Sidecar 后台哨兵 0 Token 巡检报错、卡死与高压缩并写入 `P0/P1/P2` 优先级信箱 `inbox.json`；用户前台对话期间自动暂缓抢占式唤醒，仅被动注入 1 行摘要；超大型并发项目可按需拉起临时域分总控（单真源不裂脑）。
+- **四象限隔离协作与三层长期项目路线图**：支持 `inherit` / `share` / `branch` 隔离档位、Swarm 频道直聊 / Workflow 契约流水线 / `.agents/handoffs/` 契约文件与文件所有权冲突检测；大型长期项目可按需一键启用 L1 `ROADMAP.md` + L2 结构化依赖图 `roadmap.json` + L3 瘦身 `SESSION-REGISTRY.md`（支持 `PLUGIN_DATA` 零侵入托管）。
+- **五环自演化研发门禁体系（仓根 `scripts/` & `tests/`）**：涵盖黑匣子日志、只读遥测复盘提案（`npm run mine`）、8 份脱敏事故轨迹回放库（`npm run replay`）、四维自动化门禁（L1 单测与前端纯逻辑 / L2 事故回放 / L3 零依赖 Chrome CDP 窄栏 UI 冒烟 `npm run test:ui` / L4 14 项 Skill 契约评测 `npm run test:eval`），以及实装健康体检 `npm run doctor` 与发布快照一键回滚。
 - **四事件定向感知 Hooks（`plugin/hooks.json` + `plugin/scripts/ct-hook.mjs`）**：覆盖 `SessionStart`（现役总控与已入账专职会话双角色注入）、`PreInvocation`（裸/多 ID 及汇报速查、弹性换届提醒）、`PreToolUse`（非总控改写台账防呆门禁）、与 `Stop`（专职会话漏报阶段收口自动回执兜底）；无关会话静音直通。
 - **官方数据目录隔离**：刻意不包含 `rules/AGENTS.md`（不向无关会话注入 always-on 全局规则）；运行状态与三层设置统一存于官方 `<appData>/plugin_data/control-tower/`（支持 `AGY_CONTROL_TOWER_DATA_DIR` / `PLUGIN_DATA` 覆盖）。
 

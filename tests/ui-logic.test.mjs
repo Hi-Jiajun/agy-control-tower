@@ -6,7 +6,10 @@ import {
   computeLivePollPlan,
   computeTabVisibility,
   escHtml,
+  formatCollabLabel,
   formatFlightEventRow,
+  formatIsolationLabel,
+  formatRoadmapStatusBadge,
   isLeaseIdle,
   summarizeDiagnosticsBadge,
 } from '../plugin/sidecars/tower/ui-logic.mjs';
@@ -15,14 +18,22 @@ import { makeConvId } from './helpers.mjs';
 test('ui-logic: tab visibility, lease idle detection, and controller health badge', () => {
   assert.deepEqual(computeTabVisibility({ tab: 'overview', hasReg: false, hasWorkspace: true }), {
     showEmpty: true,
-    visibleTabs: { overview: false, sessions: false, queue: false, raw: false, settings: false },
+    visibleTabs: { overview: false, sessions: false, roadmap: false, queue: false, raw: false, settings: false },
   });
 
-  // Settings tab stays accessible even when workspace has no registry yet
+  // Settings & roadmap tabs stay accessible even when workspace has no registry yet
   assert.deepEqual(computeTabVisibility({ tab: 'settings', hasReg: false, hasWorkspace: true }), {
     showEmpty: false,
-    visibleTabs: { overview: false, sessions: false, queue: false, raw: false, settings: true },
+    visibleTabs: { overview: false, sessions: false, roadmap: false, queue: false, raw: false, settings: true },
   });
+  assert.deepEqual(computeTabVisibility({ tab: 'roadmap', hasReg: false, hasWorkspace: true }), {
+    showEmpty: false,
+    visibleTabs: { overview: false, sessions: false, roadmap: true, queue: false, raw: false, settings: false },
+  });
+  assert.equal(formatRoadmapStatusBadge('ready').badgeClass, 'badge-ok');
+  assert.equal(formatRoadmapStatusBadge('blocked').badgeClass, 'badge-danger');
+  assert.ok(formatIsolationLabel('share').includes('share'));
+  assert.ok(formatCollabLabel('handoff_file').includes('契约'));
 
   assert.equal(isLeaseIdle('IDLE（空闲待分配）', true), true);
   assert.equal(isLeaseIdle('LOCKED 持锁中', true), false);

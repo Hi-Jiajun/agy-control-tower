@@ -30,6 +30,16 @@ import {
   summarizeInbox,
 } from '../../lib/inbox.mjs';
 import {
+  buildWorkstreamContractPrompt,
+  deleteRoadmapNode,
+  initWorkspaceRoadmap,
+  loadWorkspaceRoadmap,
+  saveRoadmapL1,
+  updateRoadmapNodeStatus,
+  upsertRoadmapMilestone,
+  upsertRoadmapNode,
+} from '../../lib/roadmap.mjs';
+import {
   archiveActiveSession,
   deleteQueueRow,
   extractTemplatesFromMarkdown,
@@ -120,7 +130,7 @@ function readPluginMeta() {
   return {
     name: raw?.name || 'control-tower',
     displayName: raw?.displayName || 'Control Tower',
-    version: raw?.version || '1.4.0',
+    version: raw?.version || '1.5.0',
   };
 }
 
@@ -337,6 +347,7 @@ class ControlTowerServer {
     const emptySwarm = { active: false, title: '', members: [], recentPosts: [] };
     const emptySurfaces = { swarm: emptySwarm, subagents: [], workflows: [], topLevel: [] };
     const emptyInbox = summarizeInbox(null, { focusCooldownSec: resolved.plugin.focusCooldownSec });
+    const emptyRoadmap = { exists: false, isManaged: false, l1Rel: '', l2Rel: '', l1Path: '', l2Path: '', l1Content: '', northStarBrief: '', data: null, graph: null };
 
     if (!wsReal) {
       return {
@@ -355,6 +366,7 @@ class ControlTowerServer {
         nativeSwarm: emptySwarm,
         executionSurfaces: emptySurfaces,
         inbox: emptyInbox,
+        roadmap: emptyRoadmap,
         attention: { items: [], handoverIgnored: false },
       };
     }
@@ -365,6 +377,10 @@ class ControlTowerServer {
     });
     const wsInboxSummary = summarizeInbox(loadWorkspaceInbox(dataDir, wsReal), {
       focusCooldownSec: resolved.plugin.focusCooldownSec,
+    });
+    const wsRoadmap = loadWorkspaceRoadmap(wsReal, {
+      dataDir,
+      workspaceSettings: resolved.workspace,
     });
     if (!found) {
       return {
@@ -383,6 +399,7 @@ class ControlTowerServer {
         nativeSwarm: emptySwarm,
         executionSurfaces: emptySurfaces,
         inbox: wsInboxSummary,
+        roadmap: wsRoadmap,
         attention: { items: [], handoverIgnored: false },
       };
     }
@@ -443,6 +460,7 @@ class ControlTowerServer {
       nativeSwarm,
       executionSurfaces,
       inbox: wsInboxSummary,
+      roadmap: wsRoadmap,
       attention,
     };
   }
@@ -610,6 +628,21 @@ class ControlTowerServer {
       return this.#sendJson(res, 200, { ...resolved, modelPresets: MODEL_PRESETS });
     }
 
+    if (req.method === 'GET' && url.pathname === '/api/roadmap') {
+      const wsRaw = url.searchParams.get('workspace') || '';
+      const wsReal = wsRaw ? normalizeWorkspaceInput(wsRaw, { throwOnInvalid: true }) : '';
+      const resolved = resolveEffectiveSettings({
+        dataDir,
+        wsReal: wsReal || '',
+        pluginRoot: PLUGIN_ROOT,
+        env: process.env,
+      });
+      const roadmap = wsReal
+        ? loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings: resolved.workspace })
+        : { exists: false };
+      return this.#sendJson(res, 200, { ok: true, roadmap });
+    }
+
     if (req.method === 'GET' && url.pathname === '/api/inbox') {
       const wsRaw = url.searchParams.get('workspace') || '';
       const wsReal = wsRaw ? normalizeWorkspaceInput(wsRaw, { throwOnInvalid: true }) : '';
@@ -711,6 +744,86 @@ class ControlTowerServer {
         deliveredCount: targets.length,
         snapshot: this.#buildSnapshot(wsReal),
       });
+    }
+
+    if (url.pathname === '/api/roadmap/init') {
+      const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
+      if (!wsReal) throw new HttpError(400, 'workspace is required');
+      const storageMode = body.storageMode === 'plugin_data' ? 'plugin_data' : 'workspace';
+      initWorkspaceRoadmap(wsReal, {
+        dataDir,
+        storageMode,
+        projectName: body.projectName || '',
+      });
+      return this.#sendJson(res, 200, { ok: true, snapshot: this.#buildSnapshot(wsReal) });
+    }
+
+    if (url.pathname === '/api/roadmap/l1/save') {
+      const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
+      if (!wsReal) throw new HttpError(400, 'workspace is required');
+      const resolved = resolveEffectiveSettings({ dataDir, wsReal, pluginRoot: PLUGIN_ROOT, env: process.env });
+      saveRoadmapL1(wsReal, body.content, { dataDir, workspaceSettings: resolved.workspace });
+      return this.#sendJson(res, 200, { ok: true, snapshot: this.#buildSnapshot(wsReal) });
+    }
+
+    if (url.pathname === '/api/roadmap/milestone/upsert') {
+      const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
+      if (!wsReal) throw new HttpError(400, 'workspace is required');
+      const resolved = resolveEffectiveSettings({ dataDir, wsReal, pluginRoot: PLUGIN_ROOT, env: process.env });
+      upsertRoadmapMilestone(wsReal, body, { dataDir, workspaceSettings: resolved.workspace });
+      return this.#sendJson(res, 200, { ok: true, snapshot: this.#buildSnapshot(wsReal) });
+    }
+
+    if (url.pathname === '/api/roadmap/node/upsert') {
+      const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
+      if (!wsReal) throw new HttpError(400, 'workspace is required');
+      const resolved = resolveEffectiveSettings({ dataDir, wsReal, pluginRoot: PLUGIN_ROOT, env: process.env });
+      upsertRoadmapNode(wsReal, body, { dataDir, workspaceSettings: resolved.workspace });
+      return this.#sendJson(res, 200, { ok: true, snapshot: this.#buildSnapshot(wsReal) });
+    }
+
+    if (url.pathname === '/api/roadmap/node/status') {
+      const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
+      if (!wsReal) throw new HttpError(400, 'workspace is required');
+      const resolved = resolveEffectiveSettings({ dataDir, wsReal, pluginRoot: PLUGIN_ROOT, env: process.env });
+      const { newlyUnlocked } = updateRoadmapNodeStatus(
+        wsReal,
+        { id: body.id, status: body.status, linkedConvId: body.linkedConvId },
+        { dataDir, workspaceSettings: resolved.workspace }
+      );
+      return this.#sendJson(res, 200, {
+        ok: true,
+        newlyUnlocked,
+        snapshot: this.#buildSnapshot(wsReal),
+      });
+    }
+
+    if (url.pathname === '/api/roadmap/node/delete') {
+      const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
+      if (!wsReal) throw new HttpError(400, 'workspace is required');
+      const resolved = resolveEffectiveSettings({ dataDir, wsReal, pluginRoot: PLUGIN_ROOT, env: process.env });
+      deleteRoadmapNode(wsReal, body.id, { dataDir, workspaceSettings: resolved.workspace });
+      return this.#sendJson(res, 200, { ok: true, snapshot: this.#buildSnapshot(wsReal) });
+    }
+
+    if (url.pathname === '/api/roadmap/node/contract') {
+      const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
+      if (!wsReal) throw new HttpError(400, 'workspace is required');
+      const snap = this.#buildSnapshot(wsReal);
+      if (!snap.roadmap?.exists) throw new HttpError(404, 'Roadmap not initialized in workspace');
+      const node = (snap.roadmap.graph?.nodes || []).find((n) => n.id === body.id);
+      if (!node) throw new HttpError(404, `Workstream node ${body.id} not found`);
+      const overlaps = (snap.roadmap.graph?.overlaps || []).filter(
+        (o) => o.nodeA === node.id || o.nodeB === node.id
+      );
+      const contractPrompt = buildWorkstreamContractPrompt(node, {
+        controllerId: snap.parsed?.controller?.currentControllerId || '',
+        exclusiveLeaseEnabled: snap.settings?.effective?.exclusiveLeaseEnabled !== false,
+        registryRelPath: snap.registryRelPath || '.agents/SESSION-REGISTRY.md',
+        northStarBrief: snap.roadmap.northStarBrief || '',
+        overlaps,
+      });
+      return this.#sendJson(res, 200, { ok: true, node, contractPrompt });
     }
 
     if (url.pathname === '/api/sentinel/sweep') {
@@ -920,6 +1033,18 @@ class ControlTowerServer {
         });
         atomicWriteText(regFound.absPath, nextMd.endsWith('\n') ? nextMd : `${nextMd}\n`);
         enrolled = true;
+      }
+
+      if (newConvId && wsReal && body.workstreamId) {
+        try {
+          updateRoadmapNodeStatus(
+            wsReal,
+            { id: body.workstreamId, status: 'active', linkedConvId: newConvId },
+            { dataDir, workspaceSettings: resolved.workspace }
+          );
+        } catch {
+          // ignore roadmap link mismatch
+        }
       }
 
       appendFlightEvent(dataDir, {

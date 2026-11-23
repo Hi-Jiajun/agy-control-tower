@@ -1,0 +1,46 @@
+{
+  "id": "INC-007",
+  "title": "Foreground Focus Gate defers Stop wakeup during active user chat and logs deferral event",
+  "incidentDate": "2026-11-23",
+  "category": "hook",
+  "description": "When the user just interacted with the active controller, a finishing worker Stop hook must defer agentapi interruption and log stop_wake_deferred_focus_gate.",
+  "kind": "hook",
+  "setup": {
+    "registryRelPath": ".agents/SESSION-REGISTRY.md",
+    "registryMarkdown": "# 台账\n## 一、当前独占资源租约\n| 字段 | 当前值 |\n| --- | --- |\n| **锁状态** | `IDLE` |\n## 二、常驻主交流总控会话\n- **当前现役总控会话**：`${CTRL_ID}`（状态：`ONLINE`）\n## 三、活跃 / 挂起专职会话台账\n| 会话链接与 ID | 任务编号 / 主题 | 模型与工具 | 资源锁状态 | 当前状态 | 工作目录与日志回查路径 |\n| --- | --- | --- | --- | --- | --- |\n| [`${WORKER_A}`](conversation://${WORKER_A}) | 后台构建 | Neon | 纯离线无锁 | `ACTIVE` | - |\n",
+    "transcripts": {
+      "${CTRL_ID}": [
+        { "step_index": 0, "type": "USER_INPUT", "content": "讨论架构" }
+      ],
+      "${WORKER_A}": [
+        { "step_index": 0, "type": "USER_INPUT", "content": "跑构建" },
+        { "step_index": 4, "type": "PLANNER_RESPONSE", "model": "gemini-4-neon-high", "status": "DONE" }
+      ]
+    }
+  },
+  "action": {
+    "calls": [
+      {
+        "eventName": "PreInvocation",
+        "payload": {
+          "conversationId": "${CTRL_ID}",
+          "workspacePaths": ["${WORKSPACE}"],
+          "lastUserInput": "我们讨论一下核心架构细节",
+          "invocationNum": 1
+        }
+      },
+      {
+        "eventName": "Stop",
+        "payload": {
+          "conversationId": "${WORKER_A}",
+          "workspacePaths": ["${WORKSPACE}"],
+          "terminationReason": "NO_TOOL_CALL",
+          "fullyIdle": true
+        },
+        "expect": {
+          "flightEvent": "stop_wake_deferred_focus_gate"
+        }
+      }
+    ]
+  }
+}
