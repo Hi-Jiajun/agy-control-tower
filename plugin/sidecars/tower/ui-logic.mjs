@@ -49,17 +49,67 @@ export function computeLivePollPlan({
   intervalSec = 4,
   activeSessionCount = 0,
   swarmActive = false,
+  sseConnected = false,
 } = {}) {
   const sec = Math.max(2, Math.min(60, Number(intervalSec) || 4));
   const hasActiveWork = Number(activeSessionCount) > 0 || Boolean(swarmActive);
   const isLive = Boolean(pluginPollEnabled) && !pausedByUser;
+  if (isLive && sseConnected) {
+    return {
+      isLive: true,
+      dotLive: true,
+      buttonText: 'SSE 实时',
+      shouldSchedule: hasActiveWork,
+      intervalMs: Math.max(sec * 6, 24) * 1000,
+      mode: 'sse',
+    };
+  }
   return {
     isLive,
     dotLive: isLive && hasActiveWork,
     buttonText: isLive ? `监测 ${sec}s` : '监测暂停',
     shouldSchedule: isLive && hasActiveWork,
     intervalMs: sec * 1000,
+    mode: isLive ? 'poll' : 'paused',
   };
+}
+
+export function nextInlineConfirmState({
+  armed = false,
+  nowMs = Date.now(),
+  expiresAt = 0,
+  defaultLabel = '删除',
+  confirmLabel = '确认删除?',
+  timeoutMs = 3000,
+} = {}) {
+  if (armed && Number(expiresAt) > nowMs) {
+    return {
+      execute: true,
+      nextArmed: false,
+      nextExpiresAt: 0,
+      label: defaultLabel,
+    };
+  }
+  return {
+    execute: false,
+    nextArmed: true,
+    nextExpiresAt: nowMs + Math.max(500, Number(timeoutMs) || 3000),
+    label: confirmLabel,
+  };
+}
+
+export function formatGlobalWorkspacesBadge(multiWorkspace) {
+  const mw = multiWorkspace && typeof multiWorkspace === 'object' ? multiWorkspace : {};
+  const p0 = Number(mw.totalP0 || 0);
+  const p1 = Number(mw.totalP1 || 0);
+  const count = Number(mw.workspaceCount || 0);
+  if (p0 > 0) {
+    return { text: `P0:${p0}`, badgeClass: 'badge-danger', hasAlert: true };
+  }
+  if (p1 > 0) {
+    return { text: `P1:${p1}`, badgeClass: 'badge-warn', hasAlert: true };
+  }
+  return { text: `${count} 仓`, badgeClass: 'badge-muted', hasAlert: false };
 }
 
 export function buildPrefilledHandoverText(snap) {

@@ -376,6 +376,36 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
 
     const checks = [];
 
+    // 0a) Verify SSE real-time stream connects and updates topbar poll indicator
+    await waitForCondition(
+      async () => (await cdp.evaluate(`document.getElementById('poll-toggle-btn')?.textContent?.trim()`)) === 'SSE 实时',
+      { label: 'SSE live stream connected' }
+    );
+    checks.push('sse-realtime-connected');
+
+    // 0b) Verify cross-workspace global overview drawer opens cleanly with zero overflow in 390px
+    await cdp.evaluate(`document.getElementById('global-ws-btn')?.click()`);
+    await waitForCondition(
+      async () =>
+        Boolean(
+          await cdp.evaluate(`(() => {
+            const dr = document.getElementById('global-ws-drawer');
+            const list = document.getElementById('global-ws-list');
+            return dr && !dr.classList.contains('hidden') && (list?.textContent || '').includes(${JSON.stringify(ctrlId.slice(0, 8))});
+          })()`)
+        ),
+      { label: 'global workspaces drawer opened' }
+    );
+    const drawerOverflow = await cdp.evaluate(`document.documentElement.scrollWidth <= window.innerWidth + 2`);
+    assert.equal(drawerOverflow, true, 'Narrow 390px overflow with global workspaces drawer open');
+    await cdp.evaluate(`document.getElementById('close-global-ws-btn')?.click()`);
+    assert.equal(
+      await cdp.evaluate(`document.getElementById('global-ws-drawer')?.classList.contains('hidden')`),
+      true,
+      'Global workspaces drawer should close'
+    );
+    checks.push('global-workspaces-drawer');
+
     // 1) Check all 6 tabs in narrow 390px dark theme (zero overflow)
     for (const tab of ['overview', 'sessions', 'roadmap', 'queue', 'raw', 'settings']) {
       await cdp.evaluate(`document.querySelector('.tab[data-tab="${tab}"]')?.click()`);
@@ -462,6 +492,31 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
       { label: 'inline archive completed' }
     );
     checks.push('inline-archive-form');
+
+    // 1d) Native inline 2-step destructive confirmation (zero window.confirm) on queue delete
+    await cdp.evaluate(`document.querySelector('.tab[data-tab="queue"]')?.click()`);
+    await waitForCondition(
+      async () => (await cdp.evaluate(`document.getElementById('queue-count-badge')?.textContent?.trim()`)) === '1',
+      { label: 'queue tab shows initial T1 item' }
+    );
+    await cdp.evaluate(`document.querySelector('.q-del-btn[data-id="T1"]')?.click()`);
+    const armedState = await cdp.evaluate(`(() => {
+      const btn = document.querySelector('.q-del-btn[data-id="T1"]');
+      return {
+        text: btn?.textContent?.trim() || '',
+        armed: Boolean(btn?.classList.contains('btn-confirm-armed')),
+        count: document.getElementById('queue-count-badge')?.textContent?.trim() || '',
+      };
+    })()`);
+    assert.equal(armedState.text, '确认删除?', 'First click should arm inline confirm label');
+    assert.equal(armedState.armed, true, 'First click should add btn-confirm-armed class');
+    assert.equal(armedState.count, '1', 'First click must not immediately delete queue item');
+    await cdp.evaluate(`document.querySelector('.q-del-btn[data-id="T1"]')?.click()`);
+    await waitForCondition(
+      async () => (await cdp.evaluate(`document.getElementById('queue-count-badge')?.textContent?.trim()`)) === '0',
+      { label: 'second click confirms queue deletion' }
+    );
+    checks.push('inline-2step-confirm');
 
     // Return to settings tab for diagnostics + plugin settings form save check
     await cdp.evaluate(`document.querySelector('.tab[data-tab="settings"]')?.click()`);

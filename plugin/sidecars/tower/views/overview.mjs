@@ -3,9 +3,63 @@ import {
   computeControllerHealth,
   escHtml as esc,
   formatFocusGateBadge,
+  formatGlobalWorkspacesBadge,
   formatInboxPriorityClass,
   isLeaseIdle,
 } from '../ui-logic.mjs';
+
+export function renderGlobalWorkspacesDrawer(ctx, snap) {
+  const { $ } = ctx;
+  const mw = snap?.multiWorkspace || { workspaceCount: 0, totalP0: 0, totalP1: 0, workspaces: [] };
+  const badgeInfo = formatGlobalWorkspacesBadge(mw);
+  const badgeEl = $('global-ws-badge');
+  if (badgeEl) {
+    badgeEl.textContent = badgeInfo.text;
+    badgeEl.className = `badge ${badgeInfo.badgeClass}`;
+  }
+
+  const box = $('global-ws-list');
+  if (!box) return;
+  const list = Array.isArray(mw.workspaces) ? mw.workspaces : [];
+  if (list.length === 0) {
+    box.innerHTML = '<p class="muted">暂无已记录的工作区。</p>';
+    return;
+  }
+  box.innerHTML = list
+    .map((w) => {
+      const uc = w.unreadCounts || { P0: 0, P1: 0, P2: 0, total: 0 };
+      const inboxCls =
+        uc.P0 > 0 ? 'badge-danger' : uc.P1 > 0 ? 'badge-warn' : 'badge-muted';
+      const leaseCls = w.registryExists ? (w.leaseIdle ? 'badge-ok' : 'badge-warn') : 'badge-muted';
+      const ctrlText = w.controllerId ? w.controllerId.slice(0, 8) : '未登记';
+      const rmText = w.roadmapExists ? `${w.roadmapDone}/${w.roadmapTotal} (就绪 ${w.roadmapReady})` : '未建';
+      return `
+        <div class="item-box">
+          <div class="card-head">
+            <strong>${esc(w.shortName)}${w.isCurrent ? ' (当前)' : ''}</strong>
+            <div class="actions">
+              <span class="badge ${leaseCls}">${esc(w.leaseIdle ? '锁空闲' : '持锁中')}</span>
+              <span class="badge ${inboxCls}">P0:${esc(uc.P0)} P1:${esc(uc.P1)}</span>
+            </div>
+          </div>
+          <div class="item-meta">总控: ${esc(ctrlText)} | 活跃会话: ${esc(w.activeSessionCount)} | 路线图: ${esc(rmText)}</div>
+          <div class="actions">
+            ${
+              !w.isCurrent
+                ? `<button type="button" class="btn btn-primary btn-sm switch-ws-card-btn" data-ws="${esc(w.workspace)}">切换至此工作区</button>`
+                : ''
+            }
+            ${
+              w.controllerId
+                ? `<button type="button" class="btn btn-ghost btn-sm jump-conv-btn" data-id="${esc(w.controllerId)}">跳转总控</button>`
+                : ''
+            }
+          </div>
+        </div>
+      `;
+    })
+    .join('');
+}
 
 export function renderAttentionBanner(ctx, snap) {
   const { $ } = ctx;

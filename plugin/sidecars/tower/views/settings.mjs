@@ -185,7 +185,7 @@ export async function loadDiagnostics(ctx, { silent = false } = {}) {
 }
 
 export function bindSettingsEvents(ctx) {
-  const { $, state, api, render, showToast } = ctx;
+  const { $, state, api, render, showToast, confirmInline } = ctx;
 
   $('plugin-settings-form').addEventListener('input', () => {
     state.settingsDirty.plugin = true;
@@ -242,18 +242,20 @@ export function bindSettingsEvents(ctx) {
     }
   });
 
-  $('ps-reset-btn').addEventListener('click', async () => {
-    try {
-      const res = await api('/api/settings/plugin', {
-        method: 'POST',
-        body: { workspace: state.workspace, action: 'reset' },
-      });
-      state.settingsDirty.plugin = false;
-      render(res.snapshot);
-      showToast('已恢复插件默认设置');
-    } catch (err) {
-      showToast(err.message, true);
-    }
+  $('ps-reset-btn').addEventListener('click', () => {
+    confirmInline($('ps-reset-btn'), '确认重置?', async () => {
+      try {
+        const res = await api('/api/settings/plugin', {
+          method: 'POST',
+          body: { workspace: state.workspace, action: 'reset' },
+        });
+        state.settingsDirty.plugin = false;
+        render(res.snapshot);
+        showToast('已恢复插件默认设置');
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    });
   });
 
   $('clear-cache-btn').addEventListener('click', async () => {
@@ -271,14 +273,16 @@ export function bindSettingsEvents(ctx) {
 
   $('diag-level-filter').addEventListener('change', () => loadDiagnostics(ctx));
   $('diag-refresh-btn').addEventListener('click', () => loadDiagnostics(ctx));
-  $('diag-clear-btn').addEventListener('click', async () => {
-    try {
-      const data = await api('/api/diagnostics/clear', { method: 'POST', body: {} });
-      renderDiagnostics(ctx, data);
-      showToast('已清空黑匣子诊断日志');
-    } catch (err) {
-      showToast(err.message, true);
-    }
+  $('diag-clear-btn').addEventListener('click', () => {
+    confirmInline($('diag-clear-btn'), '确认清空?', async () => {
+      try {
+        const data = await api('/api/diagnostics/clear', { method: 'POST', body: {} });
+        renderDiagnostics(ctx, data);
+        showToast('已清空黑匣子诊断日志');
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    });
   });
 
   $('global-settings-form').addEventListener('submit', async (e) => {
@@ -315,18 +319,20 @@ export function bindSettingsEvents(ctx) {
     }
   });
 
-  $('gs-reset-btn').addEventListener('click', async () => {
-    try {
-      const res = await api('/api/settings/global', {
-        method: 'POST',
-        body: { workspace: state.workspace, action: 'reset' },
-      });
-      state.settingsDirty.global = false;
-      render(res.snapshot);
-      showToast('已重置全局设置为内置默认');
-    } catch (err) {
-      showToast(err.message, true);
-    }
+  $('gs-reset-btn').addEventListener('click', () => {
+    confirmInline($('gs-reset-btn'), '确认重置?', async () => {
+      try {
+        const res = await api('/api/settings/global', {
+          method: 'POST',
+          body: { workspace: state.workspace, action: 'reset' },
+        });
+        state.settingsDirty.global = false;
+        render(res.snapshot);
+        showToast('已重置全局设置为内置默认');
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    });
   });
 
   $('global-doc-select').addEventListener('change', () => {
@@ -365,23 +371,25 @@ export function bindSettingsEvents(ctx) {
     }
   });
 
-  $('global-doc-reset-btn').addEventListener('click', async () => {
-    try {
-      const res = await api('/api/settings/override', {
-        method: 'POST',
-        body: {
-          workspace: state.workspace,
-          scope: 'global',
-          docName: $('global-doc-select').value,
-          action: 'reset',
-        },
-      });
-      state.globalDocDirty = false;
-      render(res.snapshot);
-      showToast('已清除全局文档覆盖');
-    } catch (err) {
-      showToast(err.message, true);
-    }
+  $('global-doc-reset-btn').addEventListener('click', () => {
+    confirmInline($('global-doc-reset-btn'), '确认清除?', async () => {
+      try {
+        const res = await api('/api/settings/override', {
+          method: 'POST',
+          body: {
+            workspace: state.workspace,
+            scope: 'global',
+            docName: $('global-doc-select').value,
+            action: 'reset',
+          },
+        });
+        state.globalDocDirty = false;
+        render(res.snapshot);
+        showToast('已清除全局文档覆盖');
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    });
   });
 
   $('ws-registryMode').addEventListener('change', () => {
@@ -423,19 +431,21 @@ export function bindSettingsEvents(ctx) {
     }
   });
 
-  $('ws-reset-btn').addEventListener('click', async () => {
+  $('ws-reset-btn').addEventListener('click', () => {
     if (!state.workspace) return;
-    try {
-      const res = await api('/api/settings/workspace', {
-        method: 'POST',
-        body: { workspace: state.workspace, action: 'reset' },
-      });
-      state.settingsDirty.workspace = false;
-      render(res.snapshot);
-      showToast('已重置当前工作区全部设置');
-    } catch (err) {
-      showToast(err.message, true);
-    }
+    confirmInline($('ws-reset-btn'), '确认重置?', async () => {
+      try {
+        const res = await api('/api/settings/workspace', {
+          method: 'POST',
+          body: { workspace: state.workspace, action: 'reset' },
+        });
+        state.settingsDirty.workspace = false;
+        render(res.snapshot);
+        showToast('已重置当前工作区全部设置');
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    });
   });
 
   $('ws-doc-select').addEventListener('change', () => {
@@ -475,23 +485,25 @@ export function bindSettingsEvents(ctx) {
     }
   });
 
-  $('ws-doc-reset-btn').addEventListener('click', async () => {
+  $('ws-doc-reset-btn').addEventListener('click', () => {
     if (!state.workspace) return;
-    try {
-      const res = await api('/api/settings/override', {
-        method: 'POST',
-        body: {
-          workspace: state.workspace,
-          scope: 'workspace',
-          docName: $('ws-doc-select').value,
-          action: 'reset',
-        },
-      });
-      state.wsDocDirty = false;
-      render(res.snapshot);
-      showToast('已清除工作区文档覆盖');
-    } catch (err) {
-      showToast(err.message, true);
-    }
+    confirmInline($('ws-doc-reset-btn'), '确认清除?', async () => {
+      try {
+        const res = await api('/api/settings/override', {
+          method: 'POST',
+          body: {
+            workspace: state.workspace,
+            scope: 'workspace',
+            docName: $('ws-doc-select').value,
+            action: 'reset',
+          },
+        });
+        state.wsDocDirty = false;
+        render(res.snapshot);
+        showToast('已清除工作区文档覆盖');
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    });
   });
 }

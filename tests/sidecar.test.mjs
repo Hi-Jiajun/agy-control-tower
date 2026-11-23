@@ -435,6 +435,69 @@ if (args.includes('new-conversation')) {
     const swarmClean = await req('POST', '/api/swarm/cleanup-request', { workspace: ws });
     assert.equal(swarmClean.status, 200);
     assert.equal(swarmClean.data.ok, true);
+
+    // 17) Phase 5 (v1.7.0): SSE /api/events real-time push & Multi-workspace global overview
+    const sseUnauth = await fetch(`${base}/api/events`);
+    assert.equal(sseUnauth.status, 401);
+
+    const sseAbort = new AbortController();
+    let sseBuf = '';
+    const sseRes = await fetch(`${base}/api/events?token=${token}&workspace=${encodeURIComponent(ws)}`, {
+      signal: sseAbort.signal,
+    });
+    assert.equal(sseRes.status, 200);
+    assert.ok((sseRes.headers.get('content-type') || '').includes('text/event-stream'));
+
+    const reader = sseRes.body.getReader();
+    const decoder = new TextDecoder();
+    const readUntil = async (needle, timeoutMs = 2500) => {
+      const deadline = Date.now() + timeoutMs;
+      while (!sseBuf.includes(needle)) {
+        const rem = Math.max(50, deadline - Date.now());
+        if (Date.now() > deadline) {
+          throw new Error(`Timed out waiting for SSE frame "${needle}", got: ${sseBuf}`);
+        }
+        const chunk = await Promise.race([
+          reader.read(),
+          new Promise((_, rej) => setTimeout(() => rej(new Error(`SSE read timeout (${rem}ms) for ${needle}`)), rem)),
+        ]);
+        if (chunk.done) break;
+        sseBuf += decoder.decode(chunk.value, { stream: true });
+      }
+    };
+
+    try {
+      await readUntil('event: connected');
+      sseBuf = '';
+      const qSse = await req('POST', '/api/queue/upsert', {
+        workspace: ws,
+        id: 'T99',
+        summary: 'SSE 实时推送验证',
+        status: 'QUEUED',
+        suggestedRoute: 'Gemini 4 Neon (High)',
+      });
+      assert.equal(qSse.status, 200);
+      await readUntil('event: workspace_changed');
+    } finally {
+      sseAbort.abort();
+      try {
+        await reader.cancel();
+      } catch {
+        // ignore abort error
+      }
+    }
+
+    const mwRes = await req('GET', `/api/workspaces/overview?workspace=${encodeURIComponent(ws)}`);
+    assert.equal(mwRes.status, 200);
+    assert.equal(mwRes.data.ok, true);
+    const mw = mwRes.data.multiWorkspace;
+    assert.ok(mw.workspaceCount >= 2);
+    const mwPaths = mw.workspaces.map((it) => it.workspace);
+    assert.ok(mwPaths.includes(ws));
+    assert.ok(mwPaths.includes(wsClean));
+    const currentItem = mw.workspaces.find((it) => it.workspace === ws);
+    assert.equal(currentItem.isCurrent, true);
+    assert.equal(currentItem.roadmapExists, true);
   } finally {
     if (server) await server.close();
     process.env = prevEnv;

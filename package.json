@@ -1,6 +1,6 @@
 {
   "name": "control-tower-workspace",
-  "version": "1.6.1",
+  "version": "1.7.0",
   "private": true,
   "type": "module",
   "description": "Development workspace for the control-tower Antigravity plugin",

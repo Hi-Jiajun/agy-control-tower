@@ -84,6 +84,8 @@ import {
 } from './lib/agentapi.mjs';
 import { handleInboxAndSwarmRoute } from './routes/inbox.mjs';
 import { handleRoadmapRoute } from './routes/roadmap.mjs';
+import { buildMultiWorkspaceOverview, handleWorkspacesRoute } from './routes/workspaces.mjs';
+import { SseHub } from './lib/sse-hub.mjs';
 import { isLeaseIdle } from './ui-logic.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -149,7 +151,7 @@ function readPluginMeta() {
   return {
     name: raw?.name || 'control-tower',
     displayName: raw?.displayName || 'Control Tower',
-    version: raw?.version || '1.6.1',
+    version: raw?.version || '1.7.0',
   };
 }
 
@@ -182,6 +184,7 @@ class ControlTowerServer {
   #sentinelRunning;
   #workspaceMutexes;
   #lastAuthRejectLogAt;
+  #sseHub;
 
   constructor({
     port = Number.parseInt(process.env.ANTIGRAVITY_SIDECAR_WEB_PORT || '0', 10),
@@ -198,6 +201,7 @@ class ControlTowerServer {
     this.#sentinelRunning = false;
     this.#workspaceMutexes = new Map();
     this.#lastAuthRejectLogAt = 0;
+    this.#sseHub = new SseHub();
     this.#staticAssets = new Map([
       ['/', { file: join(__dirname, 'index.html'), type: 'text/html; charset=utf-8' }],
       ['/index.html', { file: join(__dirname, 'index.html'), type: 'text/html; charset=utf-8' }],
@@ -361,10 +365,17 @@ class ControlTowerServer {
     };
 
     if (!wsReal) {
+      const multiWorkspace = buildMultiWorkspaceOverview({
+        currentWorkspace: '',
+        recentWorkspaces: recent,
+        dataDir,
+        pluginRoot: PLUGIN_ROOT,
+      });
       return {
         plugin,
         workspace: '',
         recentWorkspaces: recent,
+        multiWorkspace,
         registryExists: false,
         registryIsManaged: false,
         registryRelPath: '',
@@ -390,6 +401,12 @@ class ControlTowerServer {
       dataDir,
       workspaceSettings: resolved.workspace,
     });
+    const multiWorkspace = buildMultiWorkspaceOverview({
+      currentWorkspace: wsReal,
+      recentWorkspaces: recent,
+      dataDir,
+      pluginRoot: PLUGIN_ROOT,
+    });
 
     if (!found) {
       const wsInboxSummary = summarizeInbox(loadWorkspaceInbox(dataDir, wsReal), {
@@ -399,6 +416,7 @@ class ControlTowerServer {
         plugin,
         workspace: wsReal,
         recentWorkspaces: recent,
+        multiWorkspace,
         registryExists: false,
         registryIsManaged: false,
         registryRelPath: '',
@@ -468,6 +486,7 @@ class ControlTowerServer {
       plugin,
       workspace: wsReal,
       recentWorkspaces: recent,
+      multiWorkspace,
       registryExists: true,
       registryIsManaged: Boolean(found.isManaged),
       registryRelPath: found.relPath,
@@ -528,6 +547,9 @@ class ControlTowerServer {
       // ignore deferred delivery error
     }
 
+    if (sweep.detectedCount > 0) {
+      this.#sseHub.notify({ workspace: wsReal, reason: 'sentinel_sweep' });
+    }
     return sweep;
   }
 
@@ -682,6 +704,27 @@ class ControlTowerServer {
   async #handleApi(req, res, url) {
     const dataDir = getDataDir();
 
+    if (req.method === 'GET' && url.pathname === '/api/events') {
+      const wsRaw = url.searchParams.get('workspace') || '';
+      const wsReal = wsRaw ? normalizeWorkspaceInput(wsRaw, { throwOnInvalid: false }) || '' : '';
+      this.#sseHub.subscribe(req, res, { workspace: wsReal, dataDir });
+      return;
+    }
+
+    if (
+      handleWorkspacesRoute({
+        req,
+        res,
+        url,
+        dataDir,
+        pluginRoot: PLUGIN_ROOT,
+        loadRecentWorkspaces,
+        sendJson: (r, s, o) => this.#sendJson(r, s, o),
+      })
+    ) {
+      return;
+    }
+
     if (req.method === 'GET' && url.pathname === '/api/snapshot') {
       const snap = this.#buildSnapshot(url.searchParams.get('workspace') || '');
       return this.#sendJson(res, 200, snap);
@@ -760,6 +803,7 @@ class ControlTowerServer {
       if (!wsReal) throw new HttpError(400, 'workspace is required');
       this.#activeWorkspace = wsReal;
       const nextRecent = recordRecentWorkspace(wsReal);
+      this.#sseHub.trackWorkspace(wsReal, dataDir);
       this.#ensureSentinelTimer();
       const snap = this.#buildSnapshot(wsReal, { recentOverride: nextRecent });
       return this.#sendJson(res, 200, { ok: true, snapshot: snap });
@@ -1069,6 +1113,7 @@ class ControlTowerServer {
         }
         this.#activeWorkspace = wsReal;
         const nextRecent = recordRecentWorkspace(wsReal);
+        this.#sseHub.trackWorkspace(wsReal, dataDir);
         this.#ensureSentinelTimer();
         return this.#sendJson(res, 200, {
           ok: true,
@@ -1296,13 +1341,17 @@ class ControlTowerServer {
         if (url.pathname.startsWith('/api/')) {
           const t0 = Date.now();
           const allowLogCreate = req.method !== 'GET';
+          const isEventStream = url.pathname === '/api/events';
           const slowThreshold = RPC_API_ROUTES.has(url.pathname)
             ? SLOW_RPC_THRESHOLD_MS
             : SLOW_OP_THRESHOLD_MS;
           try {
             await this.#handleApi(req, res, url);
+            if (req.method === 'POST' && res.statusCode < 400) {
+              this.#sseHub.notify({ workspace: this.#activeWorkspace, reason: url.pathname });
+            }
             const elapsed = Date.now() - t0;
-            if (elapsed >= slowThreshold && url.pathname !== '/api/diagnostics') {
+            if (!isEventStream && elapsed >= slowThreshold && url.pathname !== '/api/diagnostics') {
               this.#logFlightSafe(
                 {
                   level: 'warn',
@@ -1384,12 +1433,14 @@ class ControlTowerServer {
   }
 
   close() {
+    this.#sseHub.close();
     if (this.#sentinelTimer) {
       clearInterval(this.#sentinelTimer);
       this.#sentinelTimer = null;
     }
     return new Promise((resolveClose) => {
       if (this.#server) {
+        this.#server.closeAllConnections?.();
         this.#server.close(() => resolveClose());
       } else {
         resolveClose();

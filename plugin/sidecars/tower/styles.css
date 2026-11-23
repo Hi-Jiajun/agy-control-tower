@@ -349,6 +349,28 @@ body {
   color: var(--ct-danger);
 }
 
+.btn-confirm-armed {
+  background: var(--ct-danger-soft) !important;
+  border-color: var(--ct-danger) !important;
+  color: var(--ct-danger) !important;
+  font-weight: 700;
+}
+
+.global-drawer {
+  margin: 6px 10px 0;
+  max-height: 300px;
+  overflow-y: auto;
+  border-color: var(--ct-accent);
+}
+
+#global-ws-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .btn-ghost:hover {
   border-color: var(--ct-accent);
   background: var(--ct-accent-soft);

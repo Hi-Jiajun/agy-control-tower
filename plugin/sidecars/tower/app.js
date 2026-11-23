@@ -2,10 +2,12 @@ import {
   computeLivePollPlan,
   computeTabVisibility,
   escHtml as esc,
+  nextInlineConfirmState,
 } from './ui-logic.mjs';
 import {
   bindOverviewEvents,
   renderAttentionBanner,
+  renderGlobalWorkspacesDrawer,
   renderOverview,
   spawnHandoverController,
 } from './views/overview.mjs';
@@ -39,6 +41,10 @@ const state = {
   pollTimer: null,
   pollInFlight: false,
   pollPausedByUser: false,
+  sse: null,
+  sseConnected: false,
+  sseWorkspace: '',
+  sseRefreshTimer: null,
   rawDirty: false,
   rawBaseHash: '',
   rmL1Dirty: false,
@@ -83,6 +89,53 @@ function showToast(msg, isErr = false) {
   el.className = isErr ? 'toast error' : 'toast';
   clearTimeout(state.toastTimer);
   state.toastTimer = setTimeout(() => el.classList.add('hidden'), 2800);
+}
+
+const confirmTimers = new WeakMap();
+
+function disarmInlineConfirm(btn) {
+  if (!btn) return;
+  const prevTimer = confirmTimers.get(btn);
+  if (prevTimer) {
+    clearTimeout(prevTimer);
+    confirmTimers.delete(btn);
+  }
+  if (btn.dataset.origText) {
+    btn.textContent = btn.dataset.origText;
+  }
+  delete btn.dataset.confirmArmed;
+  delete btn.dataset.confirmExpiresAt;
+  btn.classList.remove('btn-confirm-armed');
+}
+
+async function confirmInline(btn, confirmLabel, asyncFn, timeoutMs = 3000) {
+  if (!btn) return asyncFn();
+  if (!btn.dataset.origText) {
+    btn.dataset.origText = btn.textContent || '';
+  }
+  const decision = nextInlineConfirmState({
+    armed: btn.dataset.confirmArmed === '1',
+    nowMs: Date.now(),
+    expiresAt: Number(btn.dataset.confirmExpiresAt || 0),
+    defaultLabel: btn.dataset.origText,
+    confirmLabel,
+    timeoutMs,
+  });
+
+  if (!decision.execute) {
+    btn.dataset.confirmArmed = '1';
+    btn.dataset.confirmExpiresAt = String(decision.nextExpiresAt);
+    btn.textContent = decision.label;
+    btn.classList.add('btn-confirm-armed');
+    const prevTimer = confirmTimers.get(btn);
+    if (prevTimer) clearTimeout(prevTimer);
+    const t = setTimeout(() => disarmInlineConfirm(btn), timeoutMs);
+    confirmTimers.set(btn, t);
+    return;
+  }
+
+  disarmInlineConfirm(btn);
+  return await withBusyButton(btn, asyncFn);
 }
 
 async function withBusyButton(btn, asyncFn) {
@@ -229,13 +282,98 @@ function switchSettingsScope(scope) {
   }
 }
 
+function isUiBusyEditing() {
+  const activeTag = document.activeElement?.tagName;
+  if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT') return true;
+  if (document.querySelector('.btn-confirm-armed')) return true;
+  if (
+    state.rawDirty ||
+    state.rmL1Dirty ||
+    state.globalDocDirty ||
+    state.wsDocDirty ||
+    state.settingsDirty.plugin ||
+    state.settingsDirty.global ||
+    state.settingsDirty.workspace
+  ) {
+    return true;
+  }
+  return (
+    !$('lease-form').classList.contains('hidden') ||
+    !$('ctrl-form').classList.contains('hidden') ||
+    !$('session-form').classList.contains('hidden') ||
+    !$('archive-form').classList.contains('hidden') ||
+    !$('dispatch-form').classList.contains('hidden') ||
+    !$('rm-l1-wrap').classList.contains('hidden') ||
+    !$('rm-node-form').classList.contains('hidden') ||
+    !$('rm-ms-form').classList.contains('hidden')
+  );
+}
+
+function connectSseStream(wsTarget = state.workspace) {
+  if (typeof EventSource !== 'function' || !location.protocol.startsWith('http')) return;
+  if (state.pollPausedByUser || state.snap?.settings?.plugin?.livePollEnabled === false) {
+    if (state.sse) {
+      state.sse.close();
+      state.sse = null;
+      state.sseConnected = false;
+    }
+    return;
+  }
+  if (state.sse && state.sseWorkspace === wsTarget) return;
+
+  if (state.sse) {
+    state.sse.close();
+    state.sse = null;
+    state.sseConnected = false;
+  }
+
+  const sp = new URLSearchParams();
+  if (uiToken) sp.set('token', uiToken);
+  if (wsTarget) sp.set('workspace', wsTarget);
+  const qs = sp.toString();
+  const es = new EventSource(`/api/events${qs ? `?${qs}` : ''}`);
+  state.sse = es;
+  state.sseWorkspace = wsTarget;
+
+  es.addEventListener('connected', () => {
+    state.sseConnected = true;
+    if (state.snap) updateLivePollControls(state.snap);
+  });
+
+  es.addEventListener('workspace_changed', () => {
+    if (state.pollPausedByUser || document.visibilityState !== 'visible') return;
+    if (state.sseRefreshTimer) clearTimeout(state.sseRefreshTimer);
+    state.sseRefreshTimer = setTimeout(() => {
+      state.sseRefreshTimer = null;
+      if (state.pollInFlight || isUiBusyEditing()) return;
+      refresh(undefined, { silent: true });
+    }, 90);
+  });
+
+  es.onerror = () => {
+    if (state.sseConnected) {
+      state.sseConnected = false;
+      if (state.snap) updateLivePollControls(state.snap);
+    }
+  };
+}
+
+window.addEventListener('beforeunload', () => {
+  if (state.sse) {
+    state.sse.close();
+    state.sse = null;
+  }
+});
+
 function updateLivePollControls(snap) {
+  connectSseStream(snap?.workspace || state.workspace);
   const plan = computeLivePollPlan({
     pluginPollEnabled: snap?.settings?.plugin?.livePollEnabled !== false,
     pausedByUser: state.pollPausedByUser,
     intervalSec: Number(snap?.settings?.plugin?.livePollIntervalSec || 4),
     activeSessionCount: (snap?.parsed?.activeSessions || []).length,
     swarmActive: Boolean(snap?.nativeSwarm?.active),
+    sseConnected: state.sseConnected,
   });
   $('live-dot').classList.toggle('live', plan.dotLive);
   const btn = $('poll-toggle-btn');
@@ -247,29 +385,7 @@ function updateLivePollControls(snap) {
   if (plan.shouldSchedule) {
     state.pollTimer = setInterval(() => {
       if (state.pollInFlight || document.visibilityState !== 'visible') return;
-      const activeTag = document.activeElement?.tagName;
-      if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT') return;
-      if (
-        state.rawDirty ||
-        state.rmL1Dirty ||
-        state.globalDocDirty ||
-        state.wsDocDirty ||
-        state.settingsDirty.plugin ||
-        state.settingsDirty.global ||
-        state.settingsDirty.workspace
-      ) {
-        return;
-      }
-      const editingFormOpen =
-        !$('lease-form').classList.contains('hidden') ||
-        !$('ctrl-form').classList.contains('hidden') ||
-        !$('session-form').classList.contains('hidden') ||
-        !$('archive-form').classList.contains('hidden') ||
-        !$('dispatch-form').classList.contains('hidden') ||
-        !$('rm-l1-wrap').classList.contains('hidden') ||
-        !$('rm-node-form').classList.contains('hidden') ||
-        !$('rm-ms-form').classList.contains('hidden');
-      if (editingFormOpen) return;
+      if (isUiBusyEditing()) return;
       refresh(undefined, { silent: true });
     }, plan.intervalMs);
   }
@@ -284,9 +400,10 @@ function render(snap) {
     state.workspace = snap.workspace;
   }
   state.snap = snap;
-  $('version-badge').textContent = `v${snap.plugin?.version || '1.6.1'}`;
+  $('version-badge').textContent = `v${snap.plugin?.version || '1.7.0'}`;
   applyMotionSetting(snap);
   renderWorkspaces(snap);
+  renderGlobalWorkspacesDrawer(ctx, snap);
   renderAttentionBanner(ctx, snap);
 
   const hasReg = Boolean(snap.registryExists);
@@ -352,6 +469,7 @@ const ctx = {
   refresh,
   showToast,
   withBusyButton,
+  confirmInline,
   copyText,
   sendToActiveController,
   switchTab,
@@ -389,6 +507,12 @@ $('poll-toggle-btn').addEventListener('click', () => {
 $('refresh-btn').addEventListener('click', () => refresh());
 $('ws-select').addEventListener('change', (e) => {
   if (e.target.value) refresh(e.target.value, { recordSelection: true });
+});
+$('global-ws-btn').addEventListener('click', () => {
+  $('global-ws-drawer').classList.toggle('hidden');
+});
+$('close-global-ws-btn').addEventListener('click', () => {
+  $('global-ws-drawer').classList.add('hidden');
 });
 
 // Empty-state registry initialization
@@ -568,20 +692,30 @@ document.body.addEventListener('click', async (e) => {
 
   const rmDel = e.target.closest('.rm-del-node-btn');
   if (rmDel?.dataset.id && state.workspace) {
-    try {
-      const res = await api('/api/roadmap/node/delete', {
-        method: 'POST',
-        body: {
-          workspace: state.workspace,
-          id: rmDel.dataset.id,
-          expectedL2Hash: state.snap?.roadmap?.l2Hash || '',
-        },
-      });
-      render(res.snapshot);
-      showToast(`已删除分支节点 ${rmDel.dataset.id}`);
-    } catch (err) {
-      showToast(err.message, true);
-    }
+    const nodeId = rmDel.dataset.id;
+    await confirmInline(rmDel, '确认删除?', async () => {
+      try {
+        const res = await api('/api/roadmap/node/delete', {
+          method: 'POST',
+          body: {
+            workspace: state.workspace,
+            id: nodeId,
+            expectedL2Hash: state.snap?.roadmap?.l2Hash || '',
+          },
+        });
+        render(res.snapshot);
+        showToast(`已删除分支节点 ${nodeId}`);
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    });
+    return;
+  }
+
+  const switchWsCard = e.target.closest('.switch-ws-card-btn');
+  if (switchWsCard?.dataset.ws) {
+    $('global-ws-drawer').classList.add('hidden');
+    await refresh(switchWsCard.dataset.ws, { recordSelection: true });
     return;
   }
 
@@ -709,21 +843,24 @@ document.body.addEventListener('click', async (e) => {
 
   const qDel = e.target.closest('.q-del-btn');
   if (qDel?.dataset.id) {
-    try {
-      const res = await api('/api/queue/delete', {
-        method: 'POST',
-        body: {
-          workspace: state.workspace,
-          relPath: state.snap.registryRelPath,
-          expectedHash: state.snap.hash,
-          id: qDel.dataset.id,
-        },
-      });
-      render(res.snapshot);
-      showToast(`已删除任务 ${qDel.dataset.id}`);
-    } catch (err) {
-      showToast(err.message, true);
-    }
+    const taskId = qDel.dataset.id;
+    await confirmInline(qDel, '确认删除?', async () => {
+      try {
+        const res = await api('/api/queue/delete', {
+          method: 'POST',
+          body: {
+            workspace: state.workspace,
+            relPath: state.snap.registryRelPath,
+            expectedHash: state.snap.hash,
+            id: taskId,
+          },
+        });
+        render(res.snapshot);
+        showToast(`已删除任务 ${taskId}`);
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    });
     return;
   }
 

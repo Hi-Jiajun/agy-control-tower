@@ -6,7 +6,7 @@
 
 - **标准 `./plugin/` 纯净包布局**：运行态全部资产收拢在 [plugin/](plugin/) 子目录，仓储研发文档与测试放在仓根，直接通过 `agy plugin validate --strict ./plugin` 零警告校验，并支持原生 `agy plugin install ./plugin` 安装与卸载。
 - **纯零依赖 Node.js ESM 单栈**：`plugin/lib/`（`paths.mjs`、`logger.mjs`、`inbox.mjs`、`roadmap.mjs`、`registry.mjs`、`settings.mjs`、`transcript.mjs`）同时驱动 Hooks 与 Sidecar；`transcript.jsonl` 采用头 `32KB` + 尾 `64KB` 分片与增量扫描缓存；内置零侵入轮转脱敏黑匣子飞行日志（`<PLUGIN_DATA>/logs/ct-flight.jsonl`）。
-- **隐藏执行面优先与四执行面统一导航**：默认通过原生 `swarm` / `invoke_subagent` / `run_workflow` 零左侧栏污染执行，`agentapi` 顶层会话实行白名单与固定槽位复用；看板自动聚合四类执行面并提供 Swarm `workspace` 隔离档位徽章与一键休眠回收请求。
+- **隐藏执行面优先、实时 SSE 推送与跨工作区全局导航**：默认通过原生 `swarm` / `invoke_subagent` / `run_workflow` 零左侧栏污染执行，`agentapi` 顶层会话实行白名单与固定槽位复用；看板基于零依赖 `fs.watch` + `/api/events` SSE 实时推送状态变更，内置跨工作区全局概览抽屉（顶栏汇总全部工作区 `P0/P1` 告警并支持一键切仓）与 WebView 安全内联二次确认微交互。
 - **冷热解耦双擎零 Token 哨兵与焦点防打扰门禁（Focus Gate）**：Sidecar 后台定时 + Hook 节流双引擎 0 Token 巡检报错、卡死与高压缩并写入单真源 `P0/P1/P2` 优先级信箱 `inbox.json`（自动裁剪卸任总控僵尸条目）；用户前台对话期间自动暂缓抢占式唤醒，总控任意 `Stop` 无条件释放焦点锁；超大型并发项目可按需拉起临时域分总控（单真源不裂脑）。
 - **四象限隔离协作与三层长期项目路线图**：支持 `inherit` / `share` / `branch` 隔离档位、Swarm 频道直聊 / Workflow 契约流水线 / `.agents/handoffs/` 契约文件自动发现与折叠预览、文件所有权冲突检测；大型长期项目可按需一键启用 L1 `ROADMAP.md` + L2 结构化依赖图 `roadmap.json` + L3 瘦身 `SESSION-REGISTRY.md`，支持路线图分支一键「交总控隐藏面派单」与 `[CT_REPORT:DONE]` 完成回执联动。
 - **五环自演化研发门禁体系（仓根 `scripts/` & `tests/`）**：涵盖黑匣子日志（区分本地接口与外部 RPC 慢调用阈值）、只读遥测复盘提案（`npm run mine`）、12 份脱敏事故轨迹回放库（`npm run replay`）、四维自动化门禁（L1 单测与前端纯逻辑 / L2 事故回放 / L3 零依赖 Chrome CDP 交互式窄栏 UI 冒烟 `npm run test:ui` / L4 16 项 Skill 与 Sidecar 契约评测 `npm run test:eval`），以及实装健康体检 `npm run doctor` 与发布快照一键回滚。

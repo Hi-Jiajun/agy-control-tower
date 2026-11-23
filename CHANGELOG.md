@@ -5,6 +5,18 @@ All notable changes to `control-tower` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-11-24
+
+### Added
+- **零依赖 `fs.watch` + `/api/events` SSE 实时推送引擎**：
+  - 新增 `plugin/sidecars/tower/lib/sse-hub.mjs`：基于 Node 原生 `fs.watch` 与 HTTP `text/event-stream` 实现 `120ms` 去抖实时推送，监听 `dataDir`、工作区信箱/路线图目录及 `.agents/` 台账变更（自动忽略 `.tmp.*` / `.tmp-*` / `*.lock` 临时锁文件，零订阅客户端时自动释放文件句柄，`close()` 时瞬时销毁全部连接与心跳）。
+  - Sidecar 写操作与后台哨兵发现新告警后即时广播 `workspace_changed`；前端接入 `EventSource`（顶栏展示 `SSE 实时` 绿点），在 SSE 在线时将安全兜底轮询自动降频至 `24s+`，断线时无缝回退自适应轮询。
+- **WebView 原生内联二次确认微交互（零 `window.confirm`）**：
+  - 在 `plugin/sidecars/tower/ui-logic.mjs` 与 `app.js` 新增纯状态机 `nextInlineConfirmState()` 与 `confirmInline()`：破坏性删除与重置操作（路线图删除分支、队列删除任务、三层设置恢复默认、文档覆盖恢复内置、清空诊断日志）首次点击变更为 `确认删除?` / `确认重置?` / `确认清空?` 高亮确认态（3 秒超时自动恢复，二次点击才提交），且确认窗口期内自动暂停后台刷新防止按钮重绘丢失。
+- **跨工作区全局概览抽屉与顶栏 `P0/P1` 汇总角标**：
+  - 新增 `plugin/sidecars/tower/routes/workspaces.mjs`（`GET /api/workspaces/overview` 与 `snapshot.multiWorkspace`）：零写入聚合当前与最近全部工作区的现役主总控、独占锁状态、活跃专职会话数、路线图完成度及未读 `P0/P1` 告警数。
+  - 看板顶栏工作区选择栏新增 `#global-ws-btn` 全局角标按钮与可折叠 `#global-ws-drawer` 跨仓卡片列表，支持异常工作区置顶排序与一键跨工作区秒切。
+
 ## [1.6.1] - 2026-11-24
 
 ### Fixed

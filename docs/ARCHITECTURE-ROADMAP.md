@@ -76,3 +76,9 @@
 - **模块化架构与并发安全加固**
   - Sidecar 前后端拆分为 `lib/agentapi.mjs`、`routes/{roadmap,inbox}.mjs` 与 `views/{overview,sessions,roadmap,settings}.mjs`；引入恒定时间 Token 校验、工作区串行互斥锁、持锁直派原子授锁、全局 409 冲突横幅、`rawBaseHash`/L1/L2 乐观锁、脏表单防轮询覆盖与请求序号防竞态。
   - 核心库引入零依赖跨进程文件锁 `withFileLockSync`、多级父目录软链逃逸拦截、纯 `Buffer` 字节换行增量扫描与超 64KB 尾行遥测回退；沉淀 12 条 L2 事故回放样本与 16 项 L4 契约评测，加固 `pre-commit` Git 暂存区校验与 `ct-release` 原子快照。
+
+### 第五阶段（`v1.7.0` — 当前版本）：零依赖 SSE 实时流、内联二次确认与跨工作区全局指挥抽屉
+
+- **零依赖 `fs.watch` + SSE 实时推送引擎（`lib/sse-hub.mjs`）**：通过 `/api/events` 建立单连接实时事件通道，文件或 API 写变更 `120ms` 去抖即时推送前端，SSE 在线期间将后台轮询自动降频至 `24s+` 低功耗兜底态，零订阅时自动回收目录监听器。
+- **WebView 安全内联二次确认微交互**：所有破坏性删除与配置重置按钮统一接入 `confirmInline()` 两段式内联确认状态机（3 秒超时自动解除，挂起期间锁定列表重绘），100% 杜绝 `window.confirm` 阻塞风险。
+- **跨工作区全局概览抽屉（`routes/workspaces.mjs`）**：顶栏实时汇总多工作区未读 `P0/P1` 告警角标，展开抽屉即可一览全部工作区的总控在线态、独占锁、活跃会话、路线图进度并一键切换工作区。
