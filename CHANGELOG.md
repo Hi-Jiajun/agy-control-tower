@@ -5,6 +5,17 @@ All notable changes to `control-tower` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2026-11-23
+
+### Changed
+- 基于近 7 天实战遥测与缓存命中率分析重构 `plugin/skills/control-tower/references/model-routing.md`：
+  - 将 `L0` 常驻总控与 `L2` 常规单模块明确开发首选切换为单模型 `Gemini 4 Neon (High)` / `Hydrogen (High)`（轻量短交互可选 `Neon (Medium)`），避免高频短交互下双层切换导致的缓存穿透；`L2` 跨多文件复合任务与 `L3`/`L4` 保留 `Orchestrator`（复杂规划优先 `Orchestrator (Carbon)`）。
+  - 放宽 `XHigh` 思考档位为「不全局默认，按需直接启用」。
+  - 新增第 6 节「单模型 / `Orchestrator` 与 `swarm`、`/plan`、`/boost`、`/teamwork`、`/goal`、`run_workflow` 协同搭配矩阵」与第 7 节「上下文缓存保护三条护栏」。
+  - 在降级阶梯中补充「当前切换账号 `Carbon` 模型不可用时临时降档至 `Neon (XHigh)` / `Orchestrator (Neon)` / `Neon (High)`」策略。
+- 同步升级 `plugin/skills/control-tower/SKILL.md` 与 `references/templates.md`：在派单开场骨架内嵌「精确 `read_file` 后再 `edit_file`、连续 2 次不匹配立即重读或改用 `write_file`」及「独立只读操作同轮批量合并」纪律。
+- 同步更新 `plugin/lib/settings.mjs` 默认全局预设（`l0ControllerModel` 与 `l2StandardModel` 默认调整为 `Gemini 4 Neon (High)`）并在看板 `MODEL_PRESETS` 补充 `Gemini 4 Neon (XHigh)` 与 `Gemini 4 Hydrogen (XHigh)`。
+
 ## [1.2.1] - 2026-11-22
 
 ### Fixed

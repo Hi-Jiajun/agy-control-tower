@@ -76,9 +76,9 @@ description: >-
 
 1. **会话决策与通道**：`【原生 Swarm】` / `【直派新建：<conversationId>】` / `【续接：<conversationId>】` / `【手动新建兜底】`；
 2. **唯一目标与可证伪判据**：只改/只验什么，过线与止损命令；
-3. **模型与思考档位**：按生效设置（[references/model-routing.md](./references/model-routing.md) 或设置中心覆盖配置）指定纯 Gemini 4 / Orchestrator 模型，严禁使用默认 `flash`、`Argon` 或 `3.8` 及更早系列；
-4. **工具与资源约束**：标明斜杠指令（如有）及资源边界（仅开启独占锁的工作区标注持锁或纯离线）；
-5. **双向汇报锚点与必读事实**：直派载荷默认内嵌现役总控 ID 与 `[CT_REPORT:DECISION]` / `[CT_REPORT:DONE]` 上报指令，并列出工作区规范与关键路径；
+3. **模型与思考档位**：按生效设置（[references/model-routing.md](./references/model-routing.md) 或设置中心覆盖配置）指定纯 Gemini 4 / Orchestrator 模型——L0 总控与 L2 局部明确改动优先单模型 `Neon (High)` / `Hydrogen (High)` 吃满连续缓存；原生 `swarm` 与 `/teamwork` 子线优先单模型控缓存；L3 疑难攻坚优先 `Orchestrator (Carbon)`（若当前账号 `Carbon` 不可用则临时平滑降档至 `Neon (XHigh)` / `Orchestrator (Neon)` / `Neon (High)`），长会话严禁中途随意切模型，严禁使用默认 `flash`、`Argon` 或 `3.8` 及更早系列；
+4. **工具与资源约束**：按 `model-routing.md` 协同矩阵标明工具与斜杠指令（`swarm` / `/plan` / `/boost` / `/teamwork` / `/goal` / `run_workflow`）及资源边界（仅开启独占锁的工作区标注持锁或纯离线）；
+5. **双向汇报锚点、执行纪律与必读事实**：直派载荷默认内嵌现役总控 ID 与 `[CT_REPORT:DECISION]` / `[CT_REPORT:DONE]` 上报指令、精确读行再 `edit_file`（连续 2 次不匹配立即重读或改用 `write_file`）及批量只读纪律，并列出工作区规范与关键路径；
 6. **状态或可复制开场词**：直派通道直接汇报「已拉起并自动入账，看板实时监测中」；手动/斜杠兜底通道附可复制中文开场提示词。
 
 ---

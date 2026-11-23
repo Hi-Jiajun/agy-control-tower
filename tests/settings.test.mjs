@@ -157,6 +157,10 @@ test('Host permission policy maps to autonomy tiers and dispatch model validator
       true
     );
 
+    assert.equal(DEFAULT_GLOBAL_SETTINGS.l0ControllerModel, 'Gemini 4 Neon (High)');
+    assert.equal(DEFAULT_GLOBAL_SETTINGS.l2StandardModel, 'Gemini 4 Neon (High)');
+    assert.equal(validateDispatchModel('Gemini 4 Neon (XHigh)').ok, true);
+    assert.equal(normalizeModelForAgentApi('Gemini 4 Neon (XHigh)'), 'gemini-4-neon-xhigh');
     assert.equal(normalizeModelForAgentApi('Orchestrator (Carbon)'), 'gemini-pro-orchestrator');
     assert.equal(normalizeModelForAgentApi('Orchestrator (Neon)'), 'gemini-pro-orchestrator-neon');
     assert.equal(normalizeModelForAgentApi('Gemini 4 Hydrogen (Medium)'), 'gemini-4-hydrogen-medium');

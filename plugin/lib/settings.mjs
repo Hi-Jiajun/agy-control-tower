@@ -26,9 +26,9 @@ export const DEFAULT_PLUGIN_SETTINGS = Object.freeze({
 });
 
 export const DEFAULT_GLOBAL_SETTINGS = Object.freeze({
-  l0ControllerModel: 'Orchestrator (Neon)',
+  l0ControllerModel: 'Gemini 4 Neon (High)',
   l1LightModel: 'Gemini 4 Hydrogen (Low)',
-  l2StandardModel: 'Orchestrator (Neon)',
+  l2StandardModel: 'Gemini 4 Neon (High)',
   l3DeepModel: 'Orchestrator (Carbon)',
   l4IntegrationModel: 'Orchestrator (Neon)',
   modelGuardPolicy: 'strict_gemini4',
@@ -52,15 +52,17 @@ export const OVERRIDABLE_GLOBAL_KEYS = Object.freeze(Object.keys(DEFAULT_GLOBAL_
 const OVERRIDABLE_GLOBAL_SET = new Set(OVERRIDABLE_GLOBAL_KEYS);
 
 export const MODEL_PRESETS = Object.freeze([
-  'Orchestrator (Neon)',
-  'Orchestrator (Carbon)',
-  'Gemini 4 Carbon (High)',
-  'Gemini 4 Carbon (Medium)',
   'Gemini 4 Neon (High)',
   'Gemini 4 Neon (Medium)',
+  'Gemini 4 Neon (XHigh)',
   'Gemini 4 Hydrogen (High)',
   'Gemini 4 Hydrogen (Medium)',
   'Gemini 4 Hydrogen (Low)',
+  'Gemini 4 Hydrogen (XHigh)',
+  'Gemini 4 Carbon (High)',
+  'Gemini 4 Carbon (Medium)',
+  'Orchestrator (Carbon)',
+  'Orchestrator (Neon)',
 ]);
 
 const MODEL_ALIAS_TO_AGENTAPI = new Map([
