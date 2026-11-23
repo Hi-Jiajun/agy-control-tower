@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import { PathError } from '../plugin/lib/paths.mjs';
@@ -173,6 +173,45 @@ test('Phase 3: 3-tier hybrid roadmap supports DAG readiness, cycle rejection, ow
     assert.ok(hfOk.preview.includes('API ready'));
     const hfBlocked = inspectNodeHandoff(ws, { id: 'W2', handoffPath: '../../etc/passwd' });
     assert.equal(hfBlocked.exists, false);
+
+    // Parent symlink escape must be blocked
+    const outsideDir = join(sb.dir, 'outside_secret');
+    mkdirSync(outsideDir, { recursive: true });
+    writeFileSync(join(outsideDir, 'leak.md'), 'TOP_SECRET', 'utf8');
+    symlinkSync(outsideDir, join(ws, '.agents', 'escape_link'));
+    const hfSymlinkEscape = inspectNodeHandoff(ws, {
+      id: 'W2',
+      handoffPath: '.agents/escape_link/leak.md',
+    });
+    assert.equal(hfSymlinkEscape.exists, false);
+
+    // 10) Editing existing node preserves linkedConvId/notes and renaming migrates downstream dependsOn; stale expectedL2Hash throws 409
+    upsertRoadmapNode(ws, {
+      id: 'W3',
+      title: '依赖 W2 的下游',
+      dependsOn: ['W2'],
+    });
+    const edited = upsertRoadmapNode(ws, {
+      originalId: 'W2',
+      id: 'W2_RENAMED',
+      title: '重命名后保留关联会话',
+      notes: 'preserved-note',
+    });
+    const renamedNode = edited.graph.nodes.find((n) => n.id === 'W2_RENAMED');
+    const downstreamNode = edited.graph.nodes.find((n) => n.id === 'W3');
+    assert.ok(renamedNode);
+    assert.equal(renamedNode.notes, 'preserved-note');
+    assert.deepEqual(downstreamNode.dependsOn, ['W2_RENAMED']);
+
+    assert.throws(
+      () =>
+        upsertRoadmapNode(
+          ws,
+          { id: 'W4', title: '并发冲突测试' },
+          { expectedL2Hash: 'stale-hash-0000' }
+        ),
+      /409|外部修改/
+    );
   } finally {
     sb.cleanup();
   }

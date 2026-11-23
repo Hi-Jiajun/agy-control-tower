@@ -142,12 +142,21 @@ test('Phase 2: inspectHiddenSurfaces aggregates invoke_subagent and run_workflow
     const appData = join(sb.dir, 'app_data');
     const ctrlId = makeConvId('c', '1', '4', '8', 'a');
     const subId = makeConvId('d', '2', '4', '8', 'b');
+    const subId2 = makeConvId('e', '3', '4', '9', 'c');
 
     writeFileSync(
       makeTranscriptPath(appData, subId),
       [
         JSON.stringify({ step_index: 0, type: 'USER_INPUT', content: 'Inspect module' }),
         JSON.stringify({ step_index: 4, type: 'PLANNER_RESPONSE', model: 'gemini-4-neon-high', status: 'DONE' }),
+      ].join('\n') + '\n',
+      'utf8'
+    );
+    writeFileSync(
+      makeTranscriptPath(appData, subId2),
+      [
+        JSON.stringify({ step_index: 0, type: 'USER_INPUT', content: 'Inspect security' }),
+        JSON.stringify({ step_index: 2, type: 'PLANNER_RESPONSE', model: 'gemini-4-carbon-high', status: 'RUNNING' }),
       ].join('\n') + '\n',
       'utf8'
     );
@@ -164,6 +173,10 @@ test('Phase 2: inspectHiddenSurfaces aggregates invoke_subagent and run_workflow
               name: 'invoke_subagent',
               args: { TypeName: 'research', Role: 'Code Auditor', Model: 'inherit', Workspace: 'inherit' },
             },
+            {
+              name: 'invoke_subagent',
+              args: { TypeName: 'research', Role: 'Security Auditor', Model: 'inherit', Workspace: 'inherit' },
+            },
           ],
         }),
         JSON.stringify({
@@ -174,6 +187,12 @@ test('Phase 2: inspectHiddenSurfaces aggregates invoke_subagent and run_workflow
         }),
         JSON.stringify({
           step_index: 3,
+          type: 'GENERIC',
+          status: 'DONE',
+          content: `Launched subagent conversationId=${subId2}`,
+        }),
+        JSON.stringify({
+          step_index: 4,
           type: 'PLANNER_RESPONSE',
           created_at: '2026-11-23T12:02:00Z',
           tool_calls: [
@@ -184,7 +203,7 @@ test('Phase 2: inspectHiddenSurfaces aggregates invoke_subagent and run_workflow
           ],
         }),
         JSON.stringify({
-          step_index: 4,
+          step_index: 5,
           type: 'GENERIC',
           status: 'DONE',
           content: 'Workflow completed',
@@ -194,10 +213,12 @@ test('Phase 2: inspectHiddenSurfaces aggregates invoke_subagent and run_workflow
     );
 
     const hidden = inspectHiddenSurfaces(ctrlId, { env: { ANTIGRAVITY_APP_DATA_DIR: appData } });
-    assert.equal(hidden.subagents.length, 1);
-    assert.equal(hidden.subagents[0].role, 'Code Auditor');
-    assert.equal(hidden.subagents[0].conversationId, subId);
-    assert.equal(hidden.subagents[0].steps, 4);
+    assert.equal(hidden.subagents.length, 2);
+    assert.equal(hidden.subagents[0].role, 'Security Auditor');
+    assert.equal(hidden.subagents[0].conversationId, subId2);
+    assert.equal(hidden.subagents[1].role, 'Code Auditor');
+    assert.equal(hidden.subagents[1].conversationId, subId);
+    assert.equal(hidden.subagents[1].steps, 4);
     assert.equal(hidden.workflows.length, 1);
     assert.equal(hidden.workflows[0].description, 'Batch lint & test fanout');
 
@@ -208,7 +229,7 @@ test('Phase 2: inspectHiddenSurfaces aggregates invoke_subagent and run_workflow
       topLevel: [{ conversationId: '1' }, { conversationId: '2' }, { conversationId: '3' }],
     });
     assert.equal(sum.swarm, 1);
-    assert.equal(sum.hiddenTotal, 3);
+    assert.equal(sum.hiddenTotal, 4);
     assert.equal(sum.sidebarWarning, true);
   } finally {
     sb.cleanup();

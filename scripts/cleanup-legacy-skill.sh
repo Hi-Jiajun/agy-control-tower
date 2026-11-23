@@ -90,9 +90,11 @@ function inspectLegacy() {
 
   if (lst.isSymbolicLink()) {
     const target = readlinkSync(legacyDir);
+    const isOwnedLink =
+      /(?:^|\/)(?:plugins\/control-tower|control-tower\/(?:plugin\/)?skills\/control-tower)\/?$/.test(target);
     return {
       exists: true,
-      ownership: target.includes('control-tower') ? 'owned_symlink' : 'foreign',
+      ownership: isOwnedLink ? 'owned_symlink' : 'foreign',
       extraFiles: [],
     };
   }
@@ -135,6 +137,9 @@ function inspectLegacy() {
       const rel = relBase ? `${relBase}/${ent.name}` : ent.name;
       const full = join(dir, ent.name);
       if (ent.isDirectory()) {
+        if (rel !== 'references') {
+          extraFiles.push(`${rel}/`);
+        }
         walk(full, rel);
       } else if (!KNOWN_FILES.has(rel)) {
         extraFiles.push(rel);

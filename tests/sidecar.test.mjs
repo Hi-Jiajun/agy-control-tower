@@ -401,15 +401,30 @@ if (args.includes('new-conversation')) {
     assert.equal(rmDel.status, 200);
     assert.equal(rmDel.data.snapshot.roadmap.graph.counts.total, 1);
 
-    // 16) Phase 4 (v1.6.0): Modular view assets, hidden roadmap dispatch, swarm cleanup, metadata cache & handover pre-register
+    // 16) Phase 4 (v1.6.x): Modular view assets, DAG-gated hidden dispatch, malformed URL survival, exclusive lease mutex, metadata cache
+    const badUrlRes = await fetch(`${base}//bad:port/api/snapshot`, {
+      headers: { 'x-sidecar-token': token },
+    });
+    assert.ok(badUrlRes.status === 200 || badUrlRes.status === 400 || badUrlRes.status === 404);
+
     for (const viewPath of ['/views/overview.mjs', '/views/sessions.mjs', '/views/roadmap.mjs', '/views/settings.mjs']) {
       const vr = await fetch(`${base}${viewPath}`);
       assert.equal(vr.status, 200, `Expected 200 for ${viewPath}`);
     }
 
-    const rmHidden = await req('POST', '/api/roadmap/node/dispatch-hidden', { workspace: ws, id: 'W1' });
-    assert.equal(rmHidden.status, 200);
-    assert.equal(rmHidden.data.nodeId, 'W1');
+    // Done node W1 is rejected unless forced; blocked node W4 is rejected; ready node W3 succeeds
+    const rmHiddenDone = await req('POST', '/api/roadmap/node/dispatch-hidden', { workspace: ws, id: 'W1' });
+    assert.equal(rmHiddenDone.status, 409);
+
+    await req('POST', '/api/roadmap/node/upsert', { workspace: ws, id: 'W3', title: '就绪分支', status: 'planned' });
+    await req('POST', '/api/roadmap/node/upsert', { workspace: ws, id: 'W4', title: '阻塞分支', status: 'planned', dependsOn: 'W3' });
+
+    const rmHiddenBlocked = await req('POST', '/api/roadmap/node/dispatch-hidden', { workspace: ws, id: 'W4' });
+    assert.equal(rmHiddenBlocked.status, 409);
+
+    const rmHiddenReady = await req('POST', '/api/roadmap/node/dispatch-hidden', { workspace: ws, id: 'W3' });
+    assert.equal(rmHiddenReady.status, 200);
+    assert.equal(rmHiddenReady.data.nodeId, 'W3');
 
     const meta1 = await req('POST', '/_sidecar/get-conversation-metadata', { conversationId: ctrlId });
     assert.equal(meta1.status, 200);

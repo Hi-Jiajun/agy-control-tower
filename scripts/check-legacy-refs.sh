@@ -68,6 +68,7 @@ const OLD_TOKEN = 'skills/control-tower';
 const VALID_TOKENS = [
   'plugins/control-tower/skills/control-tower',
   'plugin/skills/control-tower',
+  '.agents/skills/control-tower',
 ];
 
 const hits = [];

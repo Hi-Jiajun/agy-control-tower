@@ -11,9 +11,11 @@ import {
 import { join, relative, sep } from 'node:path';
 import {
   atomicWriteText,
+  isInsideDir,
   readJsonSafe,
   resolveAppDataDirs,
   sha256,
+  withFileLockSync,
 } from './paths.mjs';
 
 const HEAD_BYTES = 32 * 1024;
@@ -52,6 +54,17 @@ function matchesKnownId(cand, knownList) {
   return false;
 }
 
+export function stripSystemMessageEnvelope(raw) {
+  if (typeof raw !== 'string') return '';
+  let text = raw.trim();
+  const sysMatch = text.match(/<SYSTEM_MESSAGE>([\s\S]*?)<\/SYSTEM_MESSAGE>/i);
+  if (sysMatch) {
+    text = sysMatch[1].trim();
+  }
+  text = text.replace(/^\[Message\]\s+timestamp=\S+\s+sender=\S+\s+priority=\S+\s+content=/i, '');
+  return text.trim();
+}
+
 /**
  * Extract conversation IDs or 8+ hex prefixes from bare ID, short command, or structured report prompts.
  * In long inputs (> 400 chars), filters out incidental commit SHAs by requiring a full UUID or known registry ID prefix.
@@ -69,6 +82,9 @@ export function extractPromptSessionIds(
   }
   if (isValidConvIdOrPrefix(trimmed)) {
     return { isSingleBareId: true, ids: [trimmed] };
+  }
+  if (trimmed.length > Math.max((Number(maxInputLength) || 2000) * 4, 65536)) {
+    return { isSingleBareId: false, ids: [] };
   }
 
   const stripped = trimmed
@@ -104,11 +120,6 @@ export function extractPromptSessionIds(
   return { isSingleBareId: false, ids };
 }
 
-function isInsideDir(rootReal, targetReal) {
-  const rel = relative(rootReal, targetReal);
-  return rel === '' || (!rel.startsWith('..') && !rel.includes(`..${sep}`));
-}
-
 export function resolveBrainTranscript(idOrPrefix, { env = process.env, hintPath = '' } = {}) {
   const cand = typeof idOrPrefix === 'string' ? idOrPrefix.trim() : '';
   if (!isValidConvIdOrPrefix(cand)) {
@@ -117,7 +128,6 @@ export function resolveBrainTranscript(idOrPrefix, { env = process.env, hintPath
   const candLower = cand.toLowerCase();
   const appDirs = resolveAppDataDirs({ env, hintPath });
 
-  const exactHits = [];
   const prefixHits = new Map();
 
   for (const appDir of appDirs) {
@@ -135,7 +145,12 @@ export function resolveBrainTranscript(idOrPrefix, { env = process.env, hintPath
       try {
         const exactReal = realpathSync(exactPath);
         if (isInsideDir(brainReal, exactReal) && statSync(exactReal).isFile()) {
-          exactHits.push({ conversationId: cand, path: exactReal });
+          return {
+            status: 'ok',
+            conversationId: cand,
+            path: exactReal,
+            matches: [cand],
+          };
         }
       } catch {
         // ignore unreadable
@@ -164,15 +179,6 @@ export function resolveBrainTranscript(idOrPrefix, { env = process.env, hintPath
         // ignore unreadable
       }
     }
-  }
-
-  if (exactHits.length > 0) {
-    return {
-      status: 'ok',
-      conversationId: exactHits[0].conversationId,
-      path: exactHits[0].path,
-      matches: [exactHits[0].conversationId],
-    };
   }
 
   const hits = [...prefixHits.entries()]
@@ -239,6 +245,21 @@ function processStepForCompactions(step, acc) {
   if (Number.isInteger(step.step_index) && step.step_index > acc.maxStepIndex) {
     acc.maxStepIndex = step.step_index;
   }
+  if (typeof step.model === 'string' && step.model.trim()) {
+    acc.lastModel = step.model.trim();
+  }
+  if (typeof step.created_at === 'string' && step.created_at.trim()) {
+    acc.lastUpdatedAt = step.created_at.trim();
+  }
+  if (typeof step.status === 'string' && step.status.trim()) {
+    acc.lastStatus = step.status.trim();
+    if (acc.lastStatus.toUpperCase() !== 'ERROR' && !step.error) {
+      acc.lastError = '';
+    }
+  }
+  if (typeof step.error === 'string' && step.error.trim()) {
+    acc.lastError = step.error.trim().slice(0, 120);
+  }
   const stype = String(step.type || '').toUpperCase();
   if (
     stype.includes('CHECKPOINT') ||
@@ -268,53 +289,65 @@ function processStepForCompactions(step, acc) {
 function scanCompactionsRange(fd, startOffset, endOffset, seedAcc) {
   const buf = Buffer.allocUnsafe(CHUNK_BYTES);
   let pos = startOffset;
-  let leftover = '';
+  let leftoverBuf = Buffer.alloc(0);
   let lastCompleteOffset = startOffset;
 
   while (pos < endOffset) {
     const toRead = Math.min(CHUNK_BYTES, endOffset - pos);
     const n = readSync(fd, buf, 0, toRead, pos);
     if (n <= 0) break;
-    const chunkText = leftover + buf.subarray(0, n).toString('utf8');
-    const lines = chunkText.split('\n');
-    const endsWithNewline = chunkText.endsWith('\n');
-    const completeLines = endsWithNewline ? lines : lines.slice(0, -1);
-    leftover = endsWithNewline ? '' : lines[lines.length - 1];
 
-    const prevLeftoverBytes = Buffer.byteLength(leftover, 'utf8');
-    const newTotalRead = pos + n - prevLeftoverBytes;
-    if (newTotalRead > lastCompleteOffset) {
-      lastCompleteOffset = newTotalRead;
-    }
+    const combined =
+      leftoverBuf.length > 0
+        ? Buffer.concat([leftoverBuf, buf.subarray(0, n)])
+        : Buffer.from(buf.subarray(0, n));
+    const lastNl = combined.lastIndexOf(0x0a);
 
-    for (const rawLine of completeLines) {
-      const line = rawLine.trim();
-      if (!line) continue;
-      try {
-        const step = JSON.parse(line);
-        if (step && typeof step === 'object') {
-          processStepForCompactions(step, seedAcc);
+    if (lastNl >= 0) {
+      const completeSlice = combined.subarray(0, lastNl);
+      leftoverBuf = combined.subarray(lastNl + 1);
+      lastCompleteOffset = pos + n - leftoverBuf.length;
+
+      const text = completeSlice.toString('utf8');
+      for (const rawLine of text.split('\n')) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        try {
+          const step = JSON.parse(line);
+          if (step && typeof step === 'object') {
+            processStepForCompactions(step, seedAcc);
+          }
+        } catch {
+          // skip malformed json line
         }
-      } catch {
-        // skip malformed json line
       }
+    } else {
+      leftoverBuf = combined;
     }
     pos += n;
   }
 
-  // Handle trailing JSON line lacking a final newline without advancing lastCompleteOffset past it
-  if (leftover && leftover.trim()) {
-    try {
-      const step = JSON.parse(leftover.trim());
-      if (step && typeof step === 'object') {
-        processStepForCompactions(step, seedAcc);
+  // Evaluate trailing JSON line lacking a final newline on a cloned accumulator so cached offset never double-counts
+  let viewAcc = seedAcc;
+  if (leftoverBuf.length > 0) {
+    const tailStr = leftoverBuf.toString('utf8').trim();
+    if (tailStr) {
+      try {
+        const step = JSON.parse(tailStr);
+        if (step && typeof step === 'object') {
+          viewAcc = {
+            ...seedAcc,
+            prevUsedByModel: { ...(seedAcc.prevUsedByModel || {}) },
+          };
+          processStepForCompactions(step, viewAcc);
+        }
+      } catch {
+        // incomplete trailing JSON line
       }
-    } catch {
-      // incomplete trailing JSON line
     }
   }
 
-  return lastCompleteOffset;
+  return { lastCompleteOffset, viewAcc };
 }
 
 /**
@@ -445,6 +478,10 @@ export function inspectTranscript(tp, { cacheEntry = null } = {}) {
           compactions: cacheEntry.acc.compactions || 0,
           lastCompactionLine: cacheEntry.acc.lastCompactionLine || 0,
           lastCompactionKind: cacheEntry.acc.lastCompactionKind || '',
+          lastModel: cacheEntry.acc.lastModel || cacheEntry.info?.lastModel || '',
+          lastUpdatedAt: cacheEntry.acc.lastUpdatedAt || cacheEntry.info?.lastUpdatedAt || '',
+          lastStatus: cacheEntry.acc.lastStatus || cacheEntry.info?.lastStatus || '',
+          lastError: cacheEntry.acc.lastError ?? cacheEntry.info?.lastError ?? '',
           prevUsedByModel: { ...(cacheEntry.acc.prevUsedByModel || {}) },
         }
       : {
@@ -453,23 +490,26 @@ export function inspectTranscript(tp, { cacheEntry = null } = {}) {
           compactions: 0,
           lastCompactionLine: 0,
           lastCompactionKind: '',
+          lastModel: '',
+          lastUpdatedAt: '',
+          lastStatus: '',
+          lastError: '',
           prevUsedByModel: {},
         };
 
     const startOffset = canResume ? cacheEntry.offset : 0;
-    const nextOffset = scanCompactionsRange(fd, startOffset, fileSize, acc);
+    const { lastCompleteOffset: nextOffset, viewAcc } = scanCompactionsRange(fd, startOffset, fileSize, acc);
 
-    // Handle trailing line without newline for non-cached tail inspection without advancing offset past incomplete bytes
     const info = {
       exists: true,
-      lineCount: acc.lineCount,
-      maxStepIndex: Math.max(acc.maxStepIndex, maxStepIndex),
+      lineCount: viewAcc.lineCount,
+      maxStepIndex: Math.max(viewAcc.maxStepIndex, maxStepIndex),
       goal: goal || (canResume ? cacheEntry.info?.goal || '' : ''),
-      lastModel,
-      lastUpdatedAt,
-      lastStatus,
-      lastError,
-      compactions: acc.compactions,
+      lastModel: lastModel || viewAcc.lastModel || '',
+      lastUpdatedAt: lastUpdatedAt || viewAcc.lastUpdatedAt || '',
+      lastStatus: lastStatus || viewAcc.lastStatus || '',
+      lastError: lastError || viewAcc.lastError || '',
+      compactions: viewAcc.compactions,
     };
 
     const nextCacheEntry = {
@@ -482,6 +522,8 @@ export function inspectTranscript(tp, { cacheEntry = null } = {}) {
       updatedAt: Date.now(),
     };
     return { info, nextCacheEntry };
+  } catch {
+    return { info: emptyInfo, nextCacheEntry: null };
   } finally {
     if (fd !== undefined) {
       try {
@@ -517,7 +559,11 @@ function readTailText(filePath, maxBytes) {
     fd = openSync(filePath, 'r');
     const buf = readRangeSync(fd, offset, st.size - offset);
     const raw = buf.toString('utf8');
-    return offset > 0 ? raw.slice(raw.indexOf('\n') + 1) : raw;
+    if (offset > 0) {
+      const nl = raw.indexOf('\n');
+      return nl >= 0 ? raw.slice(nl + 1) : '';
+    }
+    return raw;
   } catch {
     return '';
   } finally {
@@ -557,14 +603,15 @@ export function hasOutboundAgentApiReport(tp, recipientId) {
     const step = steps[i];
     const stype = String(step.type || '').toUpperCase();
     if (stype === 'USER_INPUT') continue;
-    const blob = JSON.stringify({
-      content: step.content || '',
-      tool_calls: step.tool_calls || null,
-    }).toLowerCase();
-    const hasRecipient =
-      blob.includes(targetFull) || (targetPrefix.length >= 8 && blob.includes(targetPrefix));
-    if (hasRecipient && (blob.includes('send-message') || blob.includes('[ct_report:'))) {
-      return true;
+    const tcs = Array.isArray(step.tool_calls) ? step.tool_calls : [];
+    for (const tc of tcs) {
+      const tcName = String(tc?.name || tc?.function?.name || '').trim();
+      const tcBlob = JSON.stringify(tc?.args ?? tc?.function?.arguments ?? '').toLowerCase();
+      const hasRecipient =
+        tcBlob.includes(targetFull) || (targetPrefix.length >= 8 && tcBlob.includes(targetPrefix));
+      if (!hasRecipient) continue;
+      if (tcName === 'send_message') return true;
+      if (tcBlob.includes('send-message')) return true;
     }
   }
   return false;
@@ -621,9 +668,11 @@ export function inspectNativeSwarm(
     }
     let state = 'waiting';
     if (m.killed) state = 'killed';
-    else if (tel?.exists && tel.lastStatus && !['DONE', 'IDLE', 'WAITING'].includes(tel.lastStatus.toUpperCase())) {
-      state = 'working';
-    } else if (!m.wait_since && tel?.exists && tel.lastStatus === 'RUNNING') {
+    else if (
+      tel?.exists &&
+      tel.lastStatus &&
+      !['DONE', 'IDLE', 'WAITING', 'OK', 'COMPLETED'].includes(tel.lastStatus.toUpperCase())
+    ) {
       state = 'working';
     }
     return {
@@ -662,8 +711,9 @@ export function inspectNativeSwarm(
     }
   }
 
+  const hasLiveMembers = members.length === 0 || members.some((m) => m.state !== 'killed');
   return {
-    active: true,
+    active: hasLiveMembers,
     title: String(membersData.title || 'Native Swarm'),
     members,
     recentPosts: recentPosts.slice(-5),
@@ -704,29 +754,50 @@ export function inspectHiddenSurfaces(
   const workflows = [];
   const seenSub = new Set();
 
+  const ctrlFullLower = String(resolved.conversationId || controllerConvId).toLowerCase();
+  const ctrlInputLower = String(controllerConvId).toLowerCase();
+
   for (let i = 0; i < steps.length; i += 1) {
     const step = steps[i];
     const toolCalls = Array.isArray(step.tool_calls) ? step.tool_calls : [];
+    const claimedResultIndices = new Set();
     for (const tc of toolCalls) {
       const name = String(tc?.name || tc?.function?.name || '').trim();
-      const args = tc?.args && typeof tc.args === 'object' ? tc.args : {};
+      let args = {};
+      if (tc?.args && typeof tc.args === 'object') {
+        args = tc.args;
+      } else if (typeof tc?.function?.arguments === 'string') {
+        try {
+          args = JSON.parse(tc.function.arguments) || {};
+        } catch {
+          args = {};
+        }
+      }
+      const tcId = String(tc?.id || tc?.tool_call_id || '').trim();
 
       if (name === 'invoke_subagent') {
         let childId = '';
         let resultStatus = 'RUNNING';
-        // Scan next few steps for tool output containing spawned conversationId
-        for (let j = i + 1; j < Math.min(steps.length, i + 6); j += 1) {
+        for (let j = i + 1; j < Math.min(steps.length, i + 1 + toolCalls.length + 6); j += 1) {
           const next = steps[j];
           if (String(next.type || '').toUpperCase() === 'PLANNER_RESPONSE') break;
+          if (claimedResultIndices.has(j)) continue;
+          const nextTcId = String(next.tool_call_id || '').trim();
+          if (tcId && nextTcId && tcId !== nextTcId) continue;
           const content = String(next.content || '');
           const m = content.match(SUBAGENT_ID_RE);
-          if (m && m[0].toLowerCase() !== controllerConvId.toLowerCase()) {
-            childId = m[0];
-            resultStatus = String(next.status || 'DONE').toUpperCase();
-            break;
+          if (m) {
+            const hitLower = m[0].toLowerCase();
+            if (hitLower !== ctrlFullLower && !hitLower.startsWith(ctrlInputLower)) {
+              childId = m[0];
+              resultStatus = String(next.status || 'DONE').toUpperCase();
+              claimedResultIndices.add(j);
+              break;
+            }
           }
         }
-        const dedup = childId || `${args.Role || args.TypeName || 'sub'}-${step.step_index || i}`;
+        const dedup =
+          childId || `${args.Role || args.TypeName || 'sub'}-${step.step_index || i}-${subagents.length}`;
         if (seenSub.has(dedup)) continue;
         seenSub.add(dedup);
 
@@ -773,21 +844,38 @@ export function extractFirstUserPromptRaw(tp, maxChars = 4000) {
     const st = statSync(tp);
     if (!st.isFile() || st.size === 0) return '';
     fd = openSync(tp, 'r');
-    const len = Math.min(HEAD_BYTES, st.size);
-    const buf = readRangeSync(fd, 0, len);
-    const text = buf.toString('utf8');
-    const lines = st.size > len ? text.split('\n').slice(0, -1) : text.split('\n');
-    for (const rawLine of lines) {
-      const line = rawLine.trim();
-      if (!line) continue;
-      try {
-        const step = JSON.parse(line);
-        if (step && typeof step === 'object' && String(step.type || '').toUpperCase() === 'USER_INPUT') {
-          const content = String(step.content || '').trim();
-          if (content) return content.slice(0, maxChars);
+    const maxScan = Math.min(st.size, 256 * 1024);
+    let pos = 0;
+    let leftoverBuf = Buffer.alloc(0);
+    const buf = Buffer.allocUnsafe(CHUNK_BYTES);
+
+    while (pos < maxScan) {
+      const toRead = Math.min(CHUNK_BYTES, maxScan - pos);
+      const n = readSync(fd, buf, 0, toRead, pos);
+      if (n <= 0) break;
+      const combined =
+        leftoverBuf.length > 0
+          ? Buffer.concat([leftoverBuf, buf.subarray(0, n)])
+          : Buffer.from(buf.subarray(0, n));
+      const lastNl = combined.lastIndexOf(0x0a);
+      const sliceToParse =
+        lastNl >= 0 ? combined.subarray(0, lastNl) : pos + n >= st.size ? combined : null;
+      leftoverBuf = lastNl >= 0 ? combined.subarray(lastNl + 1) : combined;
+      pos += n;
+
+      if (!sliceToParse) continue;
+      for (const rawLine of sliceToParse.toString('utf8').split('\n')) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        try {
+          const step = JSON.parse(line);
+          if (step && typeof step === 'object' && String(step.type || '').toUpperCase() === 'USER_INPUT') {
+            const content = String(step.content || '').trim();
+            if (content) return content.slice(0, maxChars);
+          }
+        } catch {
+          // skip malformed line
         }
-      } catch {
-        // skip
       }
     }
     return '';
@@ -826,7 +914,12 @@ function prunePendingSuccessors(obj, nowMs = Date.now(), ttlMs = 2 * 3600 * 1000
     if (!v || typeof v !== 'object' || !v.convId) continue;
     const age = Math.max(0, nowMs - (Number(v.createdAt || 0) || 0));
     if (age <= ttlMs) {
-      out[k] = { convId: String(v.convId), createdAt: Number(v.createdAt || nowMs) };
+      const item = { convId: String(v.convId), createdAt: Number(v.createdAt || nowMs) };
+      if (v.activatedAt) {
+        if (nowMs - Number(v.activatedAt) > 60 * 1000) continue;
+        item.activatedAt = Number(v.activatedAt);
+      }
+      out[k] = item;
     }
   }
   return out;
@@ -868,4 +961,19 @@ export function savePluginState(dataDir, state) {
     transcriptCache: pruneMapLru(state?.transcriptCache, STATE_MAX_ENTRIES),
   };
   atomicWriteText(join(dataDir, 'state.json'), `${JSON.stringify(normalized, null, 2)}\n`);
+  return normalized;
+}
+
+export function updatePluginState(dataDir, mutator) {
+  if (!dataDir) {
+    const dummy = loadPluginState('');
+    mutator(dummy);
+    return dummy;
+  }
+  return withFileLockSync(join(dataDir, '.state.lock'), () => {
+    const latest = loadPluginState(dataDir);
+    const shouldSave = mutator(latest);
+    if (shouldSave === false) return latest;
+    return savePluginState(dataDir, latest);
+  });
 }

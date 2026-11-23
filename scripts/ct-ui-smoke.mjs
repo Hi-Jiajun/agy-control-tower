@@ -167,32 +167,44 @@ async function launchChrome(chromeBin, profileDir) {
     { stdio: ['ignore', 'pipe', 'pipe'] }
   );
 
-  let stderrBuf = '';
-  const wsBrowserUrl = await new Promise((res, rej) => {
-    const timer = setTimeout(() => rej(new Error(`Chrome failed to emit DevTools URL: ${stderrBuf.slice(-400)}`)), 12000);
-    proc.stderr.on('data', (chunk) => {
-      stderrBuf += chunk.toString('utf8');
-      const m = stderrBuf.match(/DevTools listening on (ws:\/\/127\.0\.0\.1:\d+\/[^\s]+)/);
-      if (m) {
+  try {
+    let stderrBuf = '';
+    const wsBrowserUrl = await new Promise((res, rej) => {
+      const timer = setTimeout(
+        () => rej(new Error(`Chrome failed to emit DevTools URL: ${stderrBuf.slice(-400)}`)),
+        12000
+      );
+      proc.stderr.on('data', (chunk) => {
+        stderrBuf += chunk.toString('utf8');
+        const m = stderrBuf.match(/DevTools listening on (ws:\/\/127\.0\.0\.1:\d+\/[^\s]+)/);
+        if (m) {
+          clearTimeout(timer);
+          res(m[1]);
+        }
+      });
+      proc.once('exit', (code) => {
         clearTimeout(timer);
-        res(m[1]);
-      }
+        rej(new Error(`Chrome exited early (${code}): ${stderrBuf.slice(-400)}`));
+      });
     });
-    proc.once('exit', (code) => {
-      clearTimeout(timer);
-      rej(new Error(`Chrome exited early (${code}): ${stderrBuf.slice(-400)}`));
-    });
-  });
 
-  const portMatch = wsBrowserUrl.match(/127\.0\.0\.1:(\d+)/);
-  const debugPort = portMatch[1];
-  const targetsRes = await fetch(`http://127.0.0.1:${debugPort}/json/list`);
-  const targets = await targetsRes.json();
-  const pageTarget = targets.find((t) => t.type === 'page' && t.webSocketDebuggerUrl) || targets[0];
-  if (!pageTarget?.webSocketDebuggerUrl) {
-    throw new Error('Could not find CDP page target');
+    const portMatch = wsBrowserUrl.match(/127\.0\.0\.1:(\d+)/);
+    const debugPort = portMatch[1];
+    const targetsRes = await fetch(`http://127.0.0.1:${debugPort}/json/list`);
+    const targets = await targetsRes.json();
+    const pageTarget = targets.find((t) => t.type === 'page' && t.webSocketDebuggerUrl) || targets[0];
+    if (!pageTarget?.webSocketDebuggerUrl) {
+      throw new Error('Could not find CDP page target');
+    }
+    return { proc, pageWsUrl: pageTarget.webSocketDebuggerUrl };
+  } catch (err) {
+    try {
+      proc.kill('SIGKILL');
+    } catch {
+      // ignore
+    }
+    throw err;
   }
-  return { proc, pageWsUrl: pageTarget.webSocketDebuggerUrl };
 }
 
 export async function runUiSmoke({ requireBrowser = false } = {}) {
@@ -543,11 +555,20 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
   } finally {
     if (cdp) cdp.close();
     if (chromeProc) {
+      const waitExit = new Promise((res) => {
+        if (chromeProc.exitCode !== null) return res();
+        const t = setTimeout(res, 500);
+        chromeProc.once('exit', () => {
+          clearTimeout(t);
+          res();
+        });
+      });
       try {
         chromeProc.kill('SIGKILL');
       } catch {
         // ignore
       }
+      await waitExit;
     }
     if (serverInstance) {
       await serverInstance.close();

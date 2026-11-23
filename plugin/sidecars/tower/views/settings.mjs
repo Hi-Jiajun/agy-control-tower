@@ -12,34 +12,34 @@ function setOvTag($, key, isWsOverride) {
 }
 
 export function syncGlobalDocEditor(ctx, snap) {
-  const { $ } = ctx;
+  const { $, state } = ctx;
   const docName = $('global-doc-select').value;
   const docs = snap.settings?.docs || {};
   const d = docs[docName] || {};
   const hasGlobal = Boolean(d.hasGlobalOverride);
   $('global-doc-badge').textContent = hasGlobal ? '已存在全局覆盖' : '使用内置基准';
   $('global-doc-badge').className = `badge ${hasGlobal ? 'badge-warn' : 'badge-muted'}`;
-  if (document.activeElement !== $('global-doc-editor')) {
+  if (!state.globalDocDirty && document.activeElement !== $('global-doc-editor')) {
     $('global-doc-editor').value =
       d.source === 'global' ? d.content || '' : d.builtinContent || d.content || '';
   }
 }
 
 export function syncWsDocEditor(ctx, snap) {
-  const { $ } = ctx;
+  const { $, state } = ctx;
   const docName = $('ws-doc-select').value;
   const docs = snap.settings?.docs || {};
   const d = docs[docName] || {};
   const hasWs = Boolean(d.hasWorkspaceOverride);
   $('ws-doc-badge').textContent = hasWs ? '已存在工作区覆盖' : `继承 (${d.source || 'builtin'})`;
   $('ws-doc-badge').className = `badge ${hasWs ? 'badge-warn' : 'badge-muted'}`;
-  if (document.activeElement !== $('ws-doc-editor')) {
+  if (!state.wsDocDirty && document.activeElement !== $('ws-doc-editor')) {
     $('ws-doc-editor').value = d.content || '';
   }
 }
 
 export function renderSettings(ctx, snap) {
-  const { $ } = ctx;
+  const { $, state } = ctx;
   const s = snap.settings || {};
   const p = s.plugin || {};
   const g = s.global || {};
@@ -49,40 +49,44 @@ export function renderSettings(ctx, snap) {
   const hp = s.hostPermission || {};
 
   // Layer 1: Plugin
-  $('ps-livePollEnabled').checked = p.livePollEnabled !== false;
-  $('ps-livePollIntervalSec').value = String(p.livePollIntervalSec ?? 4);
-  $('ps-uiMotion').value = p.uiMotion || 'standard';
-  $('ps-attentionBannerEnabled').checked = p.attentionBannerEnabled !== false;
-  $('ps-dualRoleHookEnabled').checked = p.dualRoleHookEnabled !== false;
-  $('ps-stopHookReportEnabled').checked = p.stopHookReportEnabled !== false;
-  $('ps-registryWriteGuard').value = p.registryWriteGuard || 'ask';
-  $('ps-maxLookupInputLength').value = String(p.maxLookupInputLength ?? 2000);
-  $('ps-maxLookupCandidates').value = String(p.maxLookupCandidates ?? 6);
-  $('ps-sentinelEnabled').checked = p.sentinelEnabled !== false;
-  $('ps-sentinelIntervalSec').value = String(p.sentinelIntervalSec ?? 15);
-  $('ps-focusCooldownSec').value = String(p.focusCooldownSec ?? 180);
-  $('ps-stuckThresholdMin').value = String(p.stuckThresholdMin ?? 15);
+  if (!state.settingsDirty.plugin) {
+    $('ps-livePollEnabled').checked = p.livePollEnabled !== false;
+    $('ps-livePollIntervalSec').value = String(p.livePollIntervalSec ?? 4);
+    $('ps-uiMotion').value = p.uiMotion || 'standard';
+    $('ps-attentionBannerEnabled').checked = p.attentionBannerEnabled !== false;
+    $('ps-dualRoleHookEnabled').checked = p.dualRoleHookEnabled !== false;
+    $('ps-stopHookReportEnabled').checked = p.stopHookReportEnabled !== false;
+    $('ps-registryWriteGuard').value = p.registryWriteGuard || 'ask';
+    $('ps-maxLookupInputLength').value = String(p.maxLookupInputLength ?? 2000);
+    $('ps-maxLookupCandidates').value = String(p.maxLookupCandidates ?? 6);
+    $('ps-sentinelEnabled').checked = p.sentinelEnabled !== false;
+    $('ps-sentinelIntervalSec').value = String(p.sentinelIntervalSec ?? 15);
+    $('ps-focusCooldownSec').value = String(p.focusCooldownSec ?? 180);
+    $('ps-stuckThresholdMin').value = String(p.stuckThresholdMin ?? 15);
+  }
 
   // Layer 2: Global
   const hostDesc = hp.available
     ? `宿主权限检测: preset=${hp.permissionPreset || '-'} | exec=${hp.autoExecutionPolicy || '-'} -> 映射档位: ${eff.effectiveAutonomy || 'balanced'}`
     : `未检测到宿主权限文件，跟随模式下默认采用 balanced 均衡档`;
   $('host-perm-summary').textContent = hostDesc;
-  $('gs-l0ControllerModel').value = g.l0ControllerModel || 'Gemini 4 Neon (High)';
-  $('gs-l1LightModel').value = g.l1LightModel || 'Gemini 4 Hydrogen (Low)';
-  $('gs-l2StandardModel').value = g.l2StandardModel || 'Gemini 4 Neon (High)';
-  $('gs-l3DeepModel').value = g.l3DeepModel || 'Orchestrator (Carbon)';
-  $('gs-l4IntegrationModel').value = g.l4IntegrationModel || 'Orchestrator (Neon)';
-  $('gs-modelGuardPolicy').value = g.modelGuardPolicy || 'strict_gemini4';
-  $('gs-customAllowedModels').value = Array.isArray(g.customAllowedModels)
-    ? g.customAllowedModels.join(', ')
-    : '';
-  $('gs-decisionAutonomy').value = g.decisionAutonomy || 'inherit';
-  $('gs-askBeforeDispatch').checked = g.askBeforeDispatch !== false;
-  $('gs-notifyOnSingleTaskDone').checked = Boolean(g.notifyOnSingleTaskDone);
-  $('gs-controllerCompactionThreshold').value = String(g.controllerCompactionThreshold ?? 5);
-  $('gs-workerCompactionThreshold').value = String(g.workerCompactionThreshold ?? 2);
-  $('gs-dispatchSurfacePolicy').value = g.dispatchSurfacePolicy || 'hidden_first';
+  if (!state.settingsDirty.global) {
+    $('gs-l0ControllerModel').value = g.l0ControllerModel || 'Gemini 4 Neon (High)';
+    $('gs-l1LightModel').value = g.l1LightModel || 'Gemini 4 Hydrogen (Low)';
+    $('gs-l2StandardModel').value = g.l2StandardModel || 'Gemini 4 Neon (High)';
+    $('gs-l3DeepModel').value = g.l3DeepModel || 'Orchestrator (Carbon)';
+    $('gs-l4IntegrationModel').value = g.l4IntegrationModel || 'Orchestrator (Neon)';
+    $('gs-modelGuardPolicy').value = g.modelGuardPolicy || 'strict_gemini4';
+    $('gs-customAllowedModels').value = Array.isArray(g.customAllowedModels)
+      ? g.customAllowedModels.join(', ')
+      : '';
+    $('gs-decisionAutonomy').value = g.decisionAutonomy || 'inherit';
+    $('gs-askBeforeDispatch').checked = g.askBeforeDispatch !== false;
+    $('gs-notifyOnSingleTaskDone').checked = Boolean(g.notifyOnSingleTaskDone);
+    $('gs-controllerCompactionThreshold').value = String(g.controllerCompactionThreshold ?? 5);
+    $('gs-workerCompactionThreshold').value = String(g.workerCompactionThreshold ?? 2);
+    $('gs-dispatchSurfacePolicy').value = g.dispatchSurfacePolicy || 'hidden_first';
+  }
   syncGlobalDocEditor(ctx, snap);
 
   // Layer 3: Workspace
@@ -91,36 +95,38 @@ export function renderSettings(ctx, snap) {
   $('ws-settings-body').classList.toggle('hidden', !hasWs);
   if (hasWs) {
     $('ws-settings-badge').textContent = snap.workspace.split('/').filter(Boolean).pop() || 'workspace';
-    $('ws-exclusiveLeaseEnabled').checked = w.exclusiveLeaseEnabled !== false;
-    $('ws-registryMode').value = w.registryMode || 'workspace_auto';
-    $('ws-customRegistryRelPath').value = w.customRegistryRelPath || '';
-    $('ws-custom-rel-wrap').classList.toggle('hidden', $('ws-registryMode').value !== 'workspace_custom');
+    if (!state.settingsDirty.workspace) {
+      $('ws-exclusiveLeaseEnabled').checked = w.exclusiveLeaseEnabled !== false;
+      $('ws-registryMode').value = w.registryMode || 'workspace_auto';
+      $('ws-customRegistryRelPath').value = w.customRegistryRelPath || '';
+      $('ws-custom-rel-wrap').classList.toggle('hidden', $('ws-registryMode').value !== 'workspace_custom');
 
-    ['l0ControllerModel', 'l2StandardModel', 'l3DeepModel'].forEach((k) => {
-      const hasOv = Object.prototype.hasOwnProperty.call(ov, k);
-      $(`ws-ov-${k}`).value = hasOv ? ov[k] : '';
-      $(`ws-ov-${k}`).placeholder = `继承全局 (${g[k] || '-'})`;
-      setOvTag($, k, hasOv);
-    });
+      ['l0ControllerModel', 'l2StandardModel', 'l3DeepModel'].forEach((k) => {
+        const hasOv = Object.prototype.hasOwnProperty.call(ov, k);
+        $(`ws-ov-${k}`).value = hasOv ? ov[k] : '';
+        $(`ws-ov-${k}`).placeholder = `继承全局 (${g[k] || '-'})`;
+        setOvTag($, k, hasOv);
+      });
 
-    const hasAutoOv = Object.prototype.hasOwnProperty.call(ov, 'decisionAutonomy');
-    $('ws-ov-decisionAutonomy').value = hasAutoOv ? ov.decisionAutonomy : '';
-    setOvTag($, 'decisionAutonomy', hasAutoOv);
+      const hasAutoOv = Object.prototype.hasOwnProperty.call(ov, 'decisionAutonomy');
+      $('ws-ov-decisionAutonomy').value = hasAutoOv ? ov.decisionAutonomy : '';
+      setOvTag($, 'decisionAutonomy', hasAutoOv);
 
-    const hasAskOv = Object.prototype.hasOwnProperty.call(ov, 'askBeforeDispatch');
-    $('ws-ov-askBeforeDispatch').value = hasAskOv ? String(ov.askBeforeDispatch) : '';
-    setOvTag($, 'askBeforeDispatch', hasAskOv);
+      const hasAskOv = Object.prototype.hasOwnProperty.call(ov, 'askBeforeDispatch');
+      $('ws-ov-askBeforeDispatch').value = hasAskOv ? String(ov.askBeforeDispatch) : '';
+      setOvTag($, 'askBeforeDispatch', hasAskOv);
 
-    const hasNotifyOv = Object.prototype.hasOwnProperty.call(ov, 'notifyOnSingleTaskDone');
-    $('ws-ov-notifyOnSingleTaskDone').value = hasNotifyOv ? String(ov.notifyOnSingleTaskDone) : '';
-    setOvTag($, 'notifyOnSingleTaskDone', hasNotifyOv);
+      const hasNotifyOv = Object.prototype.hasOwnProperty.call(ov, 'notifyOnSingleTaskDone');
+      $('ws-ov-notifyOnSingleTaskDone').value = hasNotifyOv ? String(ov.notifyOnSingleTaskDone) : '';
+      setOvTag($, 'notifyOnSingleTaskDone', hasNotifyOv);
 
-    const hasThreshOv = Object.prototype.hasOwnProperty.call(ov, 'controllerCompactionThreshold');
-    $('ws-ov-controllerCompactionThreshold').value = hasThreshOv
-      ? String(ov.controllerCompactionThreshold)
-      : '';
-    $('ws-ov-controllerCompactionThreshold').placeholder = `继承全局 (${g.controllerCompactionThreshold ?? 5})`;
-    setOvTag($, 'controllerCompactionThreshold', hasThreshOv);
+      const hasThreshOv = Object.prototype.hasOwnProperty.call(ov, 'controllerCompactionThreshold');
+      $('ws-ov-controllerCompactionThreshold').value = hasThreshOv
+        ? String(ov.controllerCompactionThreshold)
+        : '';
+      $('ws-ov-controllerCompactionThreshold').placeholder = `继承全局 (${g.controllerCompactionThreshold ?? 5})`;
+      setOvTag($, 'controllerCompactionThreshold', hasThreshOv);
+    }
 
     syncWsDocEditor(ctx, snap);
   }
@@ -165,19 +171,46 @@ export function renderDiagnostics(ctx, payload) {
 
 export async function loadDiagnostics(ctx, { silent = false } = {}) {
   const { $, state, api, showToast } = ctx;
+  const seq = ++state.diagSeq;
   try {
     const level = $('diag-level-filter')?.value || '';
     const qs = level ? `?limit=60&level=${encodeURIComponent(level)}` : '?limit=60';
     const data = await api(`/api/diagnostics${qs}`);
+    if (seq !== state.diagSeq) return;
     state.diagLoaded = true;
     renderDiagnostics(ctx, data);
   } catch (err) {
-    if (!silent) showToast(err.message, true);
+    if (!silent && seq === state.diagSeq) showToast(err.message, true);
   }
 }
 
 export function bindSettingsEvents(ctx) {
   const { $, state, api, render, showToast } = ctx;
+
+  $('plugin-settings-form').addEventListener('input', () => {
+    state.settingsDirty.plugin = true;
+  });
+  $('plugin-settings-form').addEventListener('change', () => {
+    state.settingsDirty.plugin = true;
+  });
+  $('global-settings-form').addEventListener('input', () => {
+    state.settingsDirty.global = true;
+  });
+  $('global-settings-form').addEventListener('change', () => {
+    state.settingsDirty.global = true;
+  });
+  $('ws-settings-form').addEventListener('input', () => {
+    state.settingsDirty.workspace = true;
+  });
+  $('ws-settings-form').addEventListener('change', () => {
+    state.settingsDirty.workspace = true;
+  });
+  $('global-doc-editor').addEventListener('input', () => {
+    state.globalDocDirty = true;
+  });
+  $('ws-doc-editor').addEventListener('input', () => {
+    state.wsDocDirty = true;
+  });
 
   $('plugin-settings-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -201,6 +234,7 @@ export function bindSettingsEvents(ctx) {
           stuckThresholdMin: Number($('ps-stuckThresholdMin').value),
         },
       });
+      state.settingsDirty.plugin = false;
       render(res.snapshot);
       showToast('已保存插件设置');
     } catch (err) {
@@ -214,6 +248,7 @@ export function bindSettingsEvents(ctx) {
         method: 'POST',
         body: { workspace: state.workspace, action: 'reset' },
       });
+      state.settingsDirty.plugin = false;
       render(res.snapshot);
       showToast('已恢复插件默认设置');
     } catch (err) {
@@ -272,6 +307,7 @@ export function bindSettingsEvents(ctx) {
           dispatchSurfacePolicy: $('gs-dispatchSurfacePolicy').value,
         },
       });
+      state.settingsDirty.global = false;
       render(res.snapshot);
       showToast('已保存全局设置');
     } catch (err) {
@@ -285,6 +321,7 @@ export function bindSettingsEvents(ctx) {
         method: 'POST',
         body: { workspace: state.workspace, action: 'reset' },
       });
+      state.settingsDirty.global = false;
       render(res.snapshot);
       showToast('已重置全局设置为内置默认');
     } catch (err) {
@@ -293,6 +330,7 @@ export function bindSettingsEvents(ctx) {
   });
 
   $('global-doc-select').addEventListener('change', () => {
+    state.globalDocDirty = false;
     if (state.snap) {
       $('global-doc-editor').blur();
       syncGlobalDocEditor(ctx, state.snap);
@@ -302,7 +340,10 @@ export function bindSettingsEvents(ctx) {
   $('global-doc-load-builtin-btn').addEventListener('click', () => {
     const docName = $('global-doc-select').value;
     const d = state.snap?.settings?.docs?.[docName];
-    if (d) $('global-doc-editor').value = d.builtinContent || d.content || '';
+    if (d) {
+      $('global-doc-editor').value = d.builtinContent || d.content || '';
+      state.globalDocDirty = true;
+    }
   });
 
   $('global-doc-save-btn').addEventListener('click', async () => {
@@ -316,6 +357,7 @@ export function bindSettingsEvents(ctx) {
           content: $('global-doc-editor').value,
         },
       });
+      state.globalDocDirty = false;
       render(res.snapshot);
       showToast('已保存全局文档覆盖');
     } catch (err) {
@@ -334,6 +376,7 @@ export function bindSettingsEvents(ctx) {
           action: 'reset',
         },
       });
+      state.globalDocDirty = false;
       render(res.snapshot);
       showToast('已清除全局文档覆盖');
     } catch (err) {
@@ -372,6 +415,7 @@ export function bindSettingsEvents(ctx) {
           overrides,
         },
       });
+      state.settingsDirty.workspace = false;
       render(res.snapshot);
       showToast('已保存当前工作区设置');
     } catch (err) {
@@ -386,6 +430,7 @@ export function bindSettingsEvents(ctx) {
         method: 'POST',
         body: { workspace: state.workspace, action: 'reset' },
       });
+      state.settingsDirty.workspace = false;
       render(res.snapshot);
       showToast('已重置当前工作区全部设置');
     } catch (err) {
@@ -394,6 +439,7 @@ export function bindSettingsEvents(ctx) {
   });
 
   $('ws-doc-select').addEventListener('change', () => {
+    state.wsDocDirty = false;
     if (state.snap) {
       $('ws-doc-editor').blur();
       syncWsDocEditor(ctx, state.snap);
@@ -403,7 +449,10 @@ export function bindSettingsEvents(ctx) {
   $('ws-doc-load-effective-btn').addEventListener('click', () => {
     const docName = $('ws-doc-select').value;
     const d = state.snap?.settings?.docs?.[docName];
-    if (d) $('ws-doc-editor').value = d.content || '';
+    if (d) {
+      $('ws-doc-editor').value = d.content || '';
+      state.wsDocDirty = true;
+    }
   });
 
   $('ws-doc-save-btn').addEventListener('click', async () => {
@@ -418,6 +467,7 @@ export function bindSettingsEvents(ctx) {
           content: $('ws-doc-editor').value,
         },
       });
+      state.wsDocDirty = false;
       render(res.snapshot);
       showToast('已保存工作区文档覆盖');
     } catch (err) {
@@ -437,6 +487,7 @@ export function bindSettingsEvents(ctx) {
           action: 'reset',
         },
       });
+      state.wsDocDirty = false;
       render(res.snapshot);
       showToast('已清除工作区文档覆盖');
     } catch (err) {

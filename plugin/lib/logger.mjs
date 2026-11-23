@@ -14,7 +14,10 @@ export const DEFAULT_LOG_MAX_FILES = 3;
 export const SLOW_OP_THRESHOLD_MS = 100;
 export const SLOW_RPC_THRESHOLD_MS = 500;
 
-const HOME_DIR_RE = new RegExp('/(?:' + 'ho' + 'me|' + 'Us' + 'ers)/[^/\\s"\'`]+', 'g');
+const HOME_DIR_RE = new RegExp(
+  '/(?:(?:' + 'ho' + 'me|' + 'Us' + 'ers)/[^/\\s"\'`]+|root(?=/|\\s|$))',
+  'g'
+);
 const PRIVATE_IP_RE = new RegExp(
   '\\b(?:10\\.\\d{1,3}|172\\.(?:1[6-9]|2\\d|3[01])|' + '192' + '\\.' + '168' + ')\\.\\d{1,3}\\.\\d{1,3}\\b',
   'g'
@@ -186,11 +189,18 @@ function parseJsonlFile(filePath) {
 
 export function readFlightEvents(
   dataDir,
-  { limit = 80, level = '', source = '', sinceMs = 0, includeRotated = true } = {}
+  { limit = 80, level = '', source = '', sinceMs = 0, includeRotated = true, maxFiles = DEFAULT_LOG_MAX_FILES } = {}
 ) {
   if (!dataDir) return [];
   const logPath = getFlightLogPath(dataDir);
-  const files = includeRotated ? [`${logPath}.1`, logPath] : [logPath];
+  const keep = Math.max(1, Number(maxFiles) || DEFAULT_LOG_MAX_FILES);
+  const files = [];
+  if (includeRotated) {
+    for (let i = keep - 1; i >= 1; i -= 1) {
+      files.push(`${logPath}.${i}`);
+    }
+  }
+  files.push(logPath);
   const all = [];
   for (const f of files) {
     for (const ev of parseJsonlFile(f)) {
@@ -215,13 +225,16 @@ export function readFlightEvents(
     return true;
   });
   filtered.reverse();
-  const cap = Math.max(1, Math.min(500, Number(limit) || 80));
+  const cap = Math.max(1, Math.min(50000, Number(limit) || 80));
   return filtered.slice(0, cap);
 }
 
-export function summarizeFlightEvents(dataDir, { windowMs = 24 * 3600 * 1000 } = {}) {
+export function summarizeFlightEvents(
+  dataDir,
+  { windowMs = 24 * 3600 * 1000, maxFiles = DEFAULT_LOG_MAX_FILES } = {}
+) {
   const sinceMs = windowMs > 0 ? Date.now() - windowMs : 0;
-  const events = readFlightEvents(dataDir, { limit: 500, sinceMs, includeRotated: true });
+  const events = readFlightEvents(dataDir, { limit: 50000, sinceMs, includeRotated: true, maxFiles });
   const byLevel = { info: 0, warn: 0, error: 0 };
   const bySource = {};
   let slowCount = 0;
@@ -237,6 +250,7 @@ export function summarizeFlightEvents(dataDir, { windowMs = 24 * 3600 * 1000 } =
     if (
       ev.event === 'slow_hook' ||
       ev.event === 'slow_api' ||
+      ev.event === 'slow_rpc' ||
       (Number.isFinite(ev.durationMs) && ev.durationMs >= SLOW_OP_THRESHOLD_MS)
     ) {
       slowCount += 1;
@@ -244,7 +258,7 @@ export function summarizeFlightEvents(dataDir, { windowMs = 24 * 3600 * 1000 } =
     if (ev.event === 'write_guard_triggered') {
       guardBlockedCount += 1;
     }
-    if (ev.event === 'stop_wake_skipped') {
+    if (ev.event === 'stop_wake_skipped' || ev.event === 'stop_wake_deferred_focus_gate') {
       wakeSkippedCount += 1;
     }
     if (lv === 'error' && recentErrors.length < 10) {

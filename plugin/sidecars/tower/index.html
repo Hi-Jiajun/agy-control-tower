@@ -14,7 +14,7 @@
         <div class="brand-title">
           <span id="live-dot" class="brand-dot" title="监测指示"></span>
           <strong>Control Tower</strong>
-          <span id="version-badge" class="badge">v1.6.0</span>
+          <span id="version-badge" class="badge">v1.6.1</span>
         </div>
         <div class="actions">
           <button id="poll-toggle-btn" class="pill-btn" title="切换实时自动监测">实时监测</button>
@@ -33,13 +33,18 @@
       <div id="attention-list" class="attention-list"></div>
     </div>
 
+    <div id="conflict-banner" class="alert hidden" style="margin: 6px 10px 0;">
+      <span>检测到外部会话已更新台账或路线图，保存已中止以防覆盖。</span>
+      <button type="button" id="reload-latest-btn" class="btn btn-warn btn-sm">重载最新内容</button>
+    </div>
+
     <nav class="tabs" role="tablist">
-      <button class="tab active" data-tab="overview">总览与锁</button>
-      <button class="tab" data-tab="sessions">监测派遣</button>
-      <button class="tab" data-tab="roadmap">路线图</button>
-      <button class="tab" data-tab="queue">任务队列</button>
-      <button class="tab" data-tab="raw">台账模板</button>
-      <button class="tab" data-tab="settings">设置中心</button>
+      <button type="button" role="tab" aria-selected="true" class="tab active" data-tab="overview">总览与锁</button>
+      <button type="button" role="tab" aria-selected="false" class="tab" data-tab="sessions">监测派遣</button>
+      <button type="button" role="tab" aria-selected="false" class="tab" data-tab="roadmap">路线图</button>
+      <button type="button" role="tab" aria-selected="false" class="tab" data-tab="queue">任务队列</button>
+      <button type="button" role="tab" aria-selected="false" class="tab" data-tab="raw">台账模板</button>
+      <button type="button" role="tab" aria-selected="false" class="tab" data-tab="settings">设置中心</button>
     </nav>
 
     <main id="main-content" class="main">
@@ -446,14 +451,10 @@
             <h3>SESSION-REGISTRY.md 在线编辑</h3>
             <span id="raw-hash-badge" class="badge badge-muted">-</span>
           </div>
-          <div id="conflict-banner" class="alert hidden">
-            <span>检测到外部会话已更新台账，保存已中止以防覆盖。</span>
-            <button id="reload-latest-btn" class="btn btn-warn btn-sm">重载最新内容</button>
-          </div>
           <textarea id="raw-editor" class="editor" spellcheck="false"></textarea>
           <div class="actions">
-            <button id="save-raw-btn" class="btn btn-primary btn-sm">保存台账</button>
-            <button id="reset-raw-btn" class="btn btn-ghost btn-sm">放弃未保存修改</button>
+            <button type="button" id="save-raw-btn" class="btn btn-primary btn-sm">保存台账</button>
+            <button type="button" id="reset-raw-btn" class="btn btn-ghost btn-sm">放弃未保存修改</button>
           </div>
         </div>
 
@@ -463,19 +464,21 @@
             <span id="tpl-source-badge" class="badge badge-muted">builtin</span>
           </div>
           <div class="actions-grid">
-            <button class="btn btn-ghost btn-sm copy-tpl" data-tpl="bootstrapPrompt">复制冷启动引导词</button>
-            <button class="btn btn-ghost btn-sm" id="copy-handover-raw-btn">复制预填交接卡</button>
-            <button class="btn btn-ghost btn-sm copy-tpl" data-tpl="dispatchOfflineTemplate">复制模板 A（离线派单）</button>
-            <button class="btn btn-ghost btn-sm copy-tpl" data-tpl="dispatchGrantTemplate">复制模板 B（原会话授锁）</button>
+            <button type="button" class="btn btn-ghost btn-sm copy-tpl" data-tpl="bootstrapPrompt">复制冷启动引导词</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="copy-handover-raw-btn">复制预填交接卡</button>
+            <button type="button" class="btn btn-ghost btn-sm copy-tpl" data-tpl="dispatchOfflineTemplate">复制模板 A（离线派单）</button>
+            <button type="button" class="btn btn-ghost btn-sm copy-tpl" data-tpl="dispatchGrantTemplate">复制模板 B（原会话授锁）</button>
+            <button type="button" class="btn btn-ghost btn-sm copy-tpl" data-tpl="domainLeadTemplate">复制模板 C（域分总控）</button>
+            <button type="button" class="btn btn-ghost btn-sm copy-tpl" data-tpl="handoffContractTemplate">复制模板 D（接力契约）</button>
           </div>
         </div>
       </section>
 
       <section id="tab-settings" class="tab-panel hidden">
         <div class="segmented" role="tablist">
-          <button type="button" class="seg-btn active" data-scope="plugin">插件设置</button>
-          <button type="button" class="seg-btn" data-scope="global">全局设置</button>
-          <button type="button" class="seg-btn" data-scope="workspace">当前工作区</button>
+          <button type="button" role="tab" aria-selected="true" class="seg-btn active" data-scope="plugin">插件设置</button>
+          <button type="button" role="tab" aria-selected="false" class="seg-btn" data-scope="global">全局设置</button>
+          <button type="button" role="tab" aria-selected="false" class="seg-btn" data-scope="workspace">当前工作区</button>
         </div>
 
         <!-- Scope 1: Plugin Settings -->
@@ -817,7 +820,7 @@
     <option value="Orchestrator (Neon Extra High)"></option>
   </datalist>
 
-  <div id="toast" class="toast hidden"></div>
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   <script type="module" src="/app.js"></script>
 </body>
 </html>

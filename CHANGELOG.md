@@ -5,6 +5,22 @@ All notable changes to `control-tower` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.1] - 2026-11-24
+
+### Fixed
+- **核心库与四事件钩子并发安全加固（Carbon 深度审查）**：
+  - **多级父目录软链防逃逸与有界读取**：升级 `plugin/lib/paths.mjs` 的 `assertSafeTargetWithinRoot` 向上回溯校验最近存在祖先目录的 `realpathSync`，接入 `roadmap.mjs` 工作区路径与 `inspectNodeHandoff`（限定 `.md` 后缀与 `4KB` 有界读取），阻断父目录软链跨工作区读/写逃逸。
+  - **零依赖跨进程文件锁与两段式 `Stop` 状态同步**：新增 `withFileLockSync` 与 `updatePluginState` 保护 `state.json`、`inbox.json`、`roadmap.json` 并发读写，根治多专职会话同时停机覆写 `pendingSilentDone` 导致阶段回执漏报的竞态，并支持 8 位短前缀匹配与焦点忙碌期延迟回执持久化补投。
+  - **双证换届与多工作区写保护收紧**：`PreToolUse` 遍历全部挂载工作区匹配台账路径，递归提取编辑参数并校验第 2 节 `当前现役总控会话` 确实更新为自身 ID，剥离 `<SYSTEM_MESSAGE>` 头部并排除隐藏面 Swarm/子代理成员后核验交接卡，同时为 `pendingSuccessors` 提供 60 秒多步编辑幂等宽限期。
+  - **纯 `Buffer` 字节换行增量扫描与超 64KB 尾行遥测回退**：重写 `transcript.mjs` 分片扫描器避免跨块截断 UTF-8 多字节字符导致偏移漂移或无换行尾行双倍计次；在尾行超 64KB 时自动回退增量累加器最新模型/状态，修复并行多 `invoke_subagent` 认领丢失与 `hasOutboundAgentApiReport` 正文假阳性。
+  - **健康空信箱节流落盘**：修复 `evaluateSentinelSweep` 在已存在空 `inbox.json` 时未持久化 `lastSweepAt` 导致每轮重复扫描的问题。
+- **Sidecar 看板前后端安全与状态一致性加固**：
+  - **后端安全与并发**：顶层 HTTP 回调包裹畸形 URL 防崩溃容错；Token 鉴权升级为恒定时间 `timingSafeEqual` 并增加 `POST` Origin 同源保护；剥离 `GET /api/snapshot` 隐式挂载定时器副作用与 `GET` 慢日志建目录副作用；新增工作区异步互斥锁与持独占锁直派第 1 节原子授锁；路线图 `dispatch-hidden` 增加 `blocked`/`done` 依赖门禁与模型合规校验；`agentapi` 缓存按 `projectId` 隔离并支持并发合并、写后失效与 `SIGKILL` 超时升级。
+  - **前端防覆盖与无障碍**：将 `#conflict-banner` 提升至全局顶栏，独立维护 `rawBaseHash` 与 L1/L2 乐观锁哈希；修复路线图编辑丢失隐藏字段、重命名迁移下游依赖及「编辑 -> 新增」残留 `originalId` 误删节点；为设置页、文档编辑器、租约与总控表单增加脏状态防轮询覆盖、请求序号防旧响应回退、耗时按钮防连点锁、窄栏单列自适应与 `.switch` 键盘焦点样式。
+- **技能规程对齐与五环工具链加固**：
+  - 在 `SKILL.md` 与 `templates.md` 补齐 `[CT_ROADMAP_DISPATCH]`、`[CT_SWARM_CLEANUP]`、`[CT_INBOX_DELIVER]` 处置规范、`slot_reuse` 操作契约、双证换届保留前任 ID 要求及 `[CT_REPORT:DONE] [<节点ID>]` 汇报格式。
+  - `pre-commit` 升级为优先校验 Git 暂存区索引（覆盖 RFC1918 全网段与双间隔号）；`ct-release.mjs` 快照改为 `.tmp-*` 原子暂存转正并过滤残损目录；`ct-doctor.mjs` 支持识别升级前旧版 Sidecar 进程并同步 `--config-dir` 子进程环境；`ct-miner.mjs` 改为真有界 `8MB` 尾切片读取；新增 `EVAL-16` 端到端换届交接卡契约评测。
+
 ## [1.6.0] - 2026-11-24
 
 ### Fixed

@@ -37,8 +37,22 @@ const state = {
   snap: null,
   toastTimer: null,
   pollTimer: null,
+  pollInFlight: false,
   pollPausedByUser: false,
   rawDirty: false,
+  rawBaseHash: '',
+  rmL1Dirty: false,
+  rmL1BaseHash: '',
+  globalDocDirty: false,
+  wsDocDirty: false,
+  settingsDirty: {
+    plugin: false,
+    global: false,
+    workspace: false,
+  },
+  refreshSeq: 0,
+  diagSeq: 0,
+  probeSeq: 0,
   lastProbe: null,
   diagLoaded: false,
 };
@@ -46,7 +60,7 @@ const state = {
 function syncTheme() {
   const probe = document.createElement('span');
   probe.style.cssText = 'position:absolute;visibility:hidden;color:var(--background, #0f172a)';
-  document.documentElement.appendChild(probe);
+  (document.body || document.documentElement).appendChild(probe);
   const c = getComputedStyle(probe).color;
   probe.remove();
   const nums = (c.match(/[\d.]+/g) || []).map(Number);
@@ -71,6 +85,16 @@ function showToast(msg, isErr = false) {
   state.toastTimer = setTimeout(() => el.classList.add('hidden'), 2800);
 }
 
+async function withBusyButton(btn, asyncFn) {
+  if (btn && btn.disabled) return;
+  if (btn) btn.disabled = true;
+  try {
+    return await asyncFn();
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function copyText(text) {
   if (!text) return false;
   try {
@@ -93,6 +117,9 @@ async function api(path, { method = 'GET', body } = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
+    if (res.status === 409) {
+      $('conflict-banner')?.classList.remove('hidden');
+    }
     const err = new Error(data.message || data.error || `HTTP ${res.status}`);
     err.status = res.status;
     err.data = data;
@@ -144,10 +171,34 @@ function renderWorkspaces(snap) {
   }
 }
 
+function resetTransientForms() {
+  state.rawDirty = false;
+  state.rawBaseHash = '';
+  state.rmL1Dirty = false;
+  state.rmL1BaseHash = '';
+  state.globalDocDirty = false;
+  state.wsDocDirty = false;
+  state.settingsDirty = { plugin: false, global: false, workspace: false };
+  state.lastProbe = null;
+  $('df-workstreamId').value = '';
+  $('df-workstream-note').classList.add('hidden');
+  delete $('df-model').dataset.userEdited;
+  delete $('qf-route').dataset.userEdited;
+  $('rnf-originalId').value = '';
+  $('qf-originalId').value = '';
+  $('af-convId').value = '';
+  $('probe-result').classList.add('hidden');
+  ['lease-form', 'ctrl-form', 'session-form', 'archive-form', 'rm-node-form', 'rm-ms-form'].forEach((id) => {
+    $(id)?.classList.add('hidden');
+  });
+}
+
 function switchTab(tab) {
   state.tab = tab;
   document.querySelectorAll('.tab').forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.tab === tab);
+    const isAct = btn.dataset.tab === tab;
+    btn.classList.toggle('active', isAct);
+    btn.setAttribute('aria-selected', isAct ? 'true' : 'false');
   });
   const vis = computeTabVisibility({
     tab,
@@ -166,7 +217,9 @@ function switchTab(tab) {
 function switchSettingsScope(scope) {
   state.settingsScope = scope;
   document.querySelectorAll('.seg-btn').forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.scope === scope);
+    const isAct = btn.dataset.scope === scope;
+    btn.classList.toggle('active', isAct);
+    btn.setAttribute('aria-selected', isAct ? 'true' : 'false');
   });
   ['plugin', 'global', 'workspace'].forEach((name) => {
     $(`settings-scope-${name}`).classList.toggle('hidden', name !== scope);
@@ -193,15 +246,29 @@ function updateLivePollControls(snap) {
   state.pollTimer = null;
   if (plan.shouldSchedule) {
     state.pollTimer = setInterval(() => {
-      if (document.visibilityState !== 'visible') return;
+      if (state.pollInFlight || document.visibilityState !== 'visible') return;
       const activeTag = document.activeElement?.tagName;
       if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT') return;
-      if (state.rawDirty) return;
+      if (
+        state.rawDirty ||
+        state.rmL1Dirty ||
+        state.globalDocDirty ||
+        state.wsDocDirty ||
+        state.settingsDirty.plugin ||
+        state.settingsDirty.global ||
+        state.settingsDirty.workspace
+      ) {
+        return;
+      }
       const editingFormOpen =
         !$('lease-form').classList.contains('hidden') ||
         !$('ctrl-form').classList.contains('hidden') ||
         !$('session-form').classList.contains('hidden') ||
-        !$('archive-form').classList.contains('hidden');
+        !$('archive-form').classList.contains('hidden') ||
+        !$('dispatch-form').classList.contains('hidden') ||
+        !$('rm-l1-wrap').classList.contains('hidden') ||
+        !$('rm-node-form').classList.contains('hidden') ||
+        !$('rm-ms-form').classList.contains('hidden');
       if (editingFormOpen) return;
       refresh(undefined, { silent: true });
     }, plan.intervalMs);
@@ -209,8 +276,15 @@ function updateLivePollControls(snap) {
 }
 
 function render(snap) {
+  if (!snap) return;
+  if (snap.workspace && state.workspace && snap.workspace !== state.workspace) {
+    return;
+  }
+  if (snap.workspace) {
+    state.workspace = snap.workspace;
+  }
   state.snap = snap;
-  $('version-badge').textContent = `v${snap.plugin?.version || '1.6.0'}`;
+  $('version-badge').textContent = `v${snap.plugin?.version || '1.6.1'}`;
   applyMotionSetting(snap);
   renderWorkspaces(snap);
   renderAttentionBanner(ctx, snap);
@@ -232,6 +306,12 @@ function render(snap) {
 
 async function refresh(wsOverride, { recordSelection = false, silent = false } = {}) {
   const targetWs = wsOverride !== undefined ? wsOverride : state.workspace;
+  if (wsOverride !== undefined && wsOverride !== state.workspace) {
+    resetTransientForms();
+    state.workspace = wsOverride;
+  }
+  const seq = ++state.refreshSeq;
+  state.pollInFlight = true;
   try {
     let snap;
     if (recordSelection && targetWs) {
@@ -244,14 +324,23 @@ async function refresh(wsOverride, { recordSelection = false, silent = false } =
       const qs = targetWs ? `?workspace=${encodeURIComponent(targetWs)}` : '';
       snap = await api(`/api/snapshot${qs}`);
     }
+    if (seq !== state.refreshSeq) return;
     state.workspace = snap.workspace || '';
     if (!silent) {
       state.rawDirty = false;
+      state.rmL1Dirty = false;
+      state.globalDocDirty = false;
+      state.wsDocDirty = false;
+      state.settingsDirty = { plugin: false, global: false, workspace: false };
       $('conflict-banner').classList.add('hidden');
     }
     render(snap);
   } catch (err) {
-    if (!silent) showToast(err.message, true);
+    if (!silent && seq === state.refreshSeq) showToast(err.message, true);
+  } finally {
+    if (seq === state.refreshSeq) {
+      state.pollInFlight = false;
+    }
   }
 }
 
@@ -262,11 +351,27 @@ const ctx = {
   render,
   refresh,
   showToast,
+  withBusyButton,
   copyText,
   sendToActiveController,
   switchTab,
   switchSettingsScope,
 };
+
+function bindArrowTabNav(selector, activateBtn) {
+  const container = document.querySelector(selector);
+  if (!container) return;
+  container.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+    const btns = [...container.querySelectorAll('button[role="tab"]')];
+    const idx = btns.indexOf(document.activeElement);
+    if (idx < 0) return;
+    e.preventDefault();
+    const nextIdx = e.key === 'ArrowRight' ? (idx + 1) % btns.length : (idx - 1 + btns.length) % btns.length;
+    btns[nextIdx].focus();
+    activateBtn(btns[nextIdx]);
+  });
+}
 
 // Navigation & Topbar
 document.querySelectorAll('.tab').forEach((btn) => {
@@ -275,6 +380,8 @@ document.querySelectorAll('.tab').forEach((btn) => {
 document.querySelectorAll('.seg-btn').forEach((btn) => {
   btn.addEventListener('click', () => switchSettingsScope(btn.dataset.scope));
 });
+bindArrowTabNav('.tabs', (btn) => switchTab(btn.dataset.tab));
+bindArrowTabNav('.segmented', (btn) => switchSettingsScope(btn.dataset.scope));
 $('poll-toggle-btn').addEventListener('click', () => {
   state.pollPausedByUser = !state.pollPausedByUser;
   if (state.snap) updateLivePollControls(state.snap);
@@ -322,16 +429,18 @@ bindSettingsEvents(ctx);
 document.body.addEventListener('click', async (e) => {
   const inbDeliver = e.target.closest('.inbox-deliver-btn');
   if (inbDeliver?.dataset.id && state.workspace) {
-    try {
-      const res = await api('/api/inbox/deliver', {
-        method: 'POST',
-        body: { workspace: state.workspace, id: inbDeliver.dataset.id },
-      });
-      render(res.snapshot);
-      showToast('已将事件投递给现役总控');
-    } catch (err) {
-      showToast(err.message, true);
-    }
+    await withBusyButton(inbDeliver, async () => {
+      try {
+        const res = await api('/api/inbox/deliver', {
+          method: 'POST',
+          body: { workspace: state.workspace, id: inbDeliver.dataset.id },
+        });
+        render(res.snapshot);
+        showToast('已将事件投递给现役总控');
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    });
     return;
   }
 
@@ -350,17 +459,23 @@ document.body.addEventListener('click', async (e) => {
   }
 
   const rmDispatchHidden = e.target.closest('.rm-dispatch-hidden-btn');
-  if (rmDispatchHidden?.dataset.id && state.workspace) {
-    try {
-      const res = await api('/api/roadmap/node/dispatch-hidden', {
-        method: 'POST',
-        body: { workspace: state.workspace, id: rmDispatchHidden.dataset.id },
-      });
-      render(res.snapshot);
-      showToast(`已将分支 ${rmDispatchHidden.dataset.id} 契约投递总控按隐藏面派单`);
-    } catch (err) {
-      showToast(err.message, true);
-    }
+  if (rmDispatchHidden?.dataset.id && state.workspace && !rmDispatchHidden.disabled) {
+    await withBusyButton(rmDispatchHidden, async () => {
+      try {
+        const res = await api('/api/roadmap/node/dispatch-hidden', {
+          method: 'POST',
+          body: {
+            workspace: state.workspace,
+            id: rmDispatchHidden.dataset.id,
+            expectedL2Hash: state.snap?.roadmap?.l2Hash || '',
+          },
+        });
+        render(res.snapshot);
+        showToast(`已将分支 ${rmDispatchHidden.dataset.id} 契约投递总控按隐藏面派单`);
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    });
     return;
   }
 
@@ -410,7 +525,12 @@ document.body.addEventListener('click', async (e) => {
     try {
       const res = await api('/api/roadmap/node/status', {
         method: 'POST',
-        body: { workspace: state.workspace, id: rmDone.dataset.id, status: 'done' },
+        body: {
+          workspace: state.workspace,
+          id: rmDone.dataset.id,
+          status: 'done',
+          expectedL2Hash: state.snap?.roadmap?.l2Hash || '',
+        },
       });
       render(res.snapshot);
       const unlocked = Array.isArray(res.newlyUnlocked) ? res.newlyUnlocked : [];
@@ -451,7 +571,11 @@ document.body.addEventListener('click', async (e) => {
     try {
       const res = await api('/api/roadmap/node/delete', {
         method: 'POST',
-        body: { workspace: state.workspace, id: rmDel.dataset.id },
+        body: {
+          workspace: state.workspace,
+          id: rmDel.dataset.id,
+          expectedL2Hash: state.snap?.roadmap?.l2Hash || '',
+        },
       });
       render(res.snapshot);
       showToast(`已删除分支节点 ${rmDel.dataset.id}`);
@@ -485,7 +609,9 @@ document.body.addEventListener('click', async (e) => {
 
   const spawnHandover = e.target.closest('.spawn-handover-btn');
   if (spawnHandover) {
-    await spawnHandoverController(ctx, spawnHandover.dataset.id || '');
+    await withBusyButton(spawnHandover, () =>
+      spawnHandoverController(ctx, spawnHandover.dataset.id || '')
+    );
     return;
   }
 
@@ -538,12 +664,14 @@ document.body.addEventListener('click', async (e) => {
 
   const notifyBtn = e.target.closest('.notify-ctrl-btn');
   if (notifyBtn?.dataset.id) {
-    try {
-      await sendToActiveController(notifyBtn.dataset.id);
-      showToast(`已向现役总控投递 ${notifyBtn.dataset.id.slice(0, 8)}`);
-    } catch (err) {
-      showToast(err.message, true);
-    }
+    await withBusyButton(notifyBtn, async () => {
+      try {
+        await sendToActiveController(notifyBtn.dataset.id);
+        showToast(`已向现役总控投递 ${notifyBtn.dataset.id.slice(0, 8)}`);
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    });
     return;
   }
 
@@ -606,14 +734,36 @@ document.body.addEventListener('click', async (e) => {
   }
 });
 
-if (window.sidecar?.onWorkspaceChange) {
-  window.sidecar.onWorkspaceChange((uris) => {
-    if (Array.isArray(uris) && uris.length > 0) {
-      refresh(uris[0], { recordSelection: true });
-    } else {
-      refresh('');
+async function bootstrapSidecar() {
+  let bootstrappedWs = null;
+  if (typeof window.sidecar?.getWorkspaceUris === 'function') {
+    try {
+      const uris = await window.sidecar.getWorkspaceUris();
+      if (Array.isArray(uris) && uris.length > 0 && uris[0]) {
+        bootstrappedWs = uris[0];
+      }
+    } catch {
+      bootstrappedWs = null;
     }
-  });
-} else {
-  refresh('');
+  }
+
+  if (typeof window.sidecar?.onWorkspaceChange === 'function') {
+    window.sidecar.onWorkspaceChange((uris) => {
+      const nextWs = Array.isArray(uris) && uris.length > 0 ? uris[0] || '' : '';
+      if (nextWs && nextWs === state.workspace && state.snap) return;
+      if (nextWs) {
+        refresh(nextWs, { recordSelection: true });
+      } else if (!state.snap) {
+        refresh('');
+      }
+    });
+  }
+
+  if (bootstrappedWs) {
+    await refresh(bootstrappedWs, { recordSelection: true });
+  } else {
+    await refresh('');
+  }
 }
+
+bootstrapSidecar();

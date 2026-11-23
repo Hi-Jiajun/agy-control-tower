@@ -5,9 +5,9 @@
  * and performs all installations/rollbacks strictly via official `agy plugin install`.
  */
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { appendFlightEvent } from '../plugin/lib/logger.mjs';
 import { readJsonSafe, resolvePluginDataDir } from '../plugin/lib/paths.mjs';
@@ -27,12 +27,21 @@ function getReleasesDir(dataDir) {
   return join(resolve(dataDir), 'releases');
 }
 
+function buildAgyChildEnv(env, cfgDir) {
+  const next = { ...env, AGY_CONFIG_DIR: cfgDir };
+  const parent = dirname(cfgDir);
+  if (basename(cfgDir) === 'config' && basename(parent) === '.gemini') {
+    next.HOME = dirname(parent);
+  }
+  return next;
+}
+
 function countFiles(dir) {
   let n = 0;
   for (const ent of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, ent.name);
     if (ent.isDirectory()) n += countFiles(full);
-    else if (ent.isFile()) n += 1;
+    else if (ent.isFile() || ent.isSymbolicLink()) n += 1;
   }
   return n;
 }
@@ -42,20 +51,22 @@ export function listSnapshots({ env = process.env, dataDir = '' } = {}) {
   const relDir = getReleasesDir(resolvedDataDir);
   if (!existsSync(relDir)) return [];
   const entries = readdirSync(relDir, { withFileTypes: true })
-    .filter((e) => e.isDirectory())
+    .filter((e) => e.isDirectory() && !e.name.startsWith('.tmp-'))
     .map((e) => {
       const dir = join(relDir, e.name);
-      const manifest = readJsonSafe(join(dir, 'manifest.json'), {});
-      const pluginJson = readJsonSafe(join(dir, 'plugin', 'plugin.json'), {});
+      const manifest = readJsonSafe(join(dir, 'manifest.json'), null);
+      const pluginJson = readJsonSafe(join(dir, 'plugin', 'plugin.json'), null);
+      if (!manifest || !pluginJson || !pluginJson.version) return null;
       return {
         name: e.name,
         dir,
         pluginDir: join(dir, 'plugin'),
-        version: manifest.version || pluginJson.version || 'unknown',
+        version: manifest.version || pluginJson.version,
         createdAt: manifest.createdAt || '',
         fileCount: manifest.fileCount || 0,
       };
     })
+    .filter(Boolean)
     .sort((a, b) => b.name.localeCompare(a.name));
   return entries;
 }
@@ -89,19 +100,33 @@ export function createSnapshot({
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
   const unique = tagSuffix ? `-${String(tagSuffix).replace(/[^0-9A-Za-z_-]/g, '')}` : `-${Math.random().toString(16).slice(2, 6)}`;
   const snapName = `${stamp}-v${version}${unique}`;
-  const snapDir = join(getReleasesDir(resolvedDataDir), snapName);
+  const relRoot = getReleasesDir(resolvedDataDir);
+  const snapDir = join(relRoot, snapName);
+  const tmpSnapDir = join(relRoot, `.tmp-${snapName}-${process.pid}`);
+  const tmpPluginDir = join(tmpSnapDir, 'plugin');
   const snapPluginDir = join(snapDir, 'plugin');
 
-  mkdirSync(snapPluginDir, { recursive: true });
-  cpSync(installedDir, snapPluginDir, { recursive: true });
-  const fileCount = countFiles(snapPluginDir);
-  const manifest = {
-    name: snapName,
-    version,
-    createdAt: new Date().toISOString(),
-    fileCount,
-  };
-  writeFileSync(join(snapDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+  let fileCount = 0;
+  let manifest = null;
+  try {
+    mkdirSync(tmpPluginDir, { recursive: true });
+    cpSync(installedDir, tmpPluginDir, { recursive: true, verbatimSymlinks: true });
+    if (!readJsonSafe(join(tmpPluginDir, 'plugin.json'), null)?.version) {
+      throw new Error('Copied snapshot missing valid plugin.json');
+    }
+    fileCount = countFiles(tmpPluginDir);
+    manifest = {
+      name: snapName,
+      version,
+      createdAt: new Date().toISOString(),
+      fileCount,
+    };
+    writeFileSync(join(tmpSnapDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+    renameSync(tmpSnapDir, snapDir);
+  } catch (err) {
+    rmSync(tmpSnapDir, { recursive: true, force: true });
+    throw err;
+  }
 
   const pruned = pruneSnapshots({ env, dataDir: resolvedDataDir, keep });
   appendFlightEvent(resolvedDataDir, {
@@ -142,7 +167,9 @@ export function rollbackToSnapshot({
     throw new Error(`快照目录损坏，缺少 plugin.json: ${target.name}`);
   }
 
-  execFileSync('agy', ['plugin', 'install', target.pluginDir], { env, encoding: 'utf8' });
+  const cfgDir = resolveConfigDir(env, configDir);
+  const childEnv = buildAgyChildEnv(env, cfgDir);
+  execFileSync('agy', ['plugin', 'install', target.pluginDir], { env: childEnv, encoding: 'utf8' });
   appendFlightEvent(resolvedDataDir, {
     level: 'warn',
     source: 'release',
@@ -174,12 +201,14 @@ export function safeInstallRelease({
     throw new Error('安全门禁：执行实装发布必须显式传入 --confirm 标志（并获用户授权）。');
   }
   const absPlugin = resolve(pluginRoot);
-  execFileSync('agy', ['plugin', 'validate', '--strict', absPlugin], { env, encoding: 'utf8' });
+  const cfgDir = resolveConfigDir(env, configDir);
+  const childEnv = buildAgyChildEnv(env, cfgDir);
+  execFileSync('agy', ['plugin', 'validate', '--strict', absPlugin], { env: childEnv, encoding: 'utf8' });
 
   const resolvedDataDir = dataDir ? resolve(dataDir) : resolvePluginDataDir({ env });
   const snapshotRes = createSnapshot({ env, configDir, dataDir: resolvedDataDir });
 
-  execFileSync('agy', ['plugin', 'install', absPlugin], { env, encoding: 'utf8' });
+  execFileSync('agy', ['plugin', 'install', absPlugin], { env: childEnv, encoding: 'utf8' });
   const newMeta = readJsonSafe(join(absPlugin, 'plugin.json'), {});
 
   appendFlightEvent(resolvedDataDir, {

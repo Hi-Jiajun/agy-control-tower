@@ -1,13 +1,16 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
+  closeSync,
   existsSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
@@ -88,10 +91,19 @@ function safeListDirs(dir) {
   }
 }
 
+const APP_DIRS_CACHE_TTL_MS = 5000;
+let appDirsCache = { key: '', expiresAt: 0, dirs: [] };
+
 /**
  * Resolve candidate Antigravity app data directories (<appDataDir> containing brain/).
  */
 export function resolveAppDataDirs({ env = process.env, hintPath = '' } = {}) {
+  const cacheKey = `${env.ANTIGRAVITY_APP_DATA_DIR || ''}|${env.ANTIGRAVITY_EXECUTABLE_DATA_DIR || ''}|${env.HOME || ''}|${hintPath || ''}`;
+  const now = Date.now();
+  if (appDirsCache.key === cacheKey && now < appDirsCache.expiresAt && appDirsCache.dirs.length > 0) {
+    return [...appDirsCache.dirs];
+  }
+
   const seen = new Set();
   const list = [];
   const pushDir = (cand) => {
@@ -105,7 +117,8 @@ export function resolveAppDataDirs({ env = process.env, hintPath = '' } = {}) {
 
   if (env.ANTIGRAVITY_APP_DATA_DIR && env.ANTIGRAVITY_APP_DATA_DIR.trim()) {
     pushDir(env.ANTIGRAVITY_APP_DATA_DIR.trim());
-    return list;
+    appDirsCache = { key: cacheKey, expiresAt: now + APP_DIRS_CACHE_TTL_MS, dirs: list };
+    return [...list];
   }
 
   const fromHint = findAncestorParent(hintPath, 'brain');
@@ -130,7 +143,8 @@ export function resolveAppDataDirs({ env = process.env, hintPath = '' } = {}) {
   if (list.length === 0) {
     pushDir(join(geminiRoot, 'antigravity'));
   }
-  return list;
+  appDirsCache = { key: cacheKey, expiresAt: now + APP_DIRS_CACHE_TTL_MS, dirs: list };
+  return [...list];
 }
 
 /**
@@ -189,27 +203,84 @@ export function normalizeWorkspaceInput(raw, { throwOnInvalid = false } = {}) {
   }
 }
 
-function assertSafeTargetWithinRoot(rootReal, candidate, { allowMissing = false, rootLabel = 'workspace' } = {}) {
-  const rel = relative(rootReal, candidate);
-  if (rel.startsWith('..') || rel.includes(`..${sep}`) || isAbsolute(rel)) {
+export function isInsideDir(rootReal, targetReal) {
+  const rel = relative(rootReal, targetReal);
+  return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel));
+}
+
+function canonicalizeMissingRoot(absPath) {
+  let cur = resolve(absPath);
+  const tail = [];
+  for (let i = 0; i < 32; i += 1) {
+    if (existsSync(cur)) {
+      try {
+        return join(realpathSync(cur), ...tail.reverse());
+      } catch {
+        return resolve(absPath);
+      }
+    }
+    const parent = dirname(cur);
+    if (parent === cur) break;
+    tail.push(basename(cur));
+    cur = parent;
+  }
+  return resolve(absPath);
+}
+
+export function assertSafeTargetWithinRoot(
+  rootReal,
+  candidate,
+  { allowMissing = false, rootLabel = 'workspace', notFoundMessage = 'SESSION-REGISTRY.md not found' } = {}
+) {
+  const rootCanon = canonicalizeMissingRoot(rootReal);
+  if (!isInsideDir(rootCanon, candidate)) {
     throw new PathError(403, 'Path traversal blocked');
   }
 
-  const parent = dirname(candidate);
-  if (existsSync(parent)) {
-    const parentReal = realpathSync(parent);
-    const parentRel = relative(rootReal, parentReal);
-    if (parentRel.startsWith('..') || isAbsolute(parentRel)) {
-      throw new PathError(403, `Parent symlink escapes ${rootLabel}`);
+  // Walk up to nearest existing ancestor within rootCanon to prevent multi-level symlink directory escape
+  let anc = dirname(candidate);
+  for (let depth = 0; depth < 32; depth += 1) {
+    if (!isInsideDir(rootCanon, anc)) break;
+    let ancLst = null;
+    try {
+      ancLst = lstatSync(anc);
+    } catch {
+      ancLst = null;
     }
+    if (ancLst) {
+      let ancReal;
+      try {
+        ancReal = realpathSync(anc);
+      } catch {
+        throw new PathError(403, `Parent symlink escapes ${rootLabel}`);
+      }
+      if (!isInsideDir(rootCanon, ancReal)) {
+        throw new PathError(403, `Parent symlink escapes ${rootLabel}`);
+      }
+      break;
+    }
+    if (anc === rootCanon) break;
+    const nextAnc = dirname(anc);
+    if (nextAnc === anc) break;
+    anc = nextAnc;
   }
 
-  if (existsSync(candidate)) {
-    const lst = lstatSync(candidate);
+  let lst = null;
+  try {
+    lst = lstatSync(candidate);
+  } catch {
+    lst = null;
+  }
+
+  if (lst) {
     if (lst.isSymbolicLink()) {
-      const targetReal = realpathSync(candidate);
-      const tRel = relative(rootReal, targetReal);
-      if (tRel.startsWith('..') || isAbsolute(tRel)) {
+      let targetReal;
+      try {
+        targetReal = realpathSync(candidate);
+      } catch {
+        throw new PathError(403, `Registry symlink escapes ${rootLabel}`);
+      }
+      if (!isInsideDir(rootCanon, targetReal)) {
         throw new PathError(403, `Registry symlink escapes ${rootLabel}`);
       }
     }
@@ -217,7 +288,7 @@ function assertSafeTargetWithinRoot(rootReal, candidate, { allowMissing = false,
       throw new PathError(400, 'Registry target is not a regular file');
     }
   } else if (!allowMissing) {
-    throw new PathError(404, 'SESSION-REGISTRY.md not found');
+    throw new PathError(404, notFoundMessage);
   }
   return candidate;
 }
@@ -231,8 +302,7 @@ export function resolveRegistryTarget(
     if (!dataDir || typeof dataDir !== 'string') {
       throw new PathError(400, 'Plugin data directory is required for managed registry');
     }
-    const dataAbs = resolve(dataDir);
-    const dataRootReal = existsSync(dataAbs) ? realpathSync(dataAbs) : dataAbs;
+    const dataRootReal = canonicalizeMissingRoot(dataDir);
     const managedCandidate = getManagedRegistryPath(dataRootReal, wsReal);
     return assertSafeTargetWithinRoot(dataRootReal, managedCandidate, {
       allowMissing,
@@ -336,12 +406,99 @@ export function findRegistryInWorkspaces(workspacePaths, { dataDir = '' } = {}) 
   return null;
 }
 
-export function atomicWriteText(targetPath, content) {
-  const parent = dirname(targetPath);
+const LOCK_SLEEP_BUF = new Int32Array(new SharedArrayBuffer(4));
+
+function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err?.code === 'EPERM';
+  }
+}
+
+export function withFileLockSync(lockPath, fn, { timeoutMs = 1500, staleMs = 10000 } = {}) {
+  if (!lockPath) return fn();
+  const parent = dirname(lockPath);
   mkdirSync(parent, { recursive: true });
-  const tmp = join(parent, `.tmp.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2, 8)}`);
-  writeFileSync(tmp, content, 'utf8');
-  renameSync(tmp, targetPath);
+  const token = `${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}`;
+  const deadline = Date.now() + Math.max(50, timeoutMs);
+  let acquired = false;
+
+  while (Date.now() <= deadline) {
+    try {
+      const fd = openSync(lockPath, 'wx');
+      try {
+        writeFileSync(fd, JSON.stringify({ pid: process.pid, ts: Date.now(), token }), 'utf8');
+      } finally {
+        closeSync(fd);
+      }
+      acquired = true;
+      break;
+    } catch (err) {
+      if (err?.code !== 'EEXIST') break;
+      const holder = readJsonSafe(lockPath, null);
+      const now = Date.now();
+      const isStale =
+        !holder ||
+        now - Number(holder.ts || 0) > staleMs ||
+        (holder.pid && !isPidAlive(Number(holder.pid)));
+      if (isStale) {
+        try {
+          unlinkSync(lockPath);
+          continue;
+        } catch {
+          // raced with another cleaner
+        }
+      }
+      try {
+        Atomics.wait(LOCK_SLEEP_BUF, 0, 0, 8);
+      } catch {
+        break;
+      }
+    }
+  }
+
+  try {
+    return fn();
+  } finally {
+    if (acquired) {
+      try {
+        const cur = readJsonSafe(lockPath, null);
+        if (!cur || cur.token === token) {
+          unlinkSync(lockPath);
+        }
+      } catch {
+        // ignore cleanup race
+      }
+    }
+  }
+}
+
+export function atomicWriteText(targetPath, content) {
+  let writeTarget = targetPath;
+  try {
+    if (lstatSync(targetPath).isSymbolicLink()) {
+      writeTarget = realpathSync(targetPath);
+    }
+  } catch {
+    // target does not exist yet
+  }
+  const parent = dirname(writeTarget);
+  mkdirSync(parent, { recursive: true });
+  const tmp = join(parent, `.tmp.${process.pid}.${Date.now()}.${randomBytes(6).toString('hex')}`);
+  try {
+    writeFileSync(tmp, content, 'utf8');
+    renameSync(tmp, writeTarget);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // ignore orphan cleanup failure
+    }
+    throw err;
+  }
 }
 
 export function readJsonSafe(filePath, fallback = null) {

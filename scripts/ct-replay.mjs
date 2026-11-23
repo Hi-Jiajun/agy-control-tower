@@ -265,18 +265,21 @@ export function runAllReplays(dir = DEFAULT_REPLAY_DIR) {
   };
 }
 
+const SCRUB_UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
 export function createReplaySkeletonFromFlightEvent(ev, idSuffix = '') {
-  const slug = sanitizeLogString(ev?.event || 'incident', 32)
+  const scrub = (s, max) => sanitizeLogString(s, max).replace(SCRUB_UUID_RE, '${OTHER_ID}');
+  const slug = scrub(ev?.event || 'incident', 32)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '');
   const id = idSuffix || `replay-${slug || 'incident'}`;
   return {
     id,
-    title: `Frozen incident: ${sanitizeLogString(ev?.event || 'unknown', 80)}`,
+    title: `Frozen incident: ${scrub(ev?.event || 'unknown', 80)}`,
     incidentDate: String(ev?.ts || new Date().toISOString()).slice(0, 10),
-    category: sanitizeLogString(ev?.source || 'hook', 32),
-    description: sanitizeLogString(ev?.message || 'Frozen from flight recorder event', 200),
+    category: scrub(ev?.source || 'hook', 32),
+    description: scrub(ev?.message || 'Frozen from flight recorder event', 200),
     kind: 'hook',
     setup: {
       registryRelPath: '.agents/SESSION-REGISTRY.md',

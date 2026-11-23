@@ -6,15 +6,16 @@ import {
 } from '../ui-logic.mjs';
 
 export function renderRoadmap(ctx, snap) {
-  const { $ } = ctx;
+  const { $, state } = ctx;
   const rm = snap.roadmap || { exists: false };
   $('rm-empty').classList.toggle('hidden', Boolean(rm.exists));
   $('rm-body').classList.toggle('hidden', !rm.exists);
   if (!rm.exists) return;
 
   $('rm-storage-badge').textContent = rm.isManaged ? '@plugin_data 托管' : '.agents/ 工作区';
-  if (document.activeElement !== $('rm-l1-editor')) {
+  if (!state.rmL1Dirty && document.activeElement !== $('rm-l1-editor')) {
     $('rm-l1-editor').value = rm.l1Content || '';
+    state.rmL1BaseHash = rm.l1Hash || '';
   }
 
   const graph = rm.graph || {
@@ -28,18 +29,19 @@ export function renderRoadmap(ctx, snap) {
     msBox.innerHTML = '<p class="muted">暂无里程碑记录</p>';
   } else {
     msBox.innerHTML = graph.milestoneStats
-      .map(
-        (m) => `
+      .map((m) => {
+        const pct = Math.min(100, Math.max(0, Number(m.pct) || 0));
+        return `
         <div class="item-box">
           <div class="card-head">
             <strong>${esc(m.id)} | ${esc(m.title)}</strong>
-            <span class="badge ${m.pct === 100 ? 'badge-ok' : 'badge-muted'}">${esc(m.done)}/${esc(m.total)} (${esc(m.pct)}%)</span>
+            <span class="badge ${pct === 100 ? 'badge-ok' : 'badge-muted'}">${esc(m.done)}/${esc(m.total)} (${esc(pct)}%)</span>
           </div>
-          <div class="progress-track"><div class="progress-fill" style="width:${Math.min(100, Math.max(0, m.pct))}%"></div></div>
+          <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
           <div class="item-meta">DoD: ${esc(m.dod)} | 就绪 ${esc(m.ready)} / 进行中 ${esc(m.active)} / 阻塞 ${esc(m.blocked)}</div>
         </div>
-      `
-      )
+      `;
+      })
       .join('');
   }
 
@@ -68,6 +70,7 @@ export function renderRoadmap(ctx, snap) {
             : '无前置依赖';
       const ownLine = n.ownership?.length > 0 ? n.ownership.join(', ') : '未限定';
       const isDone = n.status === 'done' || n.status === 'verified';
+      const isBlocked = n.effectiveStatus === 'blocked';
       const hf = n.handoff || { exists: false };
       const handoffBlock = hf.exists
         ? `
@@ -88,13 +91,13 @@ export function renderRoadmap(ctx, snap) {
           <div class="item-meta">验收: ${esc(n.acceptance || '-')} | 模型: ${esc(n.recommendedModel || '-')}</div>
           ${handoffBlock}
           <div class="actions">
-            ${!isDone ? `<button class="btn btn-primary btn-sm rm-dispatch-hidden-btn" data-id="${esc(n.id)}">交总控隐藏面派单</button>` : ''}
-            ${!isDone ? `<button class="btn btn-ghost btn-sm rm-fill-dispatch-btn" data-id="${esc(n.id)}">填入白名单直派</button>` : ''}
-            <button class="btn btn-ghost btn-sm rm-copy-contract-btn" data-id="${esc(n.id)}">复制契约词</button>
-            ${!isDone ? `<button class="btn btn-ghost btn-sm rm-mark-done-btn" data-id="${esc(n.id)}">标记完成</button>` : ''}
-            ${n.linkedConvId ? `<button class="btn btn-ghost btn-sm jump-conv-btn" data-id="${esc(n.linkedConvId)}">跳转会话</button>` : ''}
-            <button class="btn btn-ghost btn-sm rm-edit-node-btn" data-id="${esc(n.id)}">编辑</button>
-            <button class="btn btn-danger btn-sm rm-del-node-btn" data-id="${esc(n.id)}">删除</button>
+            ${!isDone ? `<button type="button" class="btn btn-primary btn-sm rm-dispatch-hidden-btn" data-id="${esc(n.id)}" ${isBlocked ? 'disabled title="前置依赖未完成，暂不可直接派单"' : ''}>交总控隐藏面派单</button>` : ''}
+            ${!isDone ? `<button type="button" class="btn btn-ghost btn-sm rm-fill-dispatch-btn" data-id="${esc(n.id)}">填入白名单直派</button>` : ''}
+            <button type="button" class="btn btn-ghost btn-sm rm-copy-contract-btn" data-id="${esc(n.id)}">复制契约词</button>
+            ${!isDone ? `<button type="button" class="btn btn-ghost btn-sm rm-mark-done-btn" data-id="${esc(n.id)}">标记完成</button>` : ''}
+            ${n.linkedConvId ? `<button type="button" class="btn btn-ghost btn-sm jump-conv-btn" data-id="${esc(n.linkedConvId)}">跳转会话</button>` : ''}
+            <button type="button" class="btn btn-ghost btn-sm rm-edit-node-btn" data-id="${esc(n.id)}">编辑</button>
+            <button type="button" class="btn btn-danger btn-sm rm-del-node-btn" data-id="${esc(n.id)}">删除</button>
           </div>
         </div>
       `;
@@ -133,10 +136,24 @@ export function bindRoadmapEvents(ctx) {
     }
   });
 
+  $('rm-l1-editor').addEventListener('input', () => {
+    state.rmL1Dirty = true;
+  });
   $('rm-toggle-l1-btn').addEventListener('click', () => $('rm-l1-wrap').classList.toggle('hidden'));
   $('rm-toggle-ms-form-btn').addEventListener('click', () => $('rm-ms-form').classList.toggle('hidden'));
   $('rm-ms-cancel-btn').addEventListener('click', () => $('rm-ms-form').classList.add('hidden'));
-  $('rm-toggle-node-form-btn').addEventListener('click', () => $('rm-node-form').classList.toggle('hidden'));
+  $('rm-toggle-node-form-btn').addEventListener('click', () => {
+    const formEl = $('rm-node-form');
+    const wasHidden = formEl.classList.contains('hidden');
+    const wasEditing = Boolean($('rnf-originalId').value);
+    if (wasHidden || wasEditing) {
+      formEl.reset();
+      $('rnf-originalId').value = '';
+      formEl.classList.remove('hidden');
+    } else {
+      formEl.classList.add('hidden');
+    }
+  });
   $('rm-node-cancel-btn').addEventListener('click', () => {
     $('rm-node-form').reset();
     $('rnf-originalId').value = '';
@@ -148,8 +165,14 @@ export function bindRoadmapEvents(ctx) {
     try {
       const res = await api('/api/roadmap/l1/save', {
         method: 'POST',
-        body: { workspace: state.workspace, content: $('rm-l1-editor').value },
+        body: {
+          workspace: state.workspace,
+          content: $('rm-l1-editor').value,
+          expectedL1Hash: state.rmL1BaseHash || state.snap?.roadmap?.l1Hash || '',
+        },
       });
+      state.rmL1Dirty = false;
+      state.rmL1BaseHash = res.snapshot?.roadmap?.l1Hash || '';
       render(res.snapshot);
       showToast('已保存 L1 战略北极星 ROADMAP.md');
     } catch (err) {
@@ -165,6 +188,7 @@ export function bindRoadmapEvents(ctx) {
         method: 'POST',
         body: {
           workspace: state.workspace,
+          expectedL2Hash: state.snap?.roadmap?.l2Hash || '',
           id: $('rms-id').value.trim(),
           title: $('rms-title').value.trim(),
           dod: $('rms-dod').value.trim(),
@@ -184,11 +208,14 @@ export function bindRoadmapEvents(ctx) {
     e.preventDefault();
     if (!state.workspace) return;
     try {
+      const origId = $('rnf-originalId').value;
       const res = await api('/api/roadmap/node/upsert', {
         method: 'POST',
         body: {
           workspace: state.workspace,
-          originalId: $('rnf-originalId').value || undefined,
+          expectedL2Hash: state.snap?.roadmap?.l2Hash || '',
+          originalId: origId || undefined,
+          requireNew: !origId,
           id: $('rnf-id').value.trim(),
           milestoneId: $('rnf-milestoneId').value.trim() || 'M1',
           title: $('rnf-title').value.trim(),

@@ -2,12 +2,12 @@
 name: control-tower
 description: >-
   Universal Chief-of-Staff Control Tower protocol for Antigravity across any workspace:
-  session triage (new vs resume), adaptive dispatch (native swarm / agentapi direct spawn /
-  manual slash fallback), two-way reporting & permission-aware co-decision, exclusive resource
-  lease management, pure Gemini 4 (Carbon / Neon / Hydrogen) + Orchestrator routing, bare-ID
-  intake, live monitoring, and flexible handover. Use when acting as a persistent main
-  coordinator session, initializing a workspace registry, dispatching specialist sessions,
-  monitoring worker progress, or performing a Control Tower handover.
+  session triage (new vs resume), hidden-surface-first dispatch (native swarm / invoke_subagent /
+  run_workflow + whitelisted agentapi), two-way reporting & Focus Gate co-decision, exclusive
+  resource lease management, isolation & collaboration contracts, 3-tier project roadmap DAG,
+  pure Gemini 4 (Carbon / Neon / Hydrogen) + Orchestrator routing, and double-evidence handover.
+  Use when acting as a persistent main coordinator session, initializing a workspace registry,
+  dispatching specialist tasks, monitoring progress, or performing a Control Tower handover.
 ---
 
 # 通用常驻主交流总控规程（Control Tower / Chief-of-Staff）
@@ -73,8 +73,12 @@ Antigravity 中 `agentapi new-conversation` 一定会生成左侧顶层会话且
    - 需要用户切入独立窗口**人工盯屏或逐条审批**的高危/独占硬件实操（如真机刷机、现场联调）；
    - 需要跨多天独立存活于总控换届周期之外，或需专属斜杠模式（`/plan` `/boost` `/teamwork` `/goal`）的史诗级主线；
    - 用户明确口头要求单开一个独立顶层会话窗口。
-   - **直派入账与斜杠兜底**：直派成功后立即捕获 `conversationId` 写入 `SESSION-REGISTRY.md` 第 3 节；若含斜杠前缀，同时附带一键可复制提示词兜底。
+   - **直派入账与固定槽位复用（`slot_reuse`）**：直派成功后立即捕获 `conversationId` 写入 `SESSION-REGISTRY.md` 第 3 节；当启用 `slot_reuse` 时按职责复用固定角色槽位（如 `[Slot:Impl]`、`[Slot:Verify]`），待槽位会话压缩次数达 `workerCompactionThreshold` 后归档至第 4 节并原地替换为干净新会话 ID；若含斜杠前缀，同时附带一键可复制提示词兜底。
 3. **手动新建兜底**：若环境不可调用 `agentapi` 或用户要求手动开窗，则输出自适应派单卡片与可复制提示词，并在回传裸 ID 后秒登入账。
+4. **看板三大结构化入站指令处置规范**：
+   - **`[CT_ROADMAP_DISPATCH]`（看板路线图隐藏面派单）**：代表用户已在看板显式点击授权，**免除重复调用 `ask_question`**；核对文件所有权无未解冲突后，直接按契约通过原生 `swarm` 或 `invoke_subagent` 拉起执行；
+   - **`[CT_SWARM_CLEANUP]`（看板休眠 Swarm 成员回收）**：由于 `swarm(action="kill")` 会永久删除 `share`/`branch` 独立工作树，执行前必须先核查目标 `waiting` 成员无未合流提交且跨波次契约已落盘 `.agents/handoffs/`，确认安全后再逐个回收；
+   - **`[CT_INBOX_DELIVER]`（看板主动投递后台信箱）**：按 `P0 -> P1 -> P2` 优先级逐条拍板或安排下一步，并同步更新 `SESSION-REGISTRY.md`。
 
 ### 4.3 自适应派单卡片
 
@@ -97,9 +101,9 @@ Antigravity 中 `agentapi new-conversation` 一定会生成左侧顶层会话且
   2. **焦点防打扰门禁（Focus Gate）**：当用户正在与总控连续对话（回复中或距上一条用户消息未超过焦点冷却窗口，默认 `180` 秒）时，`Stop` 钩子自动暂缓 `agentapi` 抢占式唤醒，仅将事件沉淀至 `inbox.json` 与看板角标；用户下一次发消息时 `PreInvocation` 附带一行极简摘要。总控必须 **100% 优先回答用户当前问题**，仅在回复末尾用 1 行简短附注提及非 `P0` 信箱待办（用户要求时再展开，或在看板点「投递总控」主动触发）。
   3. **按需临时域分总控（On-Demand Domain Lead，绝不养平级双脑）**：仅当超大型项目同时并发多条重子线（如「内核线」与「应用线」）且用户正在前台深度规划时，主总控可按需通过原生 `swarm`（隐藏面，不进左侧栏）拉起临时域分总控，按 [references/templates.md](./references/templates.md) 签发显式授权边界（只管域内推进与验收，无权推翻总体方案或直改全局总账），阶段收口回传 10 行摘要后即休眠或回收。
 - **跨会话主动汇报与 `Stop` 钩子兜底**：
-  - 专职会话遇到超出授权范围的技术/需求分叉时，应调用 `agentapi send-message "<现役总控ID>" "[CT_REPORT:DECISION] ..."` 唤醒总控并写入 `P0` 信箱；
-  - 任务完成时调用 `agentapi send-message "<现役总控ID>" "[CT_REPORT:DONE] ..."` 汇报交付清单；
-  - 若专职会话跑停漏发回执，`Stop` 钩子自动记入优先级信箱，并在主总控空闲且阶段收口时执行汇总唤醒。
+  - 专职会话遇到超出授权范围的技术/需求分叉时，应调用 `agentapi send-message "<现役总控ID>" "[CT_REPORT:DECISION] [<任务或分支ID>] ..."` 唤醒总控并写入 `P0` 信箱；
+  - 任务完成时调用 `agentapi send-message "<现役总控ID>" "[CT_REPORT:DONE] [<任务或路线图节点ID>] <交付摘要与验证结果>"` 汇报交付清单（显式带上节点 ID 可让隐藏面子任务自动触发 `PreInvocation` 路线图联动提示）；
+  - 若专职会话跑停漏发回执，`Stop` 钩子自动记入优先级信箱，并在主总控空闲且阶段收口时执行汇总唤醒（焦点忙碌期延后的回执将在冷却结束后由哨兵自动补投）。
 - **三档代决策权限边界（看板可配，默认跟随 Antigravity 宿主权限预设）**：
   - **`autonomous`（高自主，对应宿主 `ALWAYS / TURBO`）**：实现细节、排障策略、按序转锁均由总控自动拍板；仅破坏性操作或推翻原需求才请示用户。
   - **`balanced`（均衡，对应宿主 `AUTO` 默认）**：既定计划内的局部实现与补充验证由总控直接批复；涉及接口/架构分叉、需求范围变动、连续两轮失败止损或异常抢锁时，必须停下交由用户定夺。
@@ -120,10 +124,10 @@ Antigravity 中 `agentapi new-conversation` 一定会生成左侧顶层会话且
 1. 当前总控会话累计上下文自动压缩次数达到生效阈值 `controllerCompactionThreshold`（默认 `5` 次），且当前会话未被用户标记为「忽略换届提醒」；
 2. 用户主动发起换届，或项目完成重大里程碑阶段。
 
-**换届标准动作**：
-1. 总控先调用 `ask_question` 询问用户（也可由用户直接在看板顶部横幅操作）：
-   - **选项 A：立即换届** —— 同步 `SESSION-REGISTRY.md` 到最新稳态、生成精炼《总控换届交接卡》（按 [references/templates.md](./references/templates.md)，附带生效自定义设置、代决策档位与活跃 `swarm`/专职会话快照），并征得确认后可直接调用 `agentapi new-conversation` 拉起新总控会话自动接班入账（或提供一键可复制交接卡由用户手动新开）；
-   - **选项 B：本会话忽略，不再提醒** —— 记录忽略标记后当前会话不再重复弹出换届提醒，继续安心陪伴工作。
+**换届标准动作与 `PreToolUse` 双证放行契约**：
+1. 总控先调用 `ask_question` 询问用户（也可由用户直接在看板顶部横幅一键接班或忽略）：
+   - **选项 A：立即换届** —— 同步 `SESSION-REGISTRY.md` 到最新稳态（**注意**：在新总控接班前第 2 节仍保留前任自身 `conversationId`，仅可将状态标为 `HANDOVER`，切勿提前清空为 `-`）、生成精炼《总控换届交接卡》（按 [references/templates.md](./references/templates.md)，首屏 4000 字内必须保留 `control-tower`/`常驻主交流总控`、`换届`/`接班` 关键词及前任总控至少 8 位 `conversationId`），征得确认后调用 `agentapi new-conversation` 拉起新总控或提供一键可复制交接卡；接班新总控首次修改 `SESSION-REGISTRY.md` 时必须同步把第 2 节 `当前现役总控会话` 更新为自身 `conversationId`，即可自动通过 `PreToolUse` 双证校验放行且静默对齐插件版本；
+   - **选项 B：本会话忽略，不再提醒** —— 记录忽略标记并清理信箱换届项，当前会话不再重复弹出换届提醒。
 
 ---
 

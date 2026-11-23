@@ -167,6 +167,25 @@ test('inspectTranscript reads head/tail on large files, incrementally caches com
     assert.equal(res3.info.lastModel, 'gemini-4-carbon-high');
     assert.equal(res3.info.compactions, 3);
 
+    // Append >64KB tail line with multi-byte UTF-8 and verify telemetry does not blank out
+    appendFileSync(
+      tp,
+      `${JSON.stringify({
+        step_index: 162,
+        type: 'PLANNER_RESPONSE',
+        model: 'gemini-4-carbon-high',
+        status: 'RUNNING',
+        created_at: '2026-11-24T01:00:00Z',
+        content: '中文超长输出'.repeat(14000),
+      })}\n`,
+      'utf8'
+    );
+    const resBigTail = inspectTranscript(tp, { cacheEntry: res3.nextCacheEntry });
+    assert.equal(resBigTail.info.maxStepIndex, 162);
+    assert.equal(resBigTail.info.lastModel, 'gemini-4-carbon-high');
+    assert.equal(resBigTail.info.lastStatus, 'RUNNING');
+    assert.equal(resBigTail.info.lastUpdatedAt, '2026-11-24T01:00:00Z');
+
     // Verify prefix resolution
     const resolved = resolveBrainTranscript(convId.slice(0, 8), {
       env: { ANTIGRAVITY_APP_DATA_DIR: appDir },

@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
@@ -7,6 +8,8 @@ import {
   ackInboxItems,
   buildUnifiedAttentionBanner,
   cleanupWorkspaceInbox,
+  clearDeferredReceipt,
+  evaluateFocusGate,
   evaluateSentinelSweep,
   loadWorkspaceInbox,
   summarizeInbox,
@@ -64,19 +67,24 @@ import {
   inspectHiddenSurfaces,
   inspectNativeSwarm,
   inspectTranscript,
+  isValidConvIdOrPrefix,
   loadPluginState,
   resolveBrainTranscript,
-  savePluginState,
+  updatePluginState,
 } from '../../lib/transcript.mjs';
 import {
+  ALLOWED_SLASH_PREFIXES,
   buildDispatchPayload,
   clearMetadataCache,
   execAgentApiAsync,
   extractConversationIdFromResult,
   getConversationMetadataCached,
+  invalidateMetadataCache,
+  safePositionalMessage,
 } from './lib/agentapi.mjs';
 import { handleInboxAndSwarmRoute } from './routes/inbox.mjs';
 import { handleRoadmapRoute } from './routes/roadmap.mjs';
+import { isLeaseIdle } from './ui-logic.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(__dirname, '..', '..');
@@ -141,7 +149,7 @@ function readPluginMeta() {
   return {
     name: raw?.name || 'control-tower',
     displayName: raw?.displayName || 'Control Tower',
-    version: raw?.version || '1.6.0',
+    version: raw?.version || '1.6.1',
   };
 }
 
@@ -171,6 +179,9 @@ class ControlTowerServer {
   #server;
   #activeWorkspace;
   #sentinelTimer;
+  #sentinelRunning;
+  #workspaceMutexes;
+  #lastAuthRejectLogAt;
 
   constructor({
     port = Number.parseInt(process.env.ANTIGRAVITY_SIDECAR_WEB_PORT || '0', 10),
@@ -184,6 +195,9 @@ class ControlTowerServer {
     this.#transcriptCache = {};
     this.#activeWorkspace = '';
     this.#sentinelTimer = null;
+    this.#sentinelRunning = false;
+    this.#workspaceMutexes = new Map();
+    this.#lastAuthRejectLogAt = 0;
     this.#staticAssets = new Map([
       ['/', { file: join(__dirname, 'index.html'), type: 'text/html; charset=utf-8' }],
       ['/index.html', { file: join(__dirname, 'index.html'), type: 'text/html; charset=utf-8' }],
@@ -214,12 +228,54 @@ class ControlTowerServer {
 
   #validToken(req, url) {
     if (!this.#token) return true;
-    const provided = req.headers['x-sidecar-token'] || url.searchParams.get('token');
-    return provided === this.#token;
+    const raw = req.headers['x-sidecar-token'] ?? url.searchParams.get('token');
+    if (typeof raw !== 'string' || !raw) return false;
+    const a = createHash('sha256').update(raw, 'utf8').digest();
+    const b = createHash('sha256').update(this.#token, 'utf8').digest();
+    return timingSafeEqual(a, b);
   }
 
-  #sendJson(res, status, obj) {
-    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+  #validOrigin(req) {
+    const origin = req.headers.origin;
+    if (!origin || typeof origin !== 'string') return true;
+    return (
+      origin.startsWith('http://127.0.0.1') ||
+      origin.startsWith('http://localhost') ||
+      origin.startsWith('vscode-webview://') ||
+      origin === 'null' ||
+      origin.startsWith('file://')
+    );
+  }
+
+  #logFlightSafe(entry, { allowCreate = true } = {}) {
+    const d = getDataDir();
+    if (!allowCreate && !existsSync(d)) return;
+    appendFlightEvent(d, entry);
+  }
+
+  async #withWorkspaceMutex(wsReal, fn) {
+    if (!wsReal) return fn();
+    const prev = this.#workspaceMutexes.get(wsReal) || Promise.resolve();
+    let release;
+    const gate = new Promise((r) => {
+      release = r;
+    });
+    const chain = prev.then(() => gate);
+    this.#workspaceMutexes.set(wsReal, chain);
+    try {
+      await prev;
+      return await fn();
+    } finally {
+      release();
+      if (this.#workspaceMutexes.get(wsReal) === chain) {
+        this.#workspaceMutexes.delete(wsReal);
+      }
+    }
+  }
+
+  #sendJson(res, status, obj, extraHeaders = {}) {
+    if (res.headersSent || res.writableEnded) return;
+    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...extraHeaders });
     res.end(JSON.stringify(obj));
   }
 
@@ -227,26 +283,48 @@ class ControlTowerServer {
     return await new Promise((resolveBody, rejectBody) => {
       const chunks = [];
       let total = 0;
+      let settled = false;
+
+      const timer = setTimeout(() => {
+        done(new HttpError(408, 'Request body read timeout'));
+      }, 15000);
+      if (typeof timer.unref === 'function') timer.unref();
+
+      const done = (err, val) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (err) rejectBody(err);
+        else resolveBody(val);
+      };
+
       req.on('data', (chunk) => {
+        if (settled) return;
         total += chunk.length;
         if (total > MAX_BODY_BYTES) {
-          rejectBody(new HttpError(413, 'Request body too large'));
-          req.destroy();
+          chunks.length = 0;
+          req.pause();
+          done(new HttpError(413, 'Request body too large'));
           return;
         }
         chunks.push(chunk);
       });
       req.on('end', () => {
+        if (settled) return;
         const raw = Buffer.concat(chunks).toString('utf8').trim();
-        if (!raw) return resolveBody({});
+        if (!raw) return done(null, {});
         try {
           const parsed = JSON.parse(raw);
-          resolveBody(parsed && typeof parsed === 'object' ? parsed : {});
+          done(null, parsed && typeof parsed === 'object' ? parsed : {});
         } catch {
-          rejectBody(new HttpError(400, 'Invalid JSON body'));
+          done(new HttpError(400, 'Invalid JSON body'));
         }
       });
-      req.on('error', (err) => rejectBody(err));
+      req.on('aborted', () => done(new HttpError(400, 'Request aborted')));
+      req.on('close', () => {
+        if (!settled) done(new HttpError(400, 'Request stream closed early'));
+      });
+      req.on('error', (err) => done(err));
     });
   }
 
@@ -407,12 +485,12 @@ class ControlTowerServer {
     };
   }
 
-  #runSentinelSweepForWorkspace(wsReal) {
+  async #runSentinelSweepForWorkspace(wsReal) {
     if (!wsReal) return { detectedCount: 0, detected: [] };
     const dataDir = getDataDir();
     const snap = this.#buildSnapshot(wsReal);
     if (!snap.registryExists) return { detectedCount: 0, detected: [] };
-    return evaluateSentinelSweep({
+    const sweep = evaluateSentinelSweep({
       dataDir,
       wsReal,
       activeSessions: snap.parsed?.activeSessions || [],
@@ -421,6 +499,36 @@ class ControlTowerServer {
       workerCompactionThreshold: snap.settings?.effective?.workerCompactionThreshold || 2,
       stuckThresholdMin: snap.settings?.plugin?.stuckThresholdMin || 15,
     });
+
+    // Deliver any deferred Stop receipt once Foreground Focus Gate cools down
+    try {
+      const rawInbox = loadWorkspaceInbox(dataDir, wsReal);
+      if (rawInbox.deferredReceipt) {
+        const gate = evaluateFocusGate(rawInbox.focus, {
+          focusCooldownSec: snap.settings?.plugin?.focusCooldownSec || 180,
+        });
+        const ctrlId = String(snap.parsed?.controller?.currentControllerId || '').trim();
+        if (!gate.isForegroundBusy && ctrlId && isValidConvIdOrPrefix(ctrlId)) {
+          await execAgentApiAsync([
+            'send-message',
+            '--title',
+            '[CT延迟阶段回执]',
+            ctrlId,
+            safePositionalMessage(rawInbox.deferredReceipt.message),
+          ]);
+          clearDeferredReceipt(dataDir, wsReal);
+          updatePluginState(dataDir, (st) => {
+            for (const k of rawInbox.deferredReceipt.completedIds || []) {
+              if (st.workers[k]) st.workers[k].pendingSilentDone = false;
+            }
+          });
+        }
+      }
+    } catch {
+      // ignore deferred delivery error
+    }
+
+    return sweep;
   }
 
   #ensureSentinelTimer() {
@@ -438,18 +546,22 @@ class ControlTowerServer {
     });
     if (resolved.plugin.sentinelEnabled === false) return;
     const sec = Math.max(5, Number(resolved.plugin.sentinelIntervalSec || 15));
-    this.#sentinelTimer = setInterval(() => {
+    this.#sentinelTimer = setInterval(async () => {
+      if (this.#sentinelRunning) return;
+      this.#sentinelRunning = true;
       try {
         if (!this.#activeWorkspace || !existsSync(getDataDir())) return;
-        this.#runSentinelSweepForWorkspace(this.#activeWorkspace);
+        await this.#runSentinelSweepForWorkspace(this.#activeWorkspace);
       } catch (err) {
-        appendFlightEvent(getDataDir(), {
+        this.#logFlightSafe({
           level: 'warn',
           source: 'sidecar',
           event: 'sentinel_sweep_error',
           ok: false,
           message: err?.message || 'Sentinel sweep failed',
         });
+      } finally {
+        this.#sentinelRunning = false;
       }
     }, sec * 1000);
     if (typeof this.#sentinelTimer.unref === 'function') {
@@ -526,17 +638,17 @@ class ControlTowerServer {
       const cliModel = normalizeModelForAgentApi(check.model);
       const args = ['new-conversation', '--model', cliModel];
       if (body.title) args.push('--title', String(body.title).trim());
-      args.push(message);
+      args.push(safePositionalMessage(message));
       const result = await execAgentApiAsync(args, { projectId: body.projectId });
       const newConvId = extractConversationIdFromResult(result);
 
       // Pre-register legitimate handover successor so PreToolUse allows first registry takeover cleanly
       if (body.handoverForWorkspace && wsReal && newConvId) {
         try {
-          const st = loadPluginState(dataDir);
           const wsHash = sha256(wsReal).slice(0, 16);
-          st.pendingSuccessors[wsHash] = { convId: newConvId, createdAt: Date.now() };
-          savePluginState(dataDir, st);
+          updatePluginState(dataDir, (st) => {
+            st.pendingSuccessors[wsHash] = { convId: newConvId, createdAt: Date.now() };
+          });
         } catch {
           // ignore
         }
@@ -545,20 +657,23 @@ class ControlTowerServer {
     }
     if (url.pathname === '/_sidecar/get-conversation-metadata') {
       const convId = String(body.conversationId || '').trim();
-      if (!convId) throw new HttpError(400, 'conversationId is required');
-      const result = await getConversationMetadataCached(convId);
+      if (!convId || !isValidConvIdOrPrefix(convId)) {
+        throw new HttpError(400, 'Valid conversationId is required');
+      }
+      const result = await getConversationMetadataCached(convId, { projectId: body.projectId });
       return this.#sendJson(res, 200, result);
     }
     if (url.pathname === '/_sidecar/send-message') {
       const convId = String(body.conversationId || process.env.ANTIGRAVITY_CONVERSATION_ID || '').trim();
       const message = String(body.message || '').trim();
-      if (!convId || !message) {
-        throw new HttpError(400, 'conversationId and message are required');
+      if (!convId || !isValidConvIdOrPrefix(convId) || !message) {
+        throw new HttpError(400, 'Valid conversationId and message are required');
       }
       const args = ['send-message'];
       if (body.title) args.push('--title', String(body.title));
-      args.push(convId, message);
+      args.push(convId, safePositionalMessage(message));
       const result = await execAgentApiAsync(args, { projectId: body.projectId });
+      invalidateMetadataCache(convId);
       return this.#sendJson(res, 200, result);
     }
     return this.#sendJson(res, 404, { error: 'Not Found' });
@@ -569,11 +684,6 @@ class ControlTowerServer {
 
     if (req.method === 'GET' && url.pathname === '/api/snapshot') {
       const snap = this.#buildSnapshot(url.searchParams.get('workspace') || '');
-      // Auto-arm sentinel daemon if workspace has registry & dataDir already exists (strictly zero-write on fresh dirs)
-      if (snap.workspace && snap.registryExists && existsSync(dataDir) && !this.#activeWorkspace) {
-        this.#activeWorkspace = snap.workspace;
-        this.#ensureSentinelTimer();
-      }
       return this.#sendJson(res, 200, snap);
     }
 
@@ -723,39 +833,36 @@ class ControlTowerServer {
       const wsReal = body.workspace
         ? normalizeWorkspaceInput(body.workspace, { throwOnInvalid: false })
         : '';
-      const state = loadPluginState(dataDir);
-      if (body.kind === 'handover') {
-        let ctrlId = String(body.controllerId || '').trim();
-        if (!ctrlId && wsReal) {
-          const found = findExistingRegistry(wsReal, { dataDir });
-          if (found) {
-            const parsed = parseRegistry(readFileSync(found.absPath, 'utf8'));
-            ctrlId = parsed?.controller?.currentControllerId || '';
-          }
-        }
-        if (ctrlId) {
-          state.controllers[ctrlId] = {
-            ...(state.controllers[ctrlId] || {}),
-            handoverIgnored: body.ignoreForSession !== false,
-            updatedAt: Date.now(),
-          };
-          state.pendingAttention = (state.pendingAttention || []).filter(
-            (x) => !(x.kind === 'handover' && (!x.controllerId || x.controllerId === ctrlId))
-          );
-        }
-        if (wsReal && body.id) {
-          ackInboxItems(dataDir, wsReal, { id: body.id });
-        }
-        if (wsReal && body.ignoreForSession !== false) {
-          cleanupWorkspaceInbox(dataDir, wsReal, { activeControllerId: ctrlId, handoverIgnored: true });
-        }
-      } else if (body.id) {
-        state.pendingAttention = (state.pendingAttention || []).filter((x) => x.id !== body.id);
-        if (wsReal) {
-          ackInboxItems(dataDir, wsReal, { id: body.id });
+      let ctrlId = String(body.controllerId || '').trim();
+      if (body.kind === 'handover' && !ctrlId && wsReal) {
+        const found = findExistingRegistry(wsReal, { dataDir });
+        if (found) {
+          const parsed = parseRegistry(readFileSync(found.absPath, 'utf8'));
+          ctrlId = parsed?.controller?.currentControllerId || '';
         }
       }
-      savePluginState(dataDir, state);
+      updatePluginState(dataDir, (state) => {
+        if (body.kind === 'handover') {
+          if (ctrlId) {
+            state.controllers[ctrlId] = {
+              ...(state.controllers[ctrlId] || {}),
+              handoverIgnored: body.ignoreForSession !== false,
+              updatedAt: Date.now(),
+            };
+            state.pendingAttention = (state.pendingAttention || []).filter(
+              (x) => !(x.kind === 'handover' && (!x.controllerId || x.controllerId === ctrlId))
+            );
+          }
+        } else if (body.id) {
+          state.pendingAttention = (state.pendingAttention || []).filter((x) => x.id !== body.id);
+        }
+      });
+      if (wsReal && body.id) {
+        ackInboxItems(dataDir, wsReal, { id: body.id });
+      }
+      if (body.kind === 'handover' && wsReal && body.ignoreForSession !== false) {
+        cleanupWorkspaceInbox(dataDir, wsReal, { activeControllerId: ctrlId, handoverIgnored: true });
+      }
       return this.#sendJson(res, 200, {
         ok: true,
         snapshot: this.#buildSnapshot(wsReal || ''),
@@ -775,11 +882,11 @@ class ControlTowerServer {
       const wsReal = body.workspace
         ? normalizeWorkspaceInput(body.workspace, { throwOnInvalid: false })
         : '';
-      const state = loadPluginState(dataDir);
-      state.transcriptCache = {};
       this.#transcriptCache = {};
       clearMetadataCache();
-      savePluginState(dataDir, state);
+      updatePluginState(dataDir, (state) => {
+        state.transcriptCache = {};
+      });
       return this.#sendJson(res, 200, {
         ok: true,
         snapshot: this.#buildSnapshot(wsReal || ''),
@@ -790,149 +897,183 @@ class ControlTowerServer {
       const wsReal = body.workspace
         ? normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true })
         : '';
-      const resolved = resolveEffectiveSettings({
-        dataDir,
-        wsReal: wsReal || '',
-        pluginRoot: PLUGIN_ROOT,
-        env: process.env,
-      });
-      const chosenModel = String(body.model || resolved.effective.l2StandardModel || '').trim();
-      const check = validateDispatchModel(chosenModel, resolved.effective);
-      if (!check.ok) {
-        throw new HttpError(403, check.reason);
-      }
-      const rawPrompt = String(body.prompt || body.topic || '').trim();
-      if (!rawPrompt) {
-        throw new HttpError(400, 'prompt or topic is required');
-      }
-
-      let regFound = null;
-      let parsedReg = null;
-      if (wsReal) {
-        regFound = findExistingRegistry(wsReal, {
+      return await this.#withWorkspaceMutex(wsReal, async () => {
+        const resolved = resolveEffectiveSettings({
           dataDir,
-          workspaceSettings: resolved.workspace,
+          wsReal: wsReal || '',
+          pluginRoot: PLUGIN_ROOT,
+          env: process.env,
         });
-        if (regFound) {
-          const curContent = readFileSync(regFound.absPath, 'utf8');
-          const curHash = sha256(curContent);
-          if (body.expectedHash && body.expectedHash !== curHash) {
-            throw new HttpError(409, '台账已被外部会话修改，请重载最新内容后再派遣。', {
-              currentHash: curHash,
-              content: curContent,
-            });
+        const chosenModel = String(body.model || resolved.effective.l2StandardModel || '').trim();
+        const check = validateDispatchModel(chosenModel, resolved.effective);
+        if (!check.ok) {
+          throw new HttpError(403, check.reason);
+        }
+        const slashPrefix = String(body.slashPrefix || '').trim();
+        if (!ALLOWED_SLASH_PREFIXES.has(slashPrefix)) {
+          throw new HttpError(400, `Unsupported slashPrefix: ${slashPrefix}`);
+        }
+        const rawPrompt = String(body.prompt || body.topic || '').trim();
+        if (!rawPrompt) {
+          throw new HttpError(400, 'prompt or topic is required');
+        }
+
+        let regFound = null;
+        let parsedReg = null;
+        if (wsReal) {
+          regFound = findExistingRegistry(wsReal, {
+            dataDir,
+            workspaceSettings: resolved.workspace,
+          });
+          if (regFound) {
+            const curContent = readFileSync(regFound.absPath, 'utf8');
+            const curHash = sha256(curContent);
+            if (body.expectedHash && body.expectedHash !== curHash) {
+              throw new HttpError(409, '台账已被外部会话修改，请重载最新内容后再派遣。', {
+                currentHash: curHash,
+                content: curContent,
+              });
+            }
+            parsedReg = parseRegistry(curContent);
           }
-          parsedReg = parseRegistry(curContent);
         }
-      }
 
-      const cliModel = normalizeModelForAgentApi(check.model);
-      const ctrlId = String(parsedReg?.controller?.currentControllerId || '').trim();
-      const lockStatus =
-        resolved.effective.exclusiveLeaseEnabled === false
-          ? '无独占资源限制'
-          : String(body.lockStatus || '纯离线无锁').trim();
-      const finalMessage = buildDispatchPayload({
-        prompt: rawPrompt,
-        slashPrefix: body.slashPrefix,
-        controllerId: ctrlId,
-        exclusiveLeaseEnabled: resolved.effective.exclusiveLeaseEnabled,
-        lockStatus,
-        registryRelPath: regFound?.relPath || '.agents/SESSION-REGISTRY.md',
-      });
+        const lockStatus =
+          resolved.effective.exclusiveLeaseEnabled === false
+            ? '无独占资源限制'
+            : String(body.lockStatus || '纯离线无锁').trim();
+        const wantsExclusiveLock =
+          resolved.effective.exclusiveLeaseEnabled !== false &&
+          /^持独占锁|^LOCKED/i.test(lockStatus);
 
-      const title = String(body.title || body.topic || '').trim();
-      const args = ['new-conversation', '--model', cliModel];
-      if (title) args.push('--title', title);
-      args.push(finalMessage);
-      const apiResult = await execAgentApiAsync(args, { projectId: body.projectId });
-      const newConvId = extractConversationIdFromResult(apiResult);
-
-      let enrolled = false;
-      if (newConvId && regFound) {
-        const latestContent = readFileSync(regFound.absPath, 'utf8');
-        const nextMd = upsertActiveSessionRow(latestContent, {
-          conversationId: newConvId,
-          topic: String(body.topic || title || rawPrompt.slice(0, 48)).trim(),
-          modelTool: body.slashPrefix ? `${check.model} + ${String(body.slashPrefix).trim()}` : check.model,
-          lockStatus,
-          status: 'ACTIVE',
-          paths: String(body.paths || '-').trim() || '-',
-        });
-        atomicWriteText(regFound.absPath, nextMd.endsWith('\n') ? nextMd : `${nextMd}\n`);
-        enrolled = true;
-      }
-
-      if (newConvId && wsReal && body.workstreamId) {
-        try {
-          updateRoadmapNodeStatus(
-            wsReal,
-            { id: body.workstreamId, status: 'active', linkedConvId: newConvId },
-            { dataDir, workspaceSettings: resolved.workspace }
+        if (wantsExclusiveLock && parsedReg && !isLeaseIdle(parsedReg.lease?.lockStatus || '')) {
+          throw new HttpError(
+            409,
+            `当前工作区独占资源已被占用 (${parsedReg.lease?.holder || parsedReg.lease?.lockStatus})，请先释放租约或改为纯离线无锁派遣`
           );
-        } catch {
-          // ignore roadmap link mismatch
         }
-      }
 
-      appendFlightEvent(dataDir, {
-        level: 'info',
-        source: 'sidecar',
-        event: 'dispatch_created',
-        conv: newConvId,
-        message: `Dispatched worker via ${cliModel}`,
-        detail: { cliModel, enrolled, hasSlash: Boolean(body.slashPrefix), workstreamId: body.workstreamId || '' },
-      });
+        const cliModel = normalizeModelForAgentApi(check.model);
+        const rawCtrl = String(parsedReg?.controller?.currentControllerId || '').trim();
+        const ctrlId = isValidConvIdOrPrefix(rawCtrl) ? rawCtrl : '';
+        const finalMessage = buildDispatchPayload({
+          prompt: rawPrompt,
+          slashPrefix,
+          controllerId: ctrlId,
+          exclusiveLeaseEnabled: resolved.effective.exclusiveLeaseEnabled,
+          lockStatus,
+          registryRelPath: regFound?.relPath || '.agents/SESSION-REGISTRY.md',
+        });
 
-      return this.#sendJson(res, 200, {
-        ok: true,
-        conversationId: newConvId,
-        cliModel,
-        enrolled,
-        result: apiResult,
-        snapshot: this.#buildSnapshot(wsReal || ''),
+        const title = String(body.title || body.topic || '').trim();
+        const args = ['new-conversation', '--model', cliModel];
+        if (title) args.push('--title', title);
+        args.push(safePositionalMessage(finalMessage));
+        const apiResult = await execAgentApiAsync(args, { projectId: body.projectId });
+        const newConvId = extractConversationIdFromResult(apiResult);
+
+        let enrolled = false;
+        if (newConvId && regFound) {
+          let nextMd = readFileSync(regFound.absPath, 'utf8');
+          const topicLabel = String(body.topic || title || rawPrompt.slice(0, 48)).trim();
+          if (wantsExclusiveLock) {
+            try {
+              nextMd = updateLeaseSection(nextMd, {
+                lockStatus: 'LOCKED（独占占用中）',
+                holder: newConvId,
+                since: new Date().toISOString().slice(0, 16).replace('T', ' '),
+              });
+            } catch {
+              // ignore non-standard Section 1
+            }
+          }
+          nextMd = upsertActiveSessionRow(nextMd, {
+            conversationId: newConvId,
+            topic: topicLabel,
+            modelTool: slashPrefix ? `${check.model} + ${slashPrefix}` : check.model,
+            lockStatus,
+            status: 'ACTIVE',
+            paths: String(body.paths || '-').trim() || '-',
+          });
+          atomicWriteText(regFound.absPath, nextMd.endsWith('\n') ? nextMd : `${nextMd}\n`);
+          enrolled = true;
+        }
+
+        if (newConvId && wsReal && body.workstreamId) {
+          try {
+            updateRoadmapNodeStatus(
+              wsReal,
+              { id: body.workstreamId, status: 'active', linkedConvId: newConvId },
+              { dataDir, workspaceSettings: resolved.workspace }
+            );
+          } catch {
+            // ignore roadmap link mismatch
+          }
+        }
+
+        this.#logFlightSafe({
+          level: 'info',
+          source: 'sidecar',
+          event: 'dispatch_created',
+          conv: newConvId,
+          message: `Dispatched worker via ${cliModel}`,
+          detail: { cliModel, enrolled, hasSlash: Boolean(slashPrefix), workstreamId: body.workstreamId || '' },
+        });
+
+        return this.#sendJson(res, 200, {
+          ok: true,
+          conversationId: newConvId,
+          cliModel,
+          enrolled,
+          result: apiResult,
+          snapshot: this.#buildSnapshot(wsReal || ''),
+        });
       });
     }
 
     if (url.pathname === '/api/registry/init') {
       const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
       if (!wsReal) throw new HttpError(400, 'workspace is required');
-      const relPath = String(body.relPath || '.agents/SESSION-REGISTRY.md').trim();
-      const isStandard =
-        relPath === '.agents/SESSION-REGISTRY.md' ||
-        relPath === 'research/SESSION-REGISTRY.md' ||
-        relPath === 'SESSION-REGISTRY.md';
-      const isManaged = relPath === MANAGED_REGISTRY_VIRTUAL_REL;
-      const target = resolveRegistryTarget(wsReal, relPath, {
-        allowMissing: true,
-        dataDir,
-        allowCustomRel: !isStandard && !isManaged,
-      });
-      if (existsSync(target)) {
-        throw new HttpError(409, `Target already exists: ${relPath}`);
-      }
-      const resolved = resolveEffectiveSettings({
-        dataDir,
-        wsReal,
-        pluginRoot: PLUGIN_ROOT,
-        env: process.env,
-      });
-      const { registrySkeleton } = extractTemplatesFromMarkdown(
-        resolved.docs['templates.md']?.content || ''
-      );
-      atomicWriteText(target, `${registrySkeleton.trimEnd()}\n`);
-      if (isManaged) {
-        saveWorkspaceSettings(dataDir, wsReal, { registryMode: 'plugin_data' });
-      } else if (!isStandard) {
-        saveWorkspaceSettings(dataDir, wsReal, {
-          registryMode: 'workspace_custom',
-          customRegistryRelPath: relPath,
+      return await this.#withWorkspaceMutex(wsReal, async () => {
+        const relPath = String(body.relPath || '.agents/SESSION-REGISTRY.md').trim();
+        const isStandard =
+          relPath === '.agents/SESSION-REGISTRY.md' ||
+          relPath === 'research/SESSION-REGISTRY.md' ||
+          relPath === 'SESSION-REGISTRY.md';
+        const isManaged = relPath === MANAGED_REGISTRY_VIRTUAL_REL;
+        const target = resolveRegistryTarget(wsReal, relPath, {
+          allowMissing: true,
+          dataDir,
+          allowCustomRel: !isStandard && !isManaged,
         });
-      }
-      const nextRecent = recordRecentWorkspace(wsReal);
-      return this.#sendJson(res, 200, {
-        ok: true,
-        snapshot: this.#buildSnapshot(wsReal, { recentOverride: nextRecent }),
+        if (existsSync(target)) {
+          throw new HttpError(409, `Target already exists: ${relPath}`);
+        }
+        const resolved = resolveEffectiveSettings({
+          dataDir,
+          wsReal,
+          pluginRoot: PLUGIN_ROOT,
+          env: process.env,
+        });
+        const { registrySkeleton } = extractTemplatesFromMarkdown(
+          resolved.docs['templates.md']?.content || ''
+        );
+        atomicWriteText(target, `${registrySkeleton.trimEnd()}\n`);
+        if (isManaged) {
+          saveWorkspaceSettings(dataDir, wsReal, { registryMode: 'plugin_data' });
+        } else if (!isStandard) {
+          saveWorkspaceSettings(dataDir, wsReal, {
+            registryMode: 'workspace_custom',
+            customRegistryRelPath: relPath,
+          });
+        }
+        this.#activeWorkspace = wsReal;
+        const nextRecent = recordRecentWorkspace(wsReal);
+        this.#ensureSentinelTimer();
+        return this.#sendJson(res, 200, {
+          ok: true,
+          snapshot: this.#buildSnapshot(wsReal, { recentOverride: nextRecent }),
+        });
       });
     }
 
@@ -1034,145 +1175,201 @@ class ControlTowerServer {
   start() {
     const preloadJs = findPreloadJs();
     const server = createServer(async (req, res) => {
-      const url = new URL(req.url || '/', 'http://127.0.0.1');
-
-      const isProtectedRoute =
-        url.pathname.startsWith('/api/') || url.pathname.startsWith('/_sidecar/');
-
-      if (isProtectedRoute && !this.#validToken(req, url)) {
-        const d = getDataDir();
-        if (existsSync(d)) {
-          appendFlightEvent(d, {
-            level: 'warn',
-            source: 'sidecar',
-            event: 'auth_rejected',
-            ok: false,
-            message: `401 unauthorized on ${req.method} ${url.pathname}`,
-          });
-        }
-        return this.#sendJson(res, 401, { error: 'unauthorized' });
-      }
-
-      if (req.method === 'GET' && url.pathname === '/preload.js') {
-        res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8' });
-        res.end(preloadJs);
-        return;
-      }
-
-      if (req.method === 'GET' && this.#staticAssets.has(url.pathname)) {
-        const asset = this.#staticAssets.get(url.pathname);
+      try {
+        const rawUrl = String(req.url || '/');
+        const safePath = rawUrl.startsWith('//') ? `/${rawUrl.replace(/^\/+/, '')}` : rawUrl;
+        let url;
         try {
-          const buf = readFileSync(asset.file);
-          res.writeHead(200, { 'Content-Type': asset.type });
-          res.end(buf);
-        } catch (err) {
-          appendFlightEvent(getDataDir(), {
-            level: 'error',
-            source: 'sidecar',
-            event: 'static_asset_error',
-            ok: false,
-            message: err?.message || `Failed reading ${url.pathname}`,
-          });
-          this.#sendJson(res, 500, { error: err.message });
+          url = new URL(safePath, 'http://127.0.0.1');
+        } catch {
+          return this.#sendJson(res, 400, { error: 'bad_request', message: 'Malformed request URL' });
         }
-        return;
-      }
 
-      if (url.pathname.startsWith('/_sidecar/')) {
-        const t0 = Date.now();
-        try {
-          await this.#handleSidecarBridge(req, res, url);
-          const elapsed = Date.now() - t0;
-          if (elapsed >= SLOW_RPC_THRESHOLD_MS) {
-            appendFlightEvent(getDataDir(), {
-              level: 'warn',
-              source: 'sidecar',
-              event: 'slow_rpc',
-              durationMs: elapsed,
-              message: `${req.method} ${url.pathname} took ${elapsed}ms`,
-            });
-          }
-        } catch (err) {
-          if (err instanceof HttpError || err instanceof PathError) {
-            if (err.status >= 400) {
-              appendFlightEvent(getDataDir(), {
-                level: err.status >= 500 ? 'error' : 'warn',
+        const isProtectedRoute =
+          url.pathname.startsWith('/api/') || url.pathname.startsWith('/_sidecar/');
+
+        if (isProtectedRoute && req.method === 'POST' && !this.#validOrigin(req)) {
+          return this.#sendJson(res, 403, { error: 'forbidden_origin' });
+        }
+
+        if (isProtectedRoute && !this.#validToken(req, url)) {
+          const d = getDataDir();
+          const nowMs = Date.now();
+          if (existsSync(d) && nowMs - this.#lastAuthRejectLogAt >= 1000) {
+            this.#lastAuthRejectLogAt = nowMs;
+            this.#logFlightSafe(
+              {
+                level: 'warn',
                 source: 'sidecar',
-                event: 'bridge_error',
+                event: 'auth_rejected',
                 ok: false,
-                durationMs: Date.now() - t0,
-                message: `${err.status} ${url.pathname}: ${err.message}`,
+                message: `401 unauthorized on ${req.method} ${url.pathname}`,
+              },
+              { allowCreate: false }
+            );
+          }
+          return this.#sendJson(res, 401, { error: 'unauthorized' });
+        }
+
+        if (req.method === 'GET' && url.pathname === '/preload.js') {
+          res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8' });
+          res.end(preloadJs);
+          return;
+        }
+
+        if (req.method === 'GET' && this.#staticAssets.has(url.pathname)) {
+          const asset = this.#staticAssets.get(url.pathname);
+          try {
+            const buf = readFileSync(asset.file);
+            res.writeHead(200, { 'Content-Type': asset.type });
+            res.end(buf);
+          } catch (err) {
+            this.#logFlightSafe(
+              {
+                level: 'error',
+                source: 'sidecar',
+                event: 'static_asset_error',
+                ok: false,
+                message: err?.message || `Failed reading ${url.pathname}`,
+              },
+              { allowCreate: false }
+            );
+            this.#sendJson(res, 500, { error: err?.message || 'asset_error' });
+          }
+          return;
+        }
+
+        if (url.pathname.startsWith('/_sidecar/')) {
+          const t0 = Date.now();
+          try {
+            await this.#handleSidecarBridge(req, res, url);
+            const elapsed = Date.now() - t0;
+            if (elapsed >= SLOW_RPC_THRESHOLD_MS) {
+              this.#logFlightSafe({
+                level: 'warn',
+                source: 'sidecar',
+                event: 'slow_rpc',
+                durationMs: elapsed,
+                message: `${req.method} ${url.pathname} took ${elapsed}ms`,
               });
             }
-            return this.#sendJson(res, err.status, {
-              error: err.extra?.error || 'error',
-              message: err.message,
-              ...(err.extra || {}),
-            });
-          }
-          appendFlightEvent(getDataDir(), {
-            level: 'error',
-            source: 'sidecar',
-            event: 'bridge_internal_error',
-            ok: false,
-            durationMs: Date.now() - t0,
-            message: `${url.pathname}: ${err?.message || 'internal error'}`,
-          });
-          return this.#sendJson(res, 500, { error: 'internal', message: err.message });
-        }
-        return;
-      }
-
-      if (url.pathname.startsWith('/api/')) {
-        const t0 = Date.now();
-        const slowThreshold = RPC_API_ROUTES.has(url.pathname)
-          ? SLOW_RPC_THRESHOLD_MS
-          : SLOW_OP_THRESHOLD_MS;
-        try {
-          await this.#handleApi(req, res, url);
-          const elapsed = Date.now() - t0;
-          if (elapsed >= slowThreshold && url.pathname !== '/api/diagnostics') {
-            appendFlightEvent(getDataDir(), {
-              level: 'warn',
+          } catch (err) {
+            if (err instanceof HttpError || err instanceof PathError) {
+              if (err.status >= 400) {
+                this.#logFlightSafe({
+                  level: err.status >= 500 ? 'error' : 'warn',
+                  source: 'sidecar',
+                  event: 'bridge_error',
+                  ok: false,
+                  durationMs: Date.now() - t0,
+                  message: `${err.status} ${url.pathname}: ${err.message}`,
+                });
+              }
+              const extraHdr = err.status === 413 ? { Connection: 'close' } : {};
+              return this.#sendJson(
+                res,
+                err.status,
+                {
+                  error: err.extra?.error || 'error',
+                  message: err.message,
+                  ...(err.extra || {}),
+                },
+                extraHdr
+              );
+            }
+            this.#logFlightSafe({
+              level: 'error',
               source: 'sidecar',
-              event: RPC_API_ROUTES.has(url.pathname) ? 'slow_rpc' : 'slow_api',
-              durationMs: elapsed,
-              message: `${req.method} ${url.pathname} took ${elapsed}ms`,
+              event: 'bridge_internal_error',
+              ok: false,
+              durationMs: Date.now() - t0,
+              message: `${url.pathname}: ${err?.message || 'internal error'}`,
+            });
+            return this.#sendJson(res, 500, {
+              error: 'internal',
+              message: err?.message || 'internal error',
             });
           }
-        } catch (err) {
-          if (err instanceof HttpError || err instanceof PathError) {
-            if (err.status >= 400) {
-              appendFlightEvent(getDataDir(), {
-                level: err.status >= 500 ? 'error' : 'warn',
+          return;
+        }
+
+        if (url.pathname.startsWith('/api/')) {
+          const t0 = Date.now();
+          const allowLogCreate = req.method !== 'GET';
+          const slowThreshold = RPC_API_ROUTES.has(url.pathname)
+            ? SLOW_RPC_THRESHOLD_MS
+            : SLOW_OP_THRESHOLD_MS;
+          try {
+            await this.#handleApi(req, res, url);
+            const elapsed = Date.now() - t0;
+            if (elapsed >= slowThreshold && url.pathname !== '/api/diagnostics') {
+              this.#logFlightSafe(
+                {
+                  level: 'warn',
+                  source: 'sidecar',
+                  event: RPC_API_ROUTES.has(url.pathname) ? 'slow_rpc' : 'slow_api',
+                  durationMs: elapsed,
+                  message: `${req.method} ${url.pathname} took ${elapsed}ms`,
+                },
+                { allowCreate: allowLogCreate }
+              );
+            }
+          } catch (err) {
+            if (err instanceof HttpError || err instanceof PathError) {
+              if (err.status >= 400) {
+                this.#logFlightSafe(
+                  {
+                    level: err.status >= 500 ? 'error' : 'warn',
+                    source: 'sidecar',
+                    event: 'api_error',
+                    ok: false,
+                    durationMs: Date.now() - t0,
+                    message: `${err.status} ${url.pathname}: ${err.message}`,
+                  },
+                  { allowCreate: allowLogCreate }
+                );
+              }
+              const extraHdr = err.status === 413 ? { Connection: 'close' } : {};
+              return this.#sendJson(
+                res,
+                err.status,
+                {
+                  error: err.extra?.error || 'error',
+                  message: err.message,
+                  ...(err.extra || {}),
+                },
+                extraHdr
+              );
+            }
+            this.#logFlightSafe(
+              {
+                level: 'error',
                 source: 'sidecar',
-                event: 'api_error',
+                event: 'api_internal_error',
                 ok: false,
                 durationMs: Date.now() - t0,
-                message: `${err.status} ${url.pathname}: ${err.message}`,
-              });
-            }
-            return this.#sendJson(res, err.status, {
-              error: err.extra?.error || 'error',
-              message: err.message,
-              ...(err.extra || {}),
+                message: `${url.pathname}: ${err?.message || 'internal error'}`,
+              },
+              { allowCreate: allowLogCreate }
+            );
+            return this.#sendJson(res, 500, {
+              error: 'internal',
+              message: err?.message || 'internal error',
             });
           }
-          appendFlightEvent(getDataDir(), {
-            level: 'error',
-            source: 'sidecar',
-            event: 'api_internal_error',
-            ok: false,
-            durationMs: Date.now() - t0,
-            message: `${url.pathname}: ${err?.message || 'internal error'}`,
-          });
-          return this.#sendJson(res, 500, { error: 'internal', message: err.message });
+          return;
         }
-        return;
-      }
 
-      this.#sendJson(res, 404, { error: 'Not Found' });
+        this.#sendJson(res, 404, { error: 'Not Found' });
+      } catch (outerErr) {
+        this.#sendJson(res, 500, {
+          error: 'internal',
+          message: outerErr?.message || 'Unhandled server error',
+        });
+      }
     });
+    server.requestTimeout = 30000;
+    server.headersTimeout = 15000;
 
     this.#server = server;
     return new Promise((resolveListen) => {

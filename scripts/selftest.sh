@@ -16,6 +16,10 @@ fi
 "$NODE_BIN" --test tests/*.test.mjs
 "$NODE_BIN" scripts/ct-replay.mjs
 "$NODE_BIN" scripts/ct-skill-eval.mjs
-"$NODE_BIN" scripts/ct-ui-smoke.mjs
+if command -v google-chrome-stable >/dev/null 2>&1 || command -v google-chrome >/dev/null 2>&1 || command -v chromium >/dev/null 2>&1 || command -v chromium-browser >/dev/null 2>&1; then
+  "$NODE_BIN" scripts/ct-ui-smoke.mjs --require-browser
+else
+  "$NODE_BIN" scripts/ct-ui-smoke.mjs
+fi
 echo "----"
 echo "ALL PASS"

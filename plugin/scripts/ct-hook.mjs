@@ -5,7 +5,9 @@ import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  findExistingRegistry,
   findRegistryInWorkspaces,
+  normalizeWorkspaceInput,
   resolvePluginDataDir,
   sha256,
 } from '../lib/paths.mjs';
@@ -16,10 +18,12 @@ import {
 import {
   buildInboxDigestLine,
   cleanupWorkspaceInbox,
+  clearDeferredReceipt,
   evaluateFocusGate,
   evaluateSentinelSweep,
   loadWorkspaceInbox,
   recordControllerFocus,
+  setDeferredReceipt,
   upsertInboxItem,
 } from '../lib/inbox.mjs';
 import { loadWorkspaceRoadmap } from '../lib/roadmap.mjs';
@@ -34,12 +38,14 @@ import {
   extractPromptSessionIds,
   hasOutboundAgentApiReport,
   inspectById,
+  inspectHiddenSurfaces,
   inspectNativeSwarm,
   inspectTranscript,
   isValidConvIdOrPrefix,
   loadPluginState,
   resolveBrainTranscript,
-  savePluginState,
+  stripSystemMessageEnvelope,
+  updatePluginState,
 } from '../lib/transcript.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -64,8 +70,15 @@ function readStdinSync() {
 
 function expandUserPath(raw) {
   if (typeof raw !== 'string') return '';
-  const t = raw.trim();
+  let t = raw.replace(/[\u0000-\u001f]/g, '').trim();
   if (!t) return '';
+  if (t.startsWith('file://')) {
+    try {
+      t = fileURLToPath(t);
+    } catch {
+      return '';
+    }
+  }
   if (t === '~') return resolve(homedir());
   if (t.startsWith('~/')) {
     return resolve(homedir(), t.slice(2));
@@ -74,32 +87,39 @@ function expandUserPath(raw) {
 }
 
 function resolveCanonicalPath(rawPath, baseDir = '') {
-  const expanded = expandUserPath(rawPath);
-  if (!expanded) return '';
-  const abs = isAbsolute(expanded) ? resolve(expanded) : resolve(baseDir || process.cwd(), expanded);
-  if (existsSync(abs)) {
-    try {
-      return realpathSync(abs);
-    } catch {
-      return abs;
-    }
-  }
-  const parts = [];
-  let cur = abs;
-  for (let i = 0; i < 16; i += 1) {
-    if (existsSync(cur)) {
+  try {
+    const expanded = expandUserPath(rawPath);
+    if (!expanded) return '';
+    const cleanBase = typeof baseDir === 'string' ? expandUserPath(baseDir) : '';
+    const abs = isAbsolute(expanded)
+      ? resolve(expanded)
+      : resolve(cleanBase || process.cwd(), expanded);
+    if (existsSync(abs)) {
       try {
-        return join(realpathSync(cur), ...parts.reverse());
+        return realpathSync(abs);
       } catch {
         return abs;
       }
     }
-    const parent = dirname(cur);
-    if (parent === cur) break;
-    parts.push(basename(cur));
-    cur = parent;
+    const parts = [];
+    let cur = abs;
+    for (let i = 0; i < 16; i += 1) {
+      if (existsSync(cur)) {
+        try {
+          return join(realpathSync(cur), ...parts.reverse());
+        } catch {
+          return abs;
+        }
+      }
+      const parent = dirname(cur);
+      if (parent === cur) break;
+      parts.push(basename(cur));
+      cur = parent;
+    }
+    return abs;
+  } catch {
+    return '';
   }
-  return abs;
 }
 
 function resolveSelfTranscript(payload, convId, hintPath) {
@@ -146,36 +166,94 @@ function sendAgentApiMessage(recipientId, title, message) {
   });
 }
 
-function toolArgsWriteOwnConvId(args, convId) {
+const IGNORED_WRITE_KEYS = new Set([
+  'path',
+  'targetfile',
+  'file',
+  'target',
+  'oldstring',
+  'old_string',
+  'oldtext',
+  'old_text',
+]);
+
+function collectWriteStrings(node, out = [], depth = 0) {
+  if (!node || depth > 4) return out;
+  if (typeof node === 'string') {
+    out.push(node);
+    return out;
+  }
+  if (Array.isArray(node)) {
+    for (const item of node.slice(0, 32)) {
+      collectWriteStrings(item, out, depth + 1);
+    }
+    return out;
+  }
+  if (typeof node === 'object') {
+    for (const [k, v] of Object.entries(node)) {
+      if (IGNORED_WRITE_KEYS.has(k.toLowerCase())) continue;
+      collectWriteStrings(v, out, depth + 1);
+    }
+  }
+  return out;
+}
+
+function toolArgsAssignControllerToSelf(args, convId) {
   if (!args || typeof args !== 'object' || !convId) return false;
   const full = String(convId).trim().toLowerCase();
   const short = full.slice(0, 8);
-  const blob = [
-    args.Replacement,
-    args.replacement,
-    args.Content,
-    args.content,
-    args.NewText,
-    args.new_text,
-  ]
-    .filter((v) => typeof v === 'string')
-    .join('\n')
-    .toLowerCase();
-  if (!blob) return false;
-  return blob.includes(full) || (short.length >= 8 && blob.includes(short));
+  const chunks = collectWriteStrings(args);
+  if (chunks.length === 0) return false;
+  const joined = chunks.join('\n');
+  const lower = joined.toLowerCase();
+  const hasSelfId = lower.includes(full) || (short.length >= 8 && lower.includes(short));
+  if (!hasSelfId) return false;
+
+  // Verify the written text actually updates Section 2 active controller to convId
+  for (const line of joined.split(/\r?\n/)) {
+    if (line.includes('当前现役总控会话')) {
+      const lLower = line.toLowerCase();
+      if (lLower.includes(full) || (short.length >= 8 && lLower.includes(short))) {
+        return true;
+      }
+    }
+  }
+  const parsedCandidate = parseRegistry(joined);
+  return isActiveController(convId, parsedCandidate);
+}
+
+function isKnownHiddenWorkerOfController(oldCtrlId, convId, hintPath) {
+  if (!oldCtrlId || !convId) return false;
+  try {
+    const sw = inspectNativeSwarm(oldCtrlId, { hintPath });
+    if (sw.active && sw.members.some((m) => m.conversationId && sameControllerId(m.conversationId, convId))) {
+      return true;
+    }
+    const hid = inspectHiddenSurfaces(oldCtrlId, { hintPath });
+    if (hid.subagents.some((s) => s.conversationId && sameControllerId(s.conversationId, convId))) {
+      return true;
+    }
+  } catch {
+    // ignore telemetry error
+  }
+  return false;
 }
 
 function isLegitimateHandoverTakeover({ payload, regFound, parsedReg, dataDir, hintPath, convId }) {
-  // 1) Never allow enrolled active worker sessions to self-promote
+  // 1) Never allow enrolled active top-level workers or hidden Swarm/subagent workers to self-promote
   const enrolledWorker = findActiveWorkerSession(convId, parsedReg);
   if (enrolledWorker && String(enrolledWorker.status || '').toUpperCase() !== 'DONE') {
     return { allowed: false, reason: 'enrolled_worker' };
   }
+  const oldCtrlId = String(parsedReg?.controller?.currentControllerId || '').trim();
+  if (oldCtrlId && isKnownHiddenWorkerOfController(oldCtrlId, convId, hintPath)) {
+    return { allowed: false, reason: 'hidden_surface_worker' };
+  }
 
-  // 2) Must actually be writing its own conversationId into SESSION-REGISTRY.md
+  // 2) Must actually be assigning Section 2 active controller to its own conversationId
   const args = payload?.toolCall?.args && typeof payload.toolCall.args === 'object' ? payload.toolCall.args : {};
-  if (!toolArgsWriteOwnConvId(args, convId)) {
-    return { allowed: false, reason: 'missing_self_id_in_write' };
+  if (!toolArgsAssignControllerToSelf(args, convId)) {
+    return { allowed: false, reason: 'missing_self_controller_assignment' };
   }
 
   // 3a) Pre-registered successor from Sidecar one-click handover
@@ -186,54 +264,72 @@ function isLegitimateHandoverTakeover({ payload, regFound, parsedReg, dataDir, h
     return { allowed: true, reason: 'pre_registered_successor', wsHash };
   }
 
-  // 3b) Manual handover card: first USER_INPUT contains handover intent + outgoing controller ID
-  const oldCtrlId = String(parsedReg?.controller?.currentControllerId || '').trim();
+  // 3b) Manual handover card: stripped user prompt contains handover intent + outgoing controller ID
   const selfTp = resolveSelfTranscript(payload, convId, hintPath);
-  if (oldCtrlId && selfTp) {
-    const firstPrompt = extractFirstUserPromptRaw(selfTp, 4000);
-    const lowerPrompt = firstPrompt.toLowerCase();
+  if (oldCtrlId) {
+    const candidatePrompts = [];
+    if (selfTp) {
+      const firstRaw = extractFirstUserPromptRaw(selfTp, 4000);
+      if (firstRaw) candidatePrompts.push(stripSystemMessageEnvelope(firstRaw));
+    }
+    if (typeof payload.lastUserInput === 'string' && payload.lastUserInput.trim()) {
+      candidatePrompts.push(stripSystemMessageEnvelope(payload.lastUserInput).slice(0, 4000));
+    }
+
     const oldLower = oldCtrlId.toLowerCase();
     const oldPrefix = oldLower.slice(0, 8);
-    const mentionsOldCtrl =
-      lowerPrompt.includes(oldLower) || (oldPrefix.length >= 8 && lowerPrompt.includes(oldPrefix));
-    const hasHandoverIntent =
-      /常驻主交流总控|control-tower|chief-of-staff/i.test(firstPrompt) &&
-      /接班|换届|前任总控|handover/i.test(firstPrompt);
-    if (mentionsOldCtrl && hasHandoverIntent) {
-      return { allowed: true, reason: 'handover_card_verified', wsHash };
+    for (const promptText of candidatePrompts) {
+      if (!promptText) continue;
+      const lowerPrompt = promptText.toLowerCase();
+      const mentionsOldCtrl =
+        lowerPrompt.includes(oldLower) || (oldPrefix.length >= 8 && lowerPrompt.includes(oldPrefix));
+      const hasHandoverIntent =
+        /常驻主交流总控|control-tower|chief-of-staff/i.test(promptText) &&
+        /接班|换届|前任总控|handover/i.test(promptText);
+      if (mentionsOldCtrl && hasHandoverIntent) {
+        return { allowed: true, reason: 'handover_card_verified', wsHash };
+      }
     }
   }
 
   return { allowed: false, reason: 'unverified_non_controller' };
 }
 
-function runThrottledHookSentinel(regFound, parsedReg, resolved, dataDir, hintPath) {
-  if (resolved.plugin.sentinelEnabled === false) return;
+function runThrottledHookSentinel(regFound, parsedReg, resolved, dataDir, hintPath, cacheMap = null) {
+  if (resolved.plugin.sentinelEnabled === false) return false;
   const activeSessions = parsedReg.activeSessions || [];
   const ctrlId = String(parsedReg?.controller?.currentControllerId || '').trim();
-  if (activeSessions.length === 0 && !ctrlId) return;
+  if (activeSessions.length === 0 && !ctrlId) return false;
 
   const inbox = loadWorkspaceInbox(dataDir, regFound.workspace);
   const intervalMs = Math.max(15, Number(resolved.plugin.sentinelIntervalSec || 15)) * 1000;
   const nowMs = Date.now();
   if (inbox.lastSweepAt > 0 && nowMs - inbox.lastSweepAt < intervalMs) {
-    return;
+    return false;
   }
 
-  const enrichedActive = activeSessions.map((s) => ({
-    ...s,
-    telemetry: s.conversationId ? inspectById(s.conversationId, { hintPath }) : null,
-  }));
-  const nativeSwarm = ctrlId ? inspectNativeSwarm(ctrlId, { hintPath }) : null;
-  if (enrichedActive.length === 0 && !nativeSwarm?.active) return;
-
+  let cacheTouched = false;
+  const prevKeys = cacheMap ? Object.keys(cacheMap).length : 0;
   try {
+    const enrichedActive = activeSessions.map((s) => ({
+      ...s,
+      telemetry: s.conversationId ? inspectById(s.conversationId, { hintPath, cacheMap }) : null,
+    }));
+    const nativeSwarm = ctrlId ? inspectNativeSwarm(ctrlId, { hintPath, cacheMap }) : null;
+    const hidden = ctrlId ? inspectHiddenSurfaces(ctrlId, { hintPath, cacheMap }) : { subagents: [] };
+    if (cacheMap && Object.keys(cacheMap).length !== prevKeys) {
+      cacheTouched = true;
+    }
+    if (enrichedActive.length === 0 && !nativeSwarm?.active && hidden.subagents.length === 0) {
+      return cacheTouched;
+    }
+
     evaluateSentinelSweep({
       dataDir,
       wsReal: regFound.workspace,
       activeSessions: enrichedActive,
       nativeSwarm,
-      subagents: [],
+      subagents: hidden.subagents,
       workerCompactionThreshold: resolved.effective.workerCompactionThreshold || 2,
       stuckThresholdMin: resolved.plugin.stuckThresholdMin || 15,
       nowMs,
@@ -241,6 +337,7 @@ function runThrottledHookSentinel(regFound, parsedReg, resolved, dataDir, hintPa
   } catch {
     // keep hook resilient
   }
+  return cacheTouched;
 }
 
 function handlePreToolUse(payload, regFound, parsedReg, resolved, dataDir, hintPath, convId) {
@@ -266,18 +363,17 @@ function handlePreToolUse(payload, regFound, parsedReg, resolved, dataDir, hintP
   }
 
   if (!hasValidController(parsedReg) || isActiveController(convId, parsedReg)) {
-    // If cold-starting a brand-new controller (no valid controller yet) and writing own ID, stamp current version silently
-    if (!hasValidController(parsedReg) && toolArgsWriteOwnConvId(args, convId)) {
+    if (!hasValidController(parsedReg) && toolArgsAssignControllerToSelf(args, convId)) {
       try {
         const curVer = readInstalledPluginVersion();
         if (curVer) {
-          const st = loadPluginState(dataDir);
-          st.controllers[convId] = {
-            ...(st.controllers[convId] || {}),
-            lastSyncedVersion: curVer,
-            updatedAt: Date.now(),
-          };
-          savePluginState(dataDir, st);
+          updatePluginState(dataDir, (st) => {
+            st.controllers[convId] = {
+              ...(st.controllers[convId] || {}),
+              lastSyncedVersion: curVer,
+              updatedAt: Date.now(),
+            };
+          });
         }
       } catch {
         // ignore
@@ -299,16 +395,20 @@ function handlePreToolUse(payload, regFound, parsedReg, resolved, dataDir, hintP
   if (takeover.allowed) {
     try {
       const curVer = readInstalledPluginVersion();
-      const st = loadPluginState(dataDir);
-      st.controllers[convId] = {
-        ...(st.controllers[convId] || {}),
-        lastSyncedVersion: curVer || st.controllers[convId]?.lastSyncedVersion || '',
-        updatedAt: Date.now(),
-      };
-      if (takeover.wsHash && st.pendingSuccessors?.[takeover.wsHash]) {
-        delete st.pendingSuccessors[takeover.wsHash];
-      }
-      savePluginState(dataDir, st);
+      const nowMs = Date.now();
+      updatePluginState(dataDir, (st) => {
+        st.controllers[convId] = {
+          ...(st.controllers[convId] || {}),
+          lastSyncedVersion: curVer || st.controllers[convId]?.lastSyncedVersion || '',
+          updatedAt: nowMs,
+        };
+        if (takeover.wsHash && st.pendingSuccessors?.[takeover.wsHash]) {
+          st.pendingSuccessors[takeover.wsHash] = {
+            ...st.pendingSuccessors[takeover.wsHash],
+            activatedAt: st.pendingSuccessors[takeover.wsHash].activatedAt || nowMs,
+          };
+        }
+      });
       cleanupWorkspaceInbox(dataDir, regFound.workspace, { activeControllerId: convId });
     } catch {
       // ignore state sync error during takeover
@@ -380,9 +480,10 @@ function handleSessionStart(regFound, parsedReg, resolved, dataDir, convId) {
         const readyLabel = rm.graph.readyIds.slice(0, 4).join(', ') || '无';
         const overlapLabel =
           rm.graph.overlaps.length > 0 ? ` | 所有权冲突预警: ${rm.graph.overlaps.length} 组` : '';
+        const nsLabel = rm.northStarBrief ? ` | 北极星: ${rm.northStarBrief.slice(0, 80)}` : '';
         roadmapSuffix =
           ` | 路线图(${rm.isManaged ? '托管' : '工作区'}): ${rm.graph.counts.done}/${rm.graph.counts.total} 完成` +
-          ` | 就绪可并行分支: ${readyLabel}${overlapLabel}`;
+          ` | 就绪可并行分支: ${readyLabel}${overlapLabel}${nsLabel}`;
       }
     } catch {
       // ignore roadmap read error in SessionStart
@@ -398,9 +499,12 @@ function handleSessionStart(regFound, parsedReg, resolved, dataDir, convId) {
       schemaIssues.length > 0
         ? ` | 台账格式提示: ${schemaIssues.join('；')}，建议按 control-tower 标准模板对齐`
         : '';
+    const surfacePolicy = resolved.effective.dispatchSurfacePolicy || 'hidden_first';
+    const askDispatchFlag = resolved.effective.askBeforeDispatch !== false ? '开' : '关';
     const msg =
       `[control-tower 总控就位] 已核验当前会话为工作区现役总控。` +
       `台账: ${regTag} | ${lockText} | 活跃专职会话: ${activeCount} 个 | ` +
+      `派遣策略: ${surfacePolicy} (派前确认: ${askDispatchFlag}) | ` +
       `代决策档位: ${resolved.effective.effectiveAutonomy} (${resolved.effective.autonomySource}) | ` +
       `换届阈值: ${resolved.effective.controllerCompactionThreshold} 次压缩` +
       `${roadmapSuffix}${overrideSuffix}${schemaHint}。`;
@@ -427,7 +531,7 @@ function handleSessionStart(regFound, parsedReg, resolved, dataDir, convId) {
       ? '无独占资源模式'
       : workerRow.lockStatus || '纯离线无锁';
   const reportHint = hasValidController(parsedReg)
-    ? `遇到需拍板分叉或完成收口时，请通过 agentapi send-message "${ctrlId}" "[CT_REPORT:DECISION] ..." 或 "[CT_REPORT:DONE] ..." 向总控汇报。`
+    ? `遇到需拍板分叉或完成收口时，请通过 agentapi send-message "${ctrlId}" "[CT_REPORT:DECISION] ..." 或 "[CT_REPORT:DONE] [<任务或分支ID>] <交付摘要>" 向总控汇报。`
     : '完成收口后请输出清晰交付清单与验证输出供总控入账。';
   const workerMsg =
     `[control-tower 专职会话约束] 任务: ${workerRow.topic || '-'} | 资源边界: ${lockDesc} | ` +
@@ -437,6 +541,16 @@ function handleSessionStart(regFound, parsedReg, resolved, dataDir, convId) {
   );
 }
 
+function escapeRegExp(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function matchesRoadmapNodeId(text, nodeId) {
+  if (!text || !nodeId) return false;
+  const re = new RegExp(`(?:^|[^A-Za-z0-9_-])${escapeRegExp(nodeId)}(?=$|[^A-Za-z0-9_-])`, 'i');
+  return re.test(text);
+}
+
 function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hintPath, convId) {
   if (!isActiveController(convId, parsedReg)) {
     process.stdout.write('{}\n');
@@ -444,11 +558,17 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
   }
 
   const state = loadPluginState(dataDir);
-  let stateDirty = false;
+  const touchedCacheKeys = new Set();
+  const pendingAttentionItems = [];
   const injectSteps = [];
   const lastInput = String(payload.lastUserInput || '');
+  const strippedInput = stripSystemMessageEnvelope(lastInput);
   const isAutomatedInbound =
-    lastInput.includes('[CT_AUTO_RECEIPT]') || lastInput.includes('[CT_REPORT:');
+    lastInput.includes('[CT_AUTO_RECEIPT]') ||
+    lastInput.includes('[CT_REPORT:') ||
+    lastInput.includes('[CT_ROADMAP_DISPATCH]') ||
+    lastInput.includes('[CT_SWARM_CLEANUP]') ||
+    lastInput.includes('[CT_INBOX_DELIVER]');
 
   // Record foreground focus state on genuine user turns (never mark automated receipts as foreground chat)
   if (!isAutomatedInbound && lastInput.trim()) {
@@ -457,27 +577,50 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
         controllerId: convId,
         inFlight: true,
         lastUserInputAt: Date.now(),
+        clearDeferredReceipt: true,
       });
     } catch {
       // ignore focus write errors
     }
   }
 
-  // 1) Intake routing: Stage receipt vs Decision request vs Bare/Multi-ID lookup
+  // 1) Intake routing: Stage receipt vs Board directives vs Decision/Done reports vs Bare/Multi-ID lookup
   if (lastInput.includes('[CT_AUTO_RECEIPT]')) {
     const receiptNote =
       `[control-tower 阶段收口指引] 已收到专职会话自动阶段回执，请核查尾步与交付清单、同步更新 ${regFound.absPath}，` +
       `并在全部阶段任务收口后向用户输出整理好的成果汇总并结束回合以触发 Antigravity 原生系统通知（严禁使用外部桌面通知命令）。`;
     injectSteps.push({ systemMessage: { systemMessage: receiptNote } });
   } else {
-    if (lastInput.includes('[CT_REPORT:DECISION]')) {
+    if (lastInput.includes('[CT_ROADMAP_DISPATCH]')) {
+      injectSteps.push({
+        systemMessage: {
+          systemMessage:
+            `[control-tower 看板路线图派单] 用户已在看板显式点击隐藏面派单授权（免除重复 ask_question），` +
+            `请核对文件所有权无未解冲突后直接按契约通过原生 swarm 或 invoke_subagent 拉起执行。`,
+        },
+      });
+    } else if (lastInput.includes('[CT_SWARM_CLEANUP]')) {
+      injectSteps.push({
+        systemMessage: {
+          systemMessage:
+            `[control-tower Swarm 回收安全红线] 调用 swarm(action="kill") 会永久删除 share/branch 工作树，` +
+            `执行前请先核查目标休眠成员无未合流代码或未落盘 .agents/handoffs/ 契约。`,
+        },
+      });
+    } else if (lastInput.includes('[CT_INBOX_DELIVER]')) {
+      injectSteps.push({
+        systemMessage: {
+          systemMessage: `[control-tower 收件箱投递] 请按 P0/P1/P2 优先级逐项处置以下看板投递事件并同步更新台账。`,
+        },
+      });
+    } else if (lastInput.includes('[CT_REPORT:DECISION]')) {
       const level = resolved.effective.effectiveAutonomy;
       const decisionNote =
         `[control-tower 代决策指引] 当前生效代决策档位: ${level} (${resolved.effective.autonomySource})。` +
         `autonomous 档可直接用 agentapi send-message 自动拍板回复专职会话；balanced 档在局部细节内自决，涉及接口/架构分叉、范围变更或连续失败请调用 ask_question 通知用户；strict 档一律通过 ask_question 交由用户决定。`;
       injectSteps.push({ systemMessage: { systemMessage: decisionNote } });
-      const cleanSummary = lastInput.replace(/\s+/g, ' ').trim().slice(0, 140);
-      upsertAttention(state, {
+      const cleanSummary = (strippedInput || lastInput).replace(/\s+/g, ' ').trim().slice(0, 140);
+      pendingAttentionItems.push({
         id: `decision-${Date.now().toString(36)}`,
         kind: 'decision',
         workspace: regFound.workspace,
@@ -498,9 +641,8 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
       } catch {
         // ignore inbox error
       }
-      stateDirty = true;
     } else if (lastInput.includes('[CT_REPORT:DONE]')) {
-      const cleanSummary = lastInput.replace(/\s+/g, ' ').trim().slice(0, 140);
+      const cleanSummary = (strippedInput || lastInput).replace(/\s+/g, ' ').trim().slice(0, 140);
       try {
         upsertInboxItem(dataDir, regFound.workspace, {
           dedupKey: `done:${cleanSummary.slice(0, 48)}`,
@@ -524,7 +666,7 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
           const matchedNodes = activeNodes.filter(
             (n) =>
               (n.linkedConvId && lastInput.toLowerCase().includes(n.linkedConvId.slice(0, 8).toLowerCase())) ||
-              lastInput.includes(n.id)
+              matchesRoadmapNodeId(strippedInput || lastInput, n.id)
           );
           if (matchedNodes.length > 0) {
             injectSteps.push({
@@ -541,7 +683,17 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
       }
     } else {
       // Throttled zero-token sentinel sweep + single-source inbox cleanup
-      runThrottledHookSentinel(regFound, parsedReg, resolved, dataDir, hintPath);
+      const sentinelCached = runThrottledHookSentinel(
+        regFound,
+        parsedReg,
+        resolved,
+        dataDir,
+        hintPath,
+        state.transcriptCache
+      );
+      if (sentinelCached) {
+        for (const k of Object.keys(state.transcriptCache)) touchedCacheKeys.add(k);
+      }
       const handoverIgnored = Boolean(state.controllers[convId]?.handoverIgnored);
       const inbox = cleanupWorkspaceInbox(dataDir, regFound.workspace, {
         activeControllerId: convId,
@@ -556,7 +708,7 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
     const knownIds = (parsedReg.activeSessions || [])
       .map((s) => s.conversationId)
       .filter(Boolean);
-    const { ids } = extractPromptSessionIds(lastInput, {
+    const { ids } = extractPromptSessionIds(strippedInput || lastInput, {
       maxCandidates: resolved.plugin.maxLookupCandidates,
       maxInputLength: resolved.plugin.maxLookupInputLength,
       knownIds,
@@ -569,7 +721,7 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
         const { info, nextCacheEntry } = inspectTranscript(found.path, { cacheEntry: prevCache });
         if (nextCacheEntry && nextCacheEntry !== prevCache) {
           state.transcriptCache[found.path] = nextCacheEntry;
-          stateDirty = true;
+          touchedCacheKeys.add(found.path);
         }
         const stepLabel = info.maxStepIndex || info.lineCount;
         const goal = info.goal || '(未捕获首条用户输入)';
@@ -599,13 +751,13 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
     selfInfo = inspected.info;
     if (inspected.nextCacheEntry && inspected.nextCacheEntry !== prevSelfCache) {
       state.transcriptCache[selfTp] = inspected.nextCacheEntry;
-      stateDirty = true;
+      touchedCacheKeys.add(selfTp);
     }
   }
 
   const currentVersion = readInstalledPluginVersion();
   const prevCtrlEntry = state.controllers[convId] || {};
-  let nextCtrlEntry = { ...prevCtrlEntry };
+  const ctrlPatch = {};
   let ctrlDirty = false;
 
   if (currentVersion && prevCtrlEntry.lastSyncedVersion !== currentVersion) {
@@ -628,16 +780,16 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
         detail: { prevVersion: prevCtrlEntry.lastSyncedVersion || '', currentVersion },
       });
     }
-    nextCtrlEntry.lastSyncedVersion = currentVersion;
-    nextCtrlEntry.updatedAt = Date.now();
+    ctrlPatch.lastSyncedVersion = currentVersion;
+    ctrlPatch.updatedAt = Date.now();
     ctrlDirty = true;
   }
 
   if (selfInfo) {
     const comps = selfInfo.compactions || 0;
     const threshold = resolved.effective.controllerCompactionThreshold || 5;
-    const lastWarned = nextCtrlEntry.lastWarnedCompactions || 0;
-    if (!nextCtrlEntry.handoverIgnored && comps >= threshold && (typeof lastWarned !== 'number' || comps > lastWarned)) {
+    const lastWarned = prevCtrlEntry.lastWarnedCompactions || 0;
+    if (!prevCtrlEntry.handoverIgnored && comps >= threshold && (typeof lastWarned !== 'number' || comps > lastWarned)) {
       const warn =
         `[control-tower 换届提醒] 当前现役总控会话已累计 ${comps} 次上下文自动压缩（>= ${threshold} 次阈值，非强制）。` +
         `请通过 ask_question 询问用户：选择立即换届（同步 ${regFound.absPath}、输出交接卡并可用 agentapi new-conversation 一键拉起新总控接班），` +
@@ -651,10 +803,10 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
         message: `Controller compactions ${comps} reached threshold ${threshold}`,
         detail: { compactions: comps, threshold },
       });
-      nextCtrlEntry.lastWarnedCompactions = comps;
-      nextCtrlEntry.updatedAt = Date.now();
+      ctrlPatch.lastWarnedCompactions = comps;
+      ctrlPatch.updatedAt = Date.now();
       ctrlDirty = true;
-      upsertAttention(state, {
+      pendingAttentionItems.push({
         id: `handover-${convId.slice(0, 8)}`,
         kind: 'handover',
         workspace: regFound.workspace,
@@ -677,18 +829,27 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
       } catch {
         // ignore inbox error
       }
-      stateDirty = true;
     }
   }
 
-  if (ctrlDirty) {
-    state.controllers[convId] = nextCtrlEntry;
-    stateDirty = true;
-  }
-
-  if (stateDirty) {
+  if (ctrlDirty || pendingAttentionItems.length > 0 || touchedCacheKeys.size > 0) {
     try {
-      savePluginState(dataDir, state);
+      updatePluginState(dataDir, (latest) => {
+        if (ctrlDirty) {
+          latest.controllers[convId] = {
+            ...(latest.controllers[convId] || {}),
+            ...ctrlPatch,
+          };
+        }
+        for (const att of pendingAttentionItems) {
+          upsertAttention(latest, att);
+        }
+        for (const k of touchedCacheKeys) {
+          if (state.transcriptCache[k]) {
+            latest.transcriptCache[k] = state.transcriptCache[k];
+          }
+        }
+      });
     } catch (err) {
       appendFlightEvent(dataDir, {
         level: 'error',
@@ -706,6 +867,17 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
     return;
   }
   process.stdout.write(`${JSON.stringify({ injectSteps })}\n`);
+}
+
+function findWorkerStateEntry(workersMap, idOrPrefix) {
+  if (!workersMap || typeof workersMap !== 'object' || !idOrPrefix) return null;
+  if (workersMap[idOrPrefix]) return { key: idOrPrefix, entry: workersMap[idOrPrefix] };
+  for (const [k, v] of Object.entries(workersMap)) {
+    if (sameControllerId(k, idOrPrefix)) {
+      return { key: k, entry: v };
+    }
+  }
+  return null;
 }
 
 function handleStop(payload, regFound, parsedReg, resolved, dataDir, hintPath, convId) {
@@ -757,37 +929,33 @@ function handleStop(payload, regFound, parsedReg, resolved, dataDir, hintPath, c
     return;
   }
 
-  const state = loadPluginState(dataDir);
-  const prevCache = state.transcriptCache[selfTp] || null;
+  const initialState = loadPluginState(dataDir);
+  const prevCache = initialState.transcriptCache[selfTp] || null;
   const { info, nextCacheEntry } = inspectTranscript(selfTp, { cacheEntry: prevCache });
-  if (nextCacheEntry && nextCacheEntry !== prevCache) {
-    state.transcriptCache[selfTp] = nextCacheEntry;
-  }
 
   const currentStep = info.maxStepIndex || info.lineCount || 0;
-  const prevWorker = state.workers[convId] || {};
-  if (currentStep > 0 && prevWorker.lastReportedStep >= currentStep) {
+  const prevWorkerMatch = findWorkerStateEntry(initialState.workers, convId);
+  const prevWorker = prevWorkerMatch?.entry || {};
+  if (currentStep === 0 || prevWorker.lastReportedStep >= currentStep) {
     process.stdout.write('{}\n');
     return;
   }
 
   if (hasOutboundAgentApiReport(selfTp, ctrlId)) {
-    state.workers[convId] = {
-      ...prevWorker,
-      lastReportedStep: currentStep,
-      pendingSilentDone: false,
-      updatedAt: Date.now(),
-    };
-    appendFlightEvent(dataDir, {
-      level: 'info',
-      source: 'hook',
-      event: 'stop_wake_skipped',
-      conv: convId,
-      message: 'Worker already sent outbound report to active controller',
-      detail: { reason: 'already_reported', currentStep },
-    });
     try {
-      savePluginState(dataDir, state);
+      updatePluginState(dataDir, (st) => {
+        if (nextCacheEntry && nextCacheEntry !== prevCache) {
+          st.transcriptCache[selfTp] = nextCacheEntry;
+        }
+        const m = findWorkerStateEntry(st.workers, convId);
+        const key = m?.key || convId;
+        st.workers[key] = {
+          ...(m?.entry || {}),
+          lastReportedStep: currentStep,
+          pendingSilentDone: false,
+          updatedAt: Date.now(),
+        };
+      });
     } catch (err) {
       appendFlightEvent(dataDir, {
         level: 'error',
@@ -798,19 +966,19 @@ function handleStop(payload, regFound, parsedReg, resolved, dataDir, hintPath, c
         message: err?.message || 'Failed to save state in Stop (already_reported)',
       });
     }
+    appendFlightEvent(dataDir, {
+      level: 'info',
+      source: 'hook',
+      event: 'stop_wake_skipped',
+      conv: convId,
+      message: 'Worker already sent outbound report to active controller',
+      detail: { reason: 'already_reported', currentStep },
+    });
     process.stdout.write('{}\n');
     return;
   }
 
   const summary = workerRow.topic || info.goal || convId.slice(0, 8);
-  state.workers[convId] = {
-    ...prevWorker,
-    lastReportedStep: currentStep,
-    pendingSilentDone: true,
-    summary,
-    updatedAt: Date.now(),
-  };
-
   const isLockedWorker =
     resolved.effective.exclusiveLeaseEnabled !== false &&
     /持|LOCKED/i.test(workerRow.lockStatus || '') &&
@@ -822,7 +990,54 @@ function handleStop(payload, regFound, parsedReg, resolved, dataDir, hintPath, c
       !sameControllerId(s.conversationId, convId) &&
       String(s.status || '').toUpperCase() === 'ACTIVE'
   );
-  const allOthersDone = otherActive.every((s) => Boolean(state.workers[s.conversationId]?.pendingSilentDone));
+
+  // Phase 1 locked state update: atomically mark this worker pendingSilentDone and inspect peers
+  let allOthersDone = false;
+  const peerCompletedItems = [];
+  const completedStateKeys = [convId];
+
+  try {
+    updatePluginState(dataDir, (st) => {
+      if (nextCacheEntry && nextCacheEntry !== prevCache) {
+        st.transcriptCache[selfTp] = nextCacheEntry;
+      }
+      const selfMatch = findWorkerStateEntry(st.workers, convId);
+      const selfKey = selfMatch?.key || convId;
+      completedStateKeys[0] = selfKey;
+      st.workers[selfKey] = {
+        ...(selfMatch?.entry || {}),
+        lastReportedStep: currentStep,
+        pendingSilentDone: true,
+        summary,
+        updatedAt: Date.now(),
+      };
+
+      allOthersDone = otherActive.every((s) => {
+        const pm = findWorkerStateEntry(st.workers, s.conversationId);
+        return Boolean(pm?.entry?.pendingSilentDone);
+      });
+
+      for (const s of otherActive) {
+        const pm = findWorkerStateEntry(st.workers, s.conversationId);
+        if (pm?.entry?.pendingSilentDone) {
+          completedStateKeys.push(pm.key);
+          peerCompletedItems.push(
+            `${s.conversationId.slice(0, 8)} (${s.topic || pm.entry.summary || '-'})`
+          );
+        }
+      }
+    });
+  } catch (err) {
+    appendFlightEvent(dataDir, {
+      level: 'error',
+      source: 'hook',
+      event: 'state_save_failed',
+      ok: false,
+      conv: convId,
+      message: err?.message || 'Failed to save state in Stop phase 1',
+    });
+  }
+
   const shouldWake = Boolean(
     resolved.effective.notifyOnSingleTaskDone || isLockedWorker || allOthersDone
   );
@@ -845,11 +1060,26 @@ function handleStop(payload, regFound, parsedReg, resolved, dataDir, hintPath, c
   }
 
   if (shouldWake) {
+    const items = [`${convId.slice(0, 8)} (${summary}, 步数 ${currentStep})`, ...peerCompletedItems];
+    const receipt =
+      `[CT_AUTO_RECEIPT] 以下专职会话已完成当前阶段运行（Stop 自动补发回执）：` +
+      `${items.join('；')}。工作区: ${regFound.workspace}。请核查尾步结果、更新台账并按需向用户输出阶段汇总。`;
+
     const inboxForGate = loadWorkspaceInbox(dataDir, regFound.workspace);
     const gate = evaluateFocusGate(inboxForGate.focus, {
       focusCooldownSec: resolved.plugin.focusCooldownSec,
     });
     if (gate.isForegroundBusy) {
+      try {
+        setDeferredReceipt(dataDir, regFound.workspace, {
+          controllerId: ctrlId,
+          message: receipt,
+          completedIds: completedStateKeys,
+          createdAt: Date.now(),
+        });
+      } catch {
+        // ignore deferred persistence error
+      }
       appendFlightEvent(dataDir, {
         level: 'info',
         source: 'hook',
@@ -864,29 +1094,24 @@ function handleStop(payload, regFound, parsedReg, resolved, dataDir, hintPath, c
         },
       });
     } else {
-      const completedIds = [convId];
-      const items = [`${convId.slice(0, 8)} (${summary}, 步数 ${currentStep})`];
-      for (const s of otherActive) {
-        if (state.workers[s.conversationId]?.pendingSilentDone) {
-          completedIds.push(s.conversationId);
-          items.push(`${s.conversationId.slice(0, 8)} (${s.topic || state.workers[s.conversationId]?.summary || '-'})`);
-        }
-      }
-      const receipt =
-        `[CT_AUTO_RECEIPT] 以下专职会话已完成当前阶段运行（Stop 自动补发回执）：` +
-        `${items.join('；')}。工作区: ${regFound.workspace}。请核查尾步结果、更新台账并按需向用户输出阶段汇总。`;
       try {
         sendAgentApiMessage(ctrlId, '[CT阶段回执]', receipt);
-        for (const id of completedIds) {
-          if (state.workers[id]) state.workers[id].pendingSilentDone = false;
-        }
+        clearDeferredReceipt(dataDir, regFound.workspace);
+        // Phase 2 short lock: clear pendingSilentDone only for delivered workers
+        updatePluginState(dataDir, (st) => {
+          for (const key of completedStateKeys) {
+            if (st.workers[key]) {
+              st.workers[key].pendingSilentDone = false;
+            }
+          }
+        });
         appendFlightEvent(dataDir, {
           level: 'info',
           source: 'hook',
           event: 'stop_receipt_sent',
           conv: convId,
-          message: `Sent batched Stop receipt for ${completedIds.length} worker(s)`,
-          detail: { completedCount: completedIds.length, isLockedWorker, allOthersDone },
+          message: `Sent batched Stop receipt for ${completedStateKeys.length} worker(s)`,
+          detail: { completedCount: completedStateKeys.length, isLockedWorker, allOthersDone },
         });
       } catch (err) {
         appendFlightEvent(dataDir, {
@@ -896,7 +1121,7 @@ function handleStop(payload, regFound, parsedReg, resolved, dataDir, hintPath, c
           ok: false,
           conv: convId,
           message: err?.message || 'agentapi send-message failed in Stop hook',
-          detail: { completedCount: completedIds.length },
+          detail: { completedCount: completedStateKeys.length },
         });
       }
     }
@@ -911,19 +1136,27 @@ function handleStop(payload, regFound, parsedReg, resolved, dataDir, hintPath, c
     });
   }
 
-  try {
-    savePluginState(dataDir, state);
-  } catch (err) {
-    appendFlightEvent(dataDir, {
-      level: 'error',
-      source: 'hook',
-      event: 'state_save_failed',
-      ok: false,
-      conv: convId,
-      message: err?.message || 'Failed to save state in Stop',
-    });
-  }
   process.stdout.write('{}\n');
+}
+
+function findMatchingRegistryForTarget(wsPaths, rawTarget, cwd, dataDir) {
+  if (!Array.isArray(wsPaths) || !rawTarget) return null;
+  for (const rawWs of wsPaths) {
+    const wsReal = normalizeWorkspaceInput(rawWs, { throwOnInvalid: false });
+    if (!wsReal) continue;
+    try {
+      const found = findExistingRegistry(wsReal, { dataDir });
+      if (!found) continue;
+      const targetReal = resolveCanonicalPath(rawTarget, cwd || wsReal);
+      const regReal = resolveCanonicalPath(found.absPath);
+      if (targetReal && regReal && targetReal === regReal) {
+        return { workspace: wsReal, ...found };
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
 }
 
 function run() {
@@ -945,7 +1178,20 @@ function run() {
   const wsPaths = Array.isArray(payload.workspacePaths) ? payload.workspacePaths : [];
   const hintPath = String(payload.transcriptPath || payload.artifactDirectoryPath || '').trim();
   const dataDir = resolvePluginDataDir({ hintPath });
-  const regFound = findRegistryInWorkspaces(wsPaths, { dataDir });
+
+  let regFound = null;
+  if (eventName === 'PreToolUse') {
+    const args =
+      payload?.toolCall?.args && typeof payload.toolCall.args === 'object'
+        ? payload.toolCall.args
+        : {};
+    const rawTarget = args.Path || args.TargetFile || args.path || args.file || '';
+    regFound =
+      findMatchingRegistryForTarget(wsPaths, rawTarget, String(payload.cwd || ''), dataDir) ||
+      findRegistryInWorkspaces(wsPaths, { dataDir });
+  } else {
+    regFound = findRegistryInWorkspaces(wsPaths, { dataDir });
+  }
 
   if (!convId || !regFound) {
     if (eventName === 'PreToolUse') {
@@ -996,7 +1242,7 @@ function run() {
   }
 
   const elapsedMs = Date.now() - startedAt;
-  if (elapsedMs >= SLOW_OP_THRESHOLD_MS) {
+  if (elapsedMs >= SLOW_OP_THRESHOLD_MS && existsSync(dataDir)) {
     appendFlightEvent(dataDir, {
       level: 'warn',
       source: 'hook',
@@ -1009,4 +1255,27 @@ function run() {
   }
 }
 
-run();
+try {
+  run();
+} catch (err) {
+  try {
+    const dataDir = resolvePluginDataDir();
+    if (existsSync(dataDir)) {
+      appendFlightEvent(dataDir, {
+        level: 'error',
+        source: 'hook',
+        event: 'hook_uncaught_error',
+        ok: false,
+        message: err?.message || 'Unhandled exception in ct-hook',
+      });
+    }
+  } catch {
+    // ignore logger failure
+  }
+  const eventName = process.argv[2] || '';
+  if (eventName === 'PreToolUse') {
+    process.stdout.write('{"decision":"allow"}\n');
+  } else {
+    process.stdout.write('{}\n');
+  }
+}

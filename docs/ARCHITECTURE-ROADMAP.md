@@ -37,7 +37,7 @@
   - **L1 单元与纯逻辑测试**：覆盖共享核心、Hooks、Sidecar API、以及从 `app.js` 抽离的纯前端状态逻辑模块 `plugin/sidecars/tower/ui-logic.mjs`。
   - **L2 事故回放回归集**：`tests/replays.test.mjs` 自动执行全部历史事故样本。
   - **L3 真浏览器窄栏 UI 冒烟**：`scripts/ct-ui-smoke.mjs`（`npm run test:ui`）通过 Node 原生 WebSocket + CDP 驱动无头 Chrome/Chromium，实测 Aux Pane 窄栏（`390x844`）暗/亮双主题与宽栏（`960x844`），校验 0 Console Error、0 未捕获异常、0 横向溢出与诊断抽屉交互。
-  - **L4 Skill 与 Prompt 行为契约评测**：`scripts/ct-skill-eval.mjs`（`npm run test:eval`）按 10 项黄金场景校验路由红线、新版 Orchestrator 配置、缓存与编辑纪律、写保护与模板纯净度。
+  - **L4 Skill 与 Prompt 行为契约评测**：`scripts/ct-skill-eval.mjs`（`npm run test:eval`）按 16 项黄金场景校验路由红线、新版 Orchestrator 配置、缓存与编辑纪律、写保护、WebView 异步非阻塞与端到端换届交接卡契约。
 - **环 5：发布前快照、实装体检与一键秒回滚**
   - `scripts/ct-doctor.mjs`（`npm run doctor`）：实装后健康探针（版本一致性、无旧散装 Skill 双重发现、无失效 Sidecar 进程、黑匣子 24h 健康度、快照库存）。
   - `scripts/ct-release.mjs`（`release:snapshot` / `release:list` / `release:rollback`）：实装前自动备份运行态插件包至 `<PLUGIN_DATA>/releases/`（保留最近 3 版），异常时一键经官方 `agy plugin install` 回滚并复检。
@@ -66,3 +66,13 @@
   - **L2 结构化路线与分支依赖树（`roadmap.json`）**：史诗主线 -> 分支节点，含 `status` / `dependsOn` / `ownership` / `acceptance`，采用渐进式细化（Rolling Wave），兼容工作区目录与 `PLUGIN_DATA` 零侵入托管。
   - **L3 瘦身实时执行台账（`SESSION-REGISTRY.md`）**：聚焦活跃执行面、独占锁与 `workstreamId` 关联。
   - 看板新增「路线图」交互树：自动高亮就绪（`ready`）节点、支持带契约一键派单并回填 L3，分支验收完成后自动提示新解锁的可并行下游分支。
+
+### 第四阶段（`v1.6.0 ~ v1.6.1` — 已完成交付）：实战遥测根因修复、看板模块化拆分与 Carbon 全栈并发安全加固
+
+- **线上实战缺陷根治与交互闭环**
+  - `PreToolUse` 双证换届接班放行（看板预授权 `pendingSuccessors` 或剥离系统信封后的交接卡验证 + 第 2 节总控槽位自指校验，严拒活跃顶层与隐藏面 worker）及静默版本戳。
+  - 单真源 `inbox.json` 横幅收敛、总控 `Stop` 无条件释放 `focusModeInFlight`、焦点忙碌期延迟回执持久化补投，以及 Sidecar + Hook 双引擎零 Token 哨兵（含健康空信箱 `lastSweepAt` 落盘）。
+  - 路线图三按钮派单（含 `blocked`/`done` 依赖门禁）、`.agents/handoffs/<id>.md` 4KB 有界防穿越预览、Swarm 隔离徽章与休眠成员安全回收、原生内联归档表单与异步缓存 `agentapi` 桥接。
+- **模块化架构与并发安全加固**
+  - Sidecar 前后端拆分为 `lib/agentapi.mjs`、`routes/{roadmap,inbox}.mjs` 与 `views/{overview,sessions,roadmap,settings}.mjs`；引入恒定时间 Token 校验、工作区串行互斥锁、持锁直派原子授锁、全局 409 冲突横幅、`rawBaseHash`/L1/L2 乐观锁、脏表单防轮询覆盖与请求序号防竞态。
+  - 核心库引入零依赖跨进程文件锁 `withFileLockSync`、多级父目录软链逃逸拦截、纯 `Buffer` 字节换行增量扫描与超 64KB 尾行遥测回退；沉淀 12 条 L2 事故回放样本与 16 项 L4 契约评测，加固 `pre-commit` Git 暂存区校验与 `ct-release` 原子快照。

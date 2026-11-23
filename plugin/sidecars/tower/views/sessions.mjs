@@ -225,6 +225,9 @@ export function renderRaw(ctx, snap) {
   $('tpl-source-badge').textContent = tplSrc;
   if (!state.rawDirty) {
     $('raw-editor').value = snap.content || '';
+    state.rawBaseHash = snap.hash || '';
+  } else if (snap.hash && state.rawBaseHash && snap.hash !== state.rawBaseHash) {
+    $('conflict-banner')?.classList.remove('hidden');
   }
 }
 
@@ -239,7 +242,7 @@ export function openInlineArchiveForm(ctx, convId, topic) {
 }
 
 export function bindSessionsAndQueueEvents(ctx) {
-  const { $, state, api, render, showToast, copyText, refresh } = ctx;
+  const { $, state, api, render, showToast, withBusyButton, copyText, refresh } = ctx;
 
   $('toggle-dispatch-btn').addEventListener('click', () => $('dispatch-form').classList.toggle('hidden'));
   $('df-model').addEventListener('input', () => {
@@ -248,40 +251,46 @@ export function bindSessionsAndQueueEvents(ctx) {
   $('df-clear-ws-btn').addEventListener('click', () => {
     $('df-workstreamId').value = '';
     $('df-workstream-note').classList.add('hidden');
+    delete $('df-model').dataset.userEdited;
   });
 
   $('dispatch-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    try {
-      const wsId = $('df-workstreamId').value.trim();
-      const res = await api('/api/dispatch/create', {
-        method: 'POST',
-        body: {
-          workspace: state.workspace,
-          expectedHash: state.snap?.hash,
-          topic: $('df-topic').value.trim(),
-          title: $('df-topic').value.trim(),
-          model: $('df-model').value.trim(),
-          slashPrefix: $('df-slash').value,
-          lockStatus: $('df-lock').value,
-          prompt: $('df-prompt').value.trim(),
-          workstreamId: wsId || undefined,
-        },
-      });
-      $('df-topic').value = '';
-      $('df-prompt').value = '';
-      $('df-workstreamId').value = '';
-      $('df-workstream-note').classList.add('hidden');
-      render(res.snapshot);
-      showToast(
-        res.conversationId
-          ? `已拉起专职会话 ${res.conversationId.slice(0, 8)}${res.enrolled ? ' 并入账' : ''}`
-          : '已拉起专职会话'
-      );
-    } catch (err) {
-      if (err.status === 409) $('conflict-banner').classList.remove('hidden');
-      showToast(err.message, true);
-    }
+    const submitBtn = $('dispatch-form').querySelector('button[type="submit"]');
+    await withBusyButton(submitBtn, async () => {
+      try {
+        const wsId = $('df-workstreamId').value.trim();
+        const res = await api('/api/dispatch/create', {
+          method: 'POST',
+          body: {
+            workspace: state.workspace,
+            expectedHash: state.snap?.hash,
+            topic: $('df-topic').value.trim(),
+            title: $('df-topic').value.trim(),
+            model: $('df-model').value.trim(),
+            slashPrefix: $('df-slash').value,
+            lockStatus: $('df-lock').value,
+            prompt: $('df-prompt').value.trim(),
+            workstreamId: wsId || undefined,
+          },
+        });
+        $('df-topic').value = '';
+        $('df-prompt').value = '';
+        $('df-workstreamId').value = '';
+        $('df-slash').value = '';
+        $('df-lock').selectedIndex = 0;
+        delete $('df-model').dataset.userEdited;
+        $('df-workstream-note').classList.add('hidden');
+        render(res.snapshot);
+        showToast(
+          res.conversationId
+            ? `已拉起专职会话 ${res.conversationId.slice(0, 8)}${res.enrolled ? ' 并入账' : ''}`
+            : '已拉起专职会话'
+        );
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    });
   });
 
   $('df-copy-btn').addEventListener('click', async () => {
@@ -291,29 +300,32 @@ export function bindSessionsAndQueueEvents(ctx) {
     const prefix = $('df-slash').value ? `${$('df-slash').value} ` : '';
     const ctrlId = state.snap?.parsed?.controller?.currentControllerId || '<controllerId>';
     const filled = `${prefix}${tpl
+      .replace('<编号> - <唯一目标>', topic)
       .replace('<编号> — <唯一目标>', topic)
       .replace('<controllerId>', ctrlId)}\n\n补充需求说明：${prompt}`;
     const ok = await copyText(filled);
     showToast(ok ? '已复制直派兜底开场词' : '复制失败', !ok);
   });
 
-  $('swarm-cleanup-btn').addEventListener('click', async () => {
-    if (!state.workspace) return;
-    try {
-      const res = await api('/api/swarm/cleanup-request', {
-        method: 'POST',
-        body: { workspace: state.workspace },
-      });
-      render(res.snapshot);
-      showToast(
-        res.requested?.length > 0
-          ? `已通知总控核查并回收 ${res.requested.length} 个休眠成员`
-          : '当前无休眠 Swarm 成员'
-      );
-    } catch (err) {
-      showToast(err.message, true);
-    }
-  });
+  $('swarm-cleanup-btn').addEventListener('click', () =>
+    withBusyButton($('swarm-cleanup-btn'), async () => {
+      if (!state.workspace) return;
+      try {
+        const res = await api('/api/swarm/cleanup-request', {
+          method: 'POST',
+          body: { workspace: state.workspace },
+        });
+        render(res.snapshot);
+        showToast(
+          res.requested?.length > 0
+            ? `已通知总控核查并回收 ${res.requested.length} 个休眠成员`
+            : '当前无休眠 Swarm 成员'
+        );
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    })
+  );
 
   $('toggle-session-form-btn').addEventListener('click', () => $('session-form').classList.toggle('hidden'));
   $('cancel-session-form-btn').addEventListener('click', () => $('session-form').classList.add('hidden'));
@@ -375,13 +387,15 @@ export function bindSessionsAndQueueEvents(ctx) {
     }
   });
 
-  $('probe-btn').addEventListener('click', async () => {
+  const runProbe = async () => {
     const id = $('probe-id-input').value.trim();
     if (!id) return;
+    const seq = ++state.probeSeq;
     const box = $('probe-result');
     box.classList.remove('hidden');
     try {
       const data = await api(`/api/session/inspect?id=${encodeURIComponent(id)}`);
+      if (seq !== state.probeSeq) return;
       state.lastProbe = data.status === 'ok' ? data : null;
       if (data.status !== 'ok') {
         box.innerHTML = `<div class="item-meta">状态: ${esc(data.status)} ${data.matches?.length ? `| 匹配: ${esc(data.matches.join(', '))}` : ''}</div>`;
@@ -394,13 +408,22 @@ export function bindSessionsAndQueueEvents(ctx) {
         <div class="item-meta">步数: ${esc(info.maxStepIndex || info.lineCount)} | 模型: ${esc(info.lastModel || '-')} | 压缩: ${esc(info.compactions)} 次</div>
         <div class="item-meta">更新: ${esc(info.lastUpdatedAt || '-')} | 状态: ${esc(info.lastStatus || '-')}</div>
         <div class="actions">
-          <button class="btn btn-primary btn-sm enroll-probe-btn">一键入账活跃表</button>
-          <button class="btn btn-ghost btn-sm notify-ctrl-btn" data-id="${esc(data.conversationId)}">投递裸 ID 给总控</button>
-          <button class="btn btn-ghost btn-sm jump-conv-btn" data-id="${esc(data.conversationId)}">跳转会话</button>
+          <button type="button" class="btn btn-primary btn-sm enroll-probe-btn">一键入账活跃表</button>
+          <button type="button" class="btn btn-ghost btn-sm notify-ctrl-btn" data-id="${esc(data.conversationId)}">投递裸 ID 给总控</button>
+          <button type="button" class="btn btn-ghost btn-sm jump-conv-btn" data-id="${esc(data.conversationId)}">跳转会话</button>
         </div>
       `;
     } catch (err) {
-      box.innerHTML = `<div class="item-meta">${esc(err.message)}</div>`;
+      if (seq === state.probeSeq) {
+        box.innerHTML = `<div class="item-meta">${esc(err.message)}</div>`;
+      }
+    }
+  };
+  $('probe-btn').addEventListener('click', runProbe);
+  $('probe-id-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      runProbe();
     }
   });
 
@@ -453,22 +476,23 @@ export function bindSessionsAndQueueEvents(ctx) {
         body: {
           workspace: state.workspace,
           relPath: state.snap.registryRelPath,
-          expectedHash: state.snap.hash,
+          expectedHash: state.rawBaseHash || state.snap.hash,
           content: $('raw-editor').value,
         },
       });
       state.rawDirty = false;
+      state.rawBaseHash = res.snapshot?.hash || '';
       $('conflict-banner').classList.add('hidden');
       render(res.snapshot);
       showToast('台账已保存');
     } catch (err) {
-      if (err.status === 409) $('conflict-banner').classList.remove('hidden');
       showToast(err.message, true);
     }
   });
 
   $('reset-raw-btn').addEventListener('click', () => {
     state.rawDirty = false;
+    state.rawBaseHash = state.snap?.hash || '';
     $('raw-editor').value = state.snap?.content || '';
     $('conflict-banner').classList.add('hidden');
   });

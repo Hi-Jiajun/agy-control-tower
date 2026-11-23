@@ -1,5 +1,11 @@
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { atomicWriteText, getWorkspaceSettingsDir, readJsonSafe } from './paths.mjs';
+import {
+  atomicWriteText,
+  getWorkspaceSettingsDir,
+  readJsonSafe,
+  withFileLockSync,
+} from './paths.mjs';
 
 export const INBOX_MAX_ITEMS = 50;
 export const DEFAULT_FOCUS_COOLDOWN_SEC = 180;
@@ -22,8 +28,15 @@ function defaultInbox() {
       updatedAt: 0,
     },
     lastSweepAt: 0,
+    deferredReceipt: null,
     items: [],
   };
+}
+
+function withInboxLock(dataDir, wsReal, fn) {
+  if (!dataDir || !wsReal) return fn();
+  const lockPath = join(getWorkspaceSettingsDir(dataDir, wsReal), '.inbox.lock');
+  return withFileLockSync(lockPath, fn);
 }
 
 function normalizePriority(p) {
@@ -54,6 +67,21 @@ function normalizeInbox(raw) {
         .slice(-INBOX_MAX_ITEMS)
     : [];
 
+  const dr =
+    raw.deferredReceipt &&
+    typeof raw.deferredReceipt === 'object' &&
+    raw.deferredReceipt.controllerId &&
+    raw.deferredReceipt.message
+      ? {
+          controllerId: String(raw.deferredReceipt.controllerId),
+          message: String(raw.deferredReceipt.message).slice(0, 1200),
+          completedIds: Array.isArray(raw.deferredReceipt.completedIds)
+            ? raw.deferredReceipt.completedIds.map(String).slice(0, 20)
+            : [],
+          createdAt: Number(raw.deferredReceipt.createdAt || 0) || Date.now(),
+        }
+      : null;
+
   return {
     version: 1,
     focus: {
@@ -64,6 +92,7 @@ function normalizeInbox(raw) {
       updatedAt: Number(f.updatedAt || 0) || 0,
     },
     lastSweepAt: Number(raw.lastSweepAt || 0) || 0,
+    deferredReceipt: dr,
     items,
   };
 }
@@ -82,17 +111,48 @@ export function saveWorkspaceInbox(dataDir, wsReal, inbox) {
 }
 
 export function recordControllerFocus(dataDir, wsReal, patch = {}) {
-  const inbox = loadWorkspaceInbox(dataDir, wsReal);
-  const now = Number(patch.nowMs) || Date.now();
-  inbox.focus = {
-    ...inbox.focus,
-    ...(patch.controllerId !== undefined ? { controllerId: String(patch.controllerId || '') } : {}),
-    ...(patch.inFlight !== undefined ? { inFlight: Boolean(patch.inFlight) } : {}),
-    ...(patch.lastUserInputAt !== undefined ? { lastUserInputAt: Number(patch.lastUserInputAt) || 0 } : {}),
-    ...(patch.lastTurnEndAt !== undefined ? { lastTurnEndAt: Number(patch.lastTurnEndAt) || 0 } : {}),
-    updatedAt: now,
-  };
-  return saveWorkspaceInbox(dataDir, wsReal, inbox);
+  return withInboxLock(dataDir, wsReal, () => {
+    const inbox = loadWorkspaceInbox(dataDir, wsReal);
+    const now = Number(patch.nowMs) || Date.now();
+    inbox.focus = {
+      ...inbox.focus,
+      ...(patch.controllerId !== undefined ? { controllerId: String(patch.controllerId || '') } : {}),
+      ...(patch.inFlight !== undefined ? { inFlight: Boolean(patch.inFlight) } : {}),
+      ...(patch.lastUserInputAt !== undefined ? { lastUserInputAt: Number(patch.lastUserInputAt) || 0 } : {}),
+      ...(patch.lastTurnEndAt !== undefined ? { lastTurnEndAt: Number(patch.lastTurnEndAt) || 0 } : {}),
+      updatedAt: now,
+    };
+    if (patch.clearDeferredReceipt) {
+      inbox.deferredReceipt = null;
+    }
+    return saveWorkspaceInbox(dataDir, wsReal, inbox);
+  });
+}
+
+export function setDeferredReceipt(dataDir, wsReal, receipt) {
+  if (!dataDir || !wsReal || !receipt) return null;
+  return withInboxLock(dataDir, wsReal, () => {
+    const inbox = loadWorkspaceInbox(dataDir, wsReal);
+    inbox.deferredReceipt = {
+      controllerId: String(receipt.controllerId || ''),
+      message: String(receipt.message || '').slice(0, 1200),
+      completedIds: Array.isArray(receipt.completedIds) ? receipt.completedIds.map(String) : [],
+      createdAt: Number(receipt.createdAt) || Date.now(),
+    };
+    return saveWorkspaceInbox(dataDir, wsReal, inbox);
+  });
+}
+
+export function clearDeferredReceipt(dataDir, wsReal) {
+  if (!dataDir || !wsReal) return null;
+  const p = getWorkspaceInboxPath(dataDir, wsReal);
+  if (!existsSync(p)) return null;
+  return withInboxLock(dataDir, wsReal, () => {
+    const inbox = loadWorkspaceInbox(dataDir, wsReal);
+    if (!inbox.deferredReceipt) return inbox;
+    inbox.deferredReceipt = null;
+    return saveWorkspaceInbox(dataDir, wsReal, inbox);
+  });
 }
 
 export function evaluateFocusGate(focus, { nowMs = Date.now(), focusCooldownSec = DEFAULT_FOCUS_COOLDOWN_SEC } = {}) {
@@ -125,65 +185,71 @@ export function evaluateFocusGate(focus, { nowMs = Date.now(), focusCooldownSec 
 }
 
 export function upsertInboxItem(dataDir, wsReal, entry) {
-  const inbox = loadWorkspaceInbox(dataDir, wsReal);
-  const now = Number(entry?.nowMs) || Date.now();
-  const dedupKey = String(entry?.dedupKey || entry?.id || `${entry?.kind || 'ev'}-${now}`);
-  const idx = inbox.items.findIndex((x) => x.dedupKey === dedupKey);
-  const priority = normalizePriority(entry?.priority);
+  return withInboxLock(dataDir, wsReal, () => {
+    const inbox = loadWorkspaceInbox(dataDir, wsReal);
+    const now = Number(entry?.nowMs) || Date.now();
+    const dedupKey = String(entry?.dedupKey || entry?.id || `${entry?.kind || 'ev'}-${now}`);
+    const idx = inbox.items.findIndex((x) => x.dedupKey === dedupKey);
+    const priority = normalizePriority(entry?.priority);
 
-  if (idx >= 0) {
-    const prev = inbox.items[idx];
-    const changed =
-      prev.summary !== String(entry?.summary || prev.summary).slice(0, 280) ||
-      prev.priority !== priority;
-    inbox.items[idx] = {
-      ...prev,
-      priority,
-      kind: String(entry?.kind || prev.kind),
-      source: String(entry?.source || prev.source),
-      convId: String(entry?.convId ?? prev.convId),
-      title: String(entry?.title || prev.title).slice(0, 120),
-      summary: String(entry?.summary || prev.summary).slice(0, 280),
-      acked: entry?.reopenOnUpdate === false ? prev.acked : changed ? false : prev.acked,
-      updatedAt: now,
-    };
-  } else {
-    inbox.items.push({
-      id: String(entry?.id || `inb-${now.toString(36)}-${Math.random().toString(16).slice(2, 6)}`),
-      dedupKey,
-      priority,
-      kind: String(entry?.kind || 'event'),
-      source: String(entry?.source || 'sentinel'),
-      convId: String(entry?.convId || ''),
-      title: String(entry?.title || '事件通知').slice(0, 120),
-      summary: String(entry?.summary || '').slice(0, 280),
-      acked: false,
-      createdAt: now,
-      updatedAt: now,
-    });
-  }
+    if (idx >= 0) {
+      const prev = inbox.items[idx];
+      const changed =
+        prev.summary !== String(entry?.summary || prev.summary).slice(0, 280) ||
+        prev.priority !== priority;
+      inbox.items[idx] = {
+        ...prev,
+        priority,
+        kind: String(entry?.kind || prev.kind),
+        source: String(entry?.source || prev.source),
+        convId: String(entry?.convId ?? prev.convId),
+        title: String(entry?.title || prev.title).slice(0, 120),
+        summary: String(entry?.summary || prev.summary).slice(0, 280),
+        acked: entry?.reopenOnUpdate === false ? prev.acked : changed ? false : prev.acked,
+        updatedAt: now,
+      };
+    } else {
+      inbox.items.push({
+        id: String(entry?.id || `inb-${now.toString(36)}-${Math.random().toString(16).slice(2, 6)}`),
+        dedupKey,
+        priority,
+        kind: String(entry?.kind || 'event'),
+        source: String(entry?.source || 'sentinel'),
+        convId: String(entry?.convId || ''),
+        title: String(entry?.title || '事件通知').slice(0, 120),
+        summary: String(entry?.summary || '').slice(0, 280),
+        acked: false,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
 
-  if (inbox.items.length > INBOX_MAX_ITEMS) {
-    // Keep unacked items first, then newest acked items
-    const unacked = inbox.items.filter((x) => !x.acked);
-    const acked = inbox.items.filter((x) => x.acked);
-    const keepAcked = Math.max(0, INBOX_MAX_ITEMS - unacked.length);
-    inbox.items = [...acked.slice(-keepAcked), ...unacked.slice(-INBOX_MAX_ITEMS)];
-  }
-  return saveWorkspaceInbox(dataDir, wsReal, inbox);
+    if (inbox.items.length > INBOX_MAX_ITEMS) {
+      const unacked = inbox.items.filter((x) => !x.acked);
+      const acked = inbox.items.filter((x) => x.acked);
+      const keepAcked = Math.max(0, INBOX_MAX_ITEMS - unacked.length);
+      const tailAcked = keepAcked > 0 ? acked.slice(-keepAcked) : [];
+      inbox.items = [...tailAcked, ...unacked.slice(-INBOX_MAX_ITEMS)];
+    }
+    return saveWorkspaceInbox(dataDir, wsReal, inbox);
+  });
 }
 
-export function ackInboxItems(dataDir, wsReal, { id = '', ackAll = false, priority = '' } = {}) {
-  const inbox = loadWorkspaceInbox(dataDir, wsReal);
-  const now = Date.now();
-  const wantP = priority ? normalizePriority(priority) : '';
-  for (const item of inbox.items) {
-    if (ackAll || (id && item.id === id) || (wantP && item.priority === wantP)) {
-      item.acked = true;
-      item.updatedAt = now;
+export function ackInboxItems(dataDir, wsReal, { id = '', ids = [], ackAll = false, priority = '' } = {}) {
+  return withInboxLock(dataDir, wsReal, () => {
+    const inbox = loadWorkspaceInbox(dataDir, wsReal);
+    const now = Date.now();
+    const wantP = priority ? normalizePriority(priority) : '';
+    const idSet = new Set(Array.isArray(ids) ? ids.filter(Boolean).map(String) : []);
+    if (id) idSet.add(String(id));
+    for (const item of inbox.items) {
+      if (ackAll || idSet.has(item.id) || (wantP && item.priority === wantP)) {
+        item.acked = true;
+        item.updatedAt = now;
+      }
     }
-  }
-  return saveWorkspaceInbox(dataDir, wsReal, inbox);
+    return saveWorkspaceInbox(dataDir, wsReal, inbox);
+  });
 }
 
 function sameConvIdPrefix(a, b) {
@@ -235,13 +301,18 @@ export function pruneInboxItems(
 }
 
 export function cleanupWorkspaceInbox(dataDir, wsReal, opts = {}) {
-  const inbox = loadWorkspaceInbox(dataDir, wsReal);
-  const nextItems = pruneInboxItems(inbox.items, opts);
-  if (nextItems.length !== inbox.items.length) {
-    inbox.items = nextItems;
-    return saveWorkspaceInbox(dataDir, wsReal, inbox);
-  }
-  return inbox;
+  if (!dataDir || !wsReal) return defaultInbox();
+  const inboxPath = getWorkspaceInboxPath(dataDir, wsReal);
+  if (!existsSync(inboxPath)) return defaultInbox();
+  return withInboxLock(dataDir, wsReal, () => {
+    const inbox = loadWorkspaceInbox(dataDir, wsReal);
+    const nextItems = pruneInboxItems(inbox.items, opts);
+    if (nextItems.length !== inbox.items.length) {
+      inbox.items = nextItems;
+      return saveWorkspaceInbox(dataDir, wsReal, inbox);
+    }
+    return inbox;
+  });
 }
 
 export function buildUnifiedAttentionBanner(
@@ -507,9 +578,13 @@ export function evaluateSentinelSweep({
   for (const item of detected) {
     inbox = upsertInboxItem(dataDir, wsReal, { ...item, nowMs, reopenOnUpdate: false });
   }
-  if (dataDir && wsReal && (hadChanges || inbox.items.length > 0)) {
-    inbox.lastSweepAt = nowMs;
-    inbox = saveWorkspaceInbox(dataDir, wsReal, inbox);
+  const inboxPath = dataDir && wsReal ? getWorkspaceInboxPath(dataDir, wsReal) : '';
+  if (dataDir && wsReal && (hadChanges || inbox.items.length > 0 || existsSync(inboxPath))) {
+    inbox = withInboxLock(dataDir, wsReal, () => {
+      const latest = loadWorkspaceInbox(dataDir, wsReal);
+      latest.lastSweepAt = nowMs;
+      return saveWorkspaceInbox(dataDir, wsReal, latest);
+    });
   }
   return { detectedCount: detected.length, detected, inbox };
 }

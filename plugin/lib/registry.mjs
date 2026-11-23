@@ -3,7 +3,7 @@ import { PathError } from './paths.mjs';
 
 const CONV_LINK_RE = /conversation:\/\/([A-Za-z0-9][A-Za-z0-9_-]{3,127})/;
 const BACKTICK_RE = /`([^`\n]+)`/g;
-const PLACEHOLDER_RE = /^(\[.*\]|<.*>|暂无|-+|NONE|IDLE|ONLINE|OFFLINE)$/i;
+const PLACEHOLDER_RE = /^(\[.*\]|<.*>|暂无|-+|NONE|IDLE|ONLINE|OFFLINE|STANDBY|HANDOVER|RETIRED|PENDING|ACTIVE|DONE)$/i;
 
 export function extractConvId(cell) {
   if (!cell || typeof cell !== 'string') return '';
@@ -52,13 +52,16 @@ function cleanMdVal(text) {
 export function sanitizeCell(val, { backtick = false } = {}) {
   const clean = String(val ?? '').replace(/[\r\n]+/g, ' ').replace(/\|/g, '/').trim() || '-';
   if (!backtick) return clean;
-  if (clean.startsWith('`') && clean.endsWith('`')) return clean;
-  return `\`${clean.replace(/`/g, '')}\``;
+  const inner = clean.replace(/^`+|`+$/g, '').replace(/`/g, '').trim() || '-';
+  return `\`${inner}\``;
 }
 
 function formatConvCell(conversationId) {
   const cleanId = sanitizeCell(conversationId, { backtick: false });
   if (!cleanId || cleanId === '-' || cleanId === '暂无') return '`暂无`';
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{3,127}$/.test(cleanId)) {
+    return sanitizeCell(cleanId, { backtick: true });
+  }
   const shortLabel = cleanId.length > 8 ? cleanId.slice(0, 8) : cleanId;
   return `[\`${shortLabel}\`](conversation://${cleanId})`;
 }
@@ -113,7 +116,10 @@ export function parseRegistry(mdText) {
 
     if (section === 'controller' && line.startsWith('- ')) {
       if (line.includes('当前现役总控会话')) {
-        result.controller.currentControllerId = extractConvId(line);
+        const mainSeg = line
+          .replace(/^.*?当前现役总控会话(?:\*\*)?[：:]\s*/, '')
+          .split(/[（(]\s*状态/)[0];
+        result.controller.currentControllerId = extractConvId(mainSeg);
         const stM = line.match(/状态[：:]\s*`?([A-Za-z0-9_-]+)`?/);
         if (stM) result.controller.currentControllerStatus = stM[1];
       } else if (line.includes('常驻模型配置')) {
@@ -124,7 +130,7 @@ export function parseRegistry(mdText) {
 
     const cells = splitMdRow(line);
     if (!cells) {
-      if (line && !line.startswith?.('>') && !line.startsWith('>') && !line.startsWith('---')) {
+      if (line && !line.startsWith('>') && !line.startsWith('---')) {
         inTable = false;
         tableHeader = [];
       }
@@ -352,7 +358,7 @@ export function updateControllerSection(
         existingRows.push(lines[i]);
       }
       const nextTerm = existingRows.length + 1;
-      const modelStr = sanitizeCell(defaultModel || 'Orchestrator (Neon)');
+      const modelStr = sanitizeCell(defaultModel || 'Gemini 4 Neon (High)');
       const periodStr = sanitizeCell(period || `${new Date().toISOString().slice(0, 10)} ~`);
       const summaryStr = sanitizeCell(summary || (nextTerm === 1 ? '首任常驻主交流总控' : '总控换届接班'));
       existingRows.push(`| \`${nextTerm}\` | \`${cleanId}\` | ${modelStr} | ${periodStr} | ${summaryStr} |`);
@@ -474,7 +480,7 @@ export function upsertQueueRow(mdText, item) {
     throw new PathError(400, 'Task ID is required');
   }
   const origClean = item?.originalId ? sanitizeCell(item.originalId, { backtick: false }) : idClean;
-  const newLine = `| ${sanitizeCell(idClean, { backtick: true })} | ${sanitizeCell(item?.summary)} | ${sanitizeCell(item?.status || 'QUEUED', { backtick: true })} | ${sanitizeCell(item?.route || 'L2 Orchestrator (Neon)')} |`;
+  const newLine = `| ${sanitizeCell(idClean, { backtick: true })} | ${sanitizeCell(item?.summary)} | ${sanitizeCell(item?.status || 'QUEUED', { backtick: true })} | ${sanitizeCell(item?.route || 'L2 Gemini 4 Neon (High)')} |`;
 
   const lines = String(mdText ?? '').split(/\r?\n/);
   const sec5 = findSectionRange(
@@ -542,6 +548,8 @@ export function extractTemplatesFromMarkdown(mdText) {
     handoverTemplate: '',
     dispatchOfflineTemplate: '',
     dispatchGrantTemplate: '',
+    domainLeadTemplate: '',
+    handoffContractTemplate: '',
   };
   if (!mdText || typeof mdText !== 'string') return fallback;
   const getCodeBlockAfter = (headingPattern) => {
@@ -557,6 +565,8 @@ export function extractTemplatesFromMarkdown(mdText) {
     handoverTemplate: getCodeBlockAfter(/^## 3\./m),
     dispatchOfflineTemplate: getCodeBlockAfter(/^### 4\.1/m),
     dispatchGrantTemplate: getCodeBlockAfter(/^### 4\.2/m),
+    domainLeadTemplate: getCodeBlockAfter(/^### 4\.3/m),
+    handoffContractTemplate: getCodeBlockAfter(/^### 4\.4/m),
   };
 }
 

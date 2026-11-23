@@ -1,11 +1,15 @@
 import {
   ackInboxItems,
-  loadWorkspaceInbox,
   summarizeInbox,
 } from '../../../lib/inbox.mjs';
 import { normalizeWorkspaceInput } from '../../../lib/paths.mjs';
 import { resolveEffectiveSettings } from '../../../lib/settings.mjs';
-import { execAgentApiAsync } from '../lib/agentapi.mjs';
+import { isValidConvIdOrPrefix } from '../../../lib/transcript.mjs';
+import {
+  execAgentApiAsync,
+  invalidateMetadataCache,
+  safePositionalMessage,
+} from '../lib/agentapi.mjs';
 
 export async function handleInboxAndSwarmRoute({
   req,
@@ -22,17 +26,19 @@ export async function handleInboxAndSwarmRoute({
   if (req.method === 'GET' && url.pathname === '/api/inbox') {
     const wsRaw = url.searchParams.get('workspace') || '';
     const wsReal = wsRaw ? normalizeWorkspaceInput(wsRaw, { throwOnInvalid: true }) : '';
+    if (wsReal) {
+      const snap = buildSnapshot(wsReal);
+      sendJson(res, 200, { ok: true, inbox: snap.inbox });
+      return true;
+    }
     const resolved = resolveEffectiveSettings({
       dataDir,
-      wsReal: wsReal || '',
+      wsReal: '',
       pluginRoot,
       env: process.env,
     });
-    const snap = wsReal ? buildSnapshot(wsReal) : null;
-    const ctrlId = String(snap?.parsed?.controller?.currentControllerId || '').trim();
-    const summary = summarizeInbox(wsReal ? loadWorkspaceInbox(dataDir, wsReal) : null, {
+    const summary = summarizeInbox(null, {
       focusCooldownSec: resolved.plugin.focusCooldownSec,
-      activeControllerId: ctrlId,
     });
     sendJson(res, 200, { ok: true, inbox: summary });
     return true;
@@ -45,6 +51,7 @@ export async function handleInboxAndSwarmRoute({
     if (!wsReal) throw new HttpError(400, 'workspace is required');
     ackInboxItems(dataDir, wsReal, {
       id: body.id || '',
+      ids: Array.isArray(body.ids) ? body.ids : [],
       ackAll: Boolean(body.ackAll),
       priority: body.priority || '',
     });
@@ -60,7 +67,9 @@ export async function handleInboxAndSwarmRoute({
     if (!wsReal) throw new HttpError(400, 'workspace is required');
     const snapBefore = buildSnapshot(wsReal);
     const ctrlId = String(snapBefore.parsed?.controller?.currentControllerId || '').trim();
-    if (!ctrlId) throw new HttpError(400, '当前台账未登记现役总控 conversationId');
+    if (!ctrlId || !isValidConvIdOrPrefix(ctrlId)) {
+      throw new HttpError(400, '当前台账未登记合法的现役总控 conversationId');
+    }
     const unread = (snapBefore.inbox?.items || []).filter((x) => !x.acked);
     const targets = body.id ? unread.filter((x) => x.id === body.id) : unread;
     if (targets.length === 0) {
@@ -68,13 +77,14 @@ export async function handleInboxAndSwarmRoute({
       return true;
     }
     const lines = targets.map((t) => `[${t.priority}] ${t.title}: ${t.summary}`);
-    const msg = `[CT_INBOX_DELIVER] 用户从看板主动投递以下 ${targets.length} 条后台信箱事件，请核查处理：\n${lines.join('\n')}`;
+    const msg = safePositionalMessage(
+      `[CT_INBOX_DELIVER] 用户从看板主动投递以下 ${targets.length} 条后台信箱事件，请核查处理：\n${lines.join('\n')}`
+    );
     await execAgentApiAsync(['send-message', '--title', '[CT信箱投递]', ctrlId, msg], {
       projectId: body.projectId,
     });
-    for (const t of targets) {
-      ackInboxItems(dataDir, wsReal, { id: t.id });
-    }
+    invalidateMetadataCache(ctrlId);
+    ackInboxItems(dataDir, wsReal, { ids: targets.map((t) => t.id) });
     sendJson(res, 200, {
       ok: true,
       deliveredCount: targets.length,
@@ -86,7 +96,7 @@ export async function handleInboxAndSwarmRoute({
   if (url.pathname === '/api/sentinel/sweep') {
     const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
     if (!wsReal) throw new HttpError(400, 'workspace is required');
-    const sweep = runSentinelSweep(wsReal);
+    const sweep = await runSentinelSweep(wsReal);
     sendJson(res, 200, {
       ok: true,
       detectedCount: sweep.detectedCount,
@@ -100,7 +110,9 @@ export async function handleInboxAndSwarmRoute({
     if (!wsReal) throw new HttpError(400, 'workspace is required');
     const snap = buildSnapshot(wsReal);
     const ctrlId = String(snap.parsed?.controller?.currentControllerId || '').trim();
-    if (!ctrlId) throw new HttpError(400, '当前台账未登记现役总控 conversationId');
+    if (!ctrlId || !isValidConvIdOrPrefix(ctrlId)) {
+      throw new HttpError(400, '当前台账未登记合法的现役总控 conversationId');
+    }
     const requested = Array.isArray(body.memberNames)
       ? body.memberNames.map((n) => String(n || '').trim()).filter(Boolean)
       : (snap.nativeSwarm?.members || [])
@@ -110,12 +122,14 @@ export async function handleInboxAndSwarmRoute({
       sendJson(res, 200, { ok: true, requested: [], snapshot: snap });
       return true;
     }
-    const msg =
+    const msg = safePositionalMessage(
       `[CT_SWARM_CLEANUP] 请核查以下处于 waiting 休眠态的 Swarm 成员是否已完成成果合流：${requested.join(', ')}。` +
-      `确认无未落地改动后，调用 swarm(action="kill", name="...") 逐个回收以释放临时工作树。`;
+        `确认无未落地改动或已落盘 .agents/handoffs/ 后，调用 swarm(action="kill", name="...") 逐个回收以释放临时工作树。`
+    );
     await execAgentApiAsync(['send-message', '--title', '[Swarm 回收提醒]', ctrlId, msg], {
       projectId: body.projectId,
     });
+    invalidateMetadataCache(ctrlId);
     sendJson(res, 200, { ok: true, requested, snapshot: snap });
     return true;
   }

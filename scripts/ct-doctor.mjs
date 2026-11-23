@@ -6,9 +6,9 @@
  * 24h flight-log health, and release rollback snapshot inventory.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, readlinkSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, readlinkSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { summarizeFlightEvents } from '../plugin/lib/logger.mjs';
 import { readJsonSafe, resolvePluginDataDir } from '../plugin/lib/paths.mjs';
@@ -22,12 +22,30 @@ function resolveConfigDir(env = process.env, explicit = '') {
   return join(resolve(env.HOME || homedir()), '.gemini', 'config');
 }
 
-function inspectRunningSidecars() {
+function buildAgyChildEnv(env, cfgDir) {
+  const next = { ...env, AGY_CONFIG_DIR: cfgDir };
+  const parent = dirname(cfgDir);
+  if (basename(cfgDir) === 'config' && basename(parent) === '.gemini') {
+    next.HOME = dirname(parent);
+  }
+  return next;
+}
+
+export function inspectRunningSidecars(installedDir = '') {
   if (process.platform !== 'linux' || !existsSync('/proc')) {
     return { supported: false, running: [], stale: [] };
   }
   const running = [];
   const stale = [];
+  let pluginMtimeMs = 0;
+  const pjPath = installedDir ? join(installedDir, 'plugin.json') : '';
+  if (pjPath && existsSync(pjPath)) {
+    try {
+      pluginMtimeMs = statSync(pjPath).mtimeMs;
+    } catch {
+      pluginMtimeMs = 0;
+    }
+  }
   let pids = [];
   try {
     pids = readdirSync('/proc').filter((name) => /^\d+$/.test(name));
@@ -35,8 +53,14 @@ function inspectRunningSidecars() {
     return { supported: false, running: [], stale: [] };
   }
   for (const pid of pids) {
+    const pidNum = Number(pid);
+    if (pidNum === process.pid) continue;
     try {
-      const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\u0000/g, ' ').trim();
+      const rawArgs = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\u0000').filter(Boolean);
+      if (rawArgs.length === 0) continue;
+      const binBase = basename(rawArgs[0]);
+      if (!/^node(?:\d|$|-|\.)/i.test(binBase)) continue;
+      const cmdline = rawArgs.join(' ');
       if (!cmdline.includes('control-tower') || !cmdline.includes('sidecars/tower/main.mjs')) continue;
       let cwd = '';
       try {
@@ -44,9 +68,21 @@ function inspectRunningSidecars() {
       } catch {
         cwd = '';
       }
-      const entry = { pid: Number(pid), deletedCwd: cwd.includes('(deleted)') };
+      let procStartMs = 0;
+      try {
+        procStartMs = statSync(`/proc/${pid}`).mtimeMs;
+      } catch {
+        procStartMs = 0;
+      }
+      const deletedCwd = cwd.includes('(deleted)');
+      const outdatedCode =
+        cmdline.includes(installedDir) &&
+        pluginMtimeMs > 0 &&
+        procStartMs > 0 &&
+        procStartMs < pluginMtimeMs - 1000;
+      const entry = { pid: pidNum, deletedCwd, outdatedCode };
       running.push(entry);
-      if (entry.deletedCwd) stale.push(entry);
+      if (deletedCwd || outdatedCode) stale.push(entry);
     } catch {
       // process exited or unreadable
     }
@@ -59,7 +95,13 @@ function listReleaseSnapshotDirs(dataDir) {
   if (!existsSync(relDir)) return [];
   try {
     return readdirSync(relDir, { withFileTypes: true })
-      .filter((e) => e.isDirectory())
+      .filter(
+        (e) =>
+          e.isDirectory() &&
+          !e.name.startsWith('.tmp-') &&
+          existsSync(join(relDir, e.name, 'manifest.json')) &&
+          existsSync(join(relDir, e.name, 'plugin', 'plugin.json'))
+      )
       .map((e) => e.name)
       .sort()
       .reverse();
@@ -128,7 +170,11 @@ export function runDoctor({
   if (checkAgyCli) {
     const which = spawnSync('which', ['agy'], { encoding: 'utf8' });
     if (which.status === 0) {
-      const listed = spawnSync('agy', ['plugin', 'list', '--json'], { encoding: 'utf8', env });
+      const childEnv = buildAgyChildEnv(env, cfgDir);
+      const listed = spawnSync('agy', ['plugin', 'list', '--json'], {
+        encoding: 'utf8',
+        env: childEnv,
+      });
       if (listed.status === 0) {
         try {
           const parsed = JSON.parse(listed.stdout || '[]');
@@ -167,20 +213,26 @@ export function runDoctor({
           detail: 'agy plugin list 执行返回非零状态',
         });
       }
+    } else {
+      checks.push({
+        id: 'agy_registry',
+        status: 'warn',
+        detail: '当前 PATH 未找到 agy CLI，跳过注册表核验',
+      });
     }
   }
 
   // 4) Running Sidecar process health
   if (checkProcesses) {
-    const procInfo = inspectRunningSidecars();
+    const procInfo = inspectRunningSidecars(installedDir);
     if (procInfo.supported) {
       if (procInfo.stale.length > 0) {
         checks.push({
           id: 'sidecar_process',
           status: 'warn',
-          detail: `发现 ${procInfo.stale.length} 个残留失效目录 Sidecar 进程 (PID: ${procInfo.stale
+          detail: `发现 ${procInfo.stale.length} 个旧版或失效目录残留 Sidecar 进程 (PID: ${procInfo.stale
             .map((p) => p.pid)
-            .join(', ')})，建议重启插件或重开面板`,
+            .join(', ')})，建议关闭并重开面板`,
         });
       } else {
         checks.push({

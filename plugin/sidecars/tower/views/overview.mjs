@@ -68,12 +68,14 @@ export function renderOverview(ctx, snap) {
       .map(([k, v]) => `<div class="kv-k">${esc(k)}</div><div class="kv-v">${esc(v)}</div>`)
       .join('');
 
-    $('lf-lockStatus').value = lease.lockStatus || '';
-    $('lf-holder').value = lease.holder || '-';
-    $('lf-resource').value = lease.resource || '-';
-    $('lf-since').value = lease.since || '-';
-    $('lf-scope').value = lease.scope || '-';
-    $('lf-releaseCriteria').value = lease.releaseCriteria || '-';
+    if ($('lease-form').classList.contains('hidden')) {
+      $('lf-lockStatus').value = lease.lockStatus || '';
+      $('lf-holder').value = lease.holder || '-';
+      $('lf-resource').value = lease.resource || '-';
+      $('lf-since').value = lease.since || '-';
+      $('lf-scope').value = lease.scope || '-';
+      $('lf-releaseCriteria').value = lease.releaseCriteria || '-';
+    }
   }
 
   const ctrl = snap.parsed?.controller || {};
@@ -102,9 +104,11 @@ export function renderOverview(ctx, snap) {
     .map(([k, v]) => `<div class="kv-k">${esc(k)}</div><div class="kv-v">${esc(v)}</div>`)
     .join('');
 
-  $('cf-controllerId').value = ctrl.currentControllerId || window.sidecar?.conversationId || '';
-  $('cf-status').value = ctrl.currentControllerStatus || 'ONLINE';
-  $('cf-defaultModel').value = ctrl.defaultModel || eff.l0ControllerModel || 'Gemini 4 Neon (High)';
+  if ($('ctrl-form').classList.contains('hidden')) {
+    $('cf-controllerId').value = ctrl.currentControllerId || window.sidecar?.conversationId || '';
+    $('cf-status').value = ctrl.currentControllerStatus || 'ONLINE';
+    $('cf-defaultModel').value = ctrl.defaultModel || eff.l0ControllerModel || 'Gemini 4 Neon (High)';
+  }
 
   // Zero-token Sentinel & Priority Inbox
   const inbox = snap.inbox || {
@@ -188,9 +192,21 @@ export async function spawnHandoverController(ctx, oldCtrlId) {
 }
 
 export function bindOverviewEvents(ctx) {
-  const { $, state, api, render, showToast, copyText } = ctx;
+  const { $, state, api, render, showToast, withBusyButton, copyText } = ctx;
 
-  $('edit-lease-btn').addEventListener('click', () => $('lease-form').classList.toggle('hidden'));
+  $('edit-lease-btn').addEventListener('click', () => {
+    const wasHidden = $('lease-form').classList.contains('hidden');
+    if (wasHidden && state.snap?.parsed?.lease) {
+      const lease = state.snap.parsed.lease;
+      $('lf-lockStatus').value = lease.lockStatus || '';
+      $('lf-holder').value = lease.holder || '-';
+      $('lf-resource').value = lease.resource || '-';
+      $('lf-since').value = lease.since || '-';
+      $('lf-scope').value = lease.scope || '-';
+      $('lf-releaseCriteria').value = lease.releaseCriteria || '-';
+    }
+    $('lease-form').classList.toggle('hidden');
+  });
   $('cancel-lease-btn').addEventListener('click', () => $('lease-form').classList.add('hidden'));
 
   $('lease-form').addEventListener('submit', async (e) => {
@@ -214,7 +230,6 @@ export function bindOverviewEvents(ctx) {
       render(res.snapshot);
       showToast('已更新独占资源租约');
     } catch (err) {
-      if (err.status === 409) $('conflict-banner').classList.remove('hidden');
       showToast(err.message, true);
     }
   });
@@ -237,8 +252,22 @@ export function bindOverviewEvents(ctx) {
     }
   });
 
-  $('edit-ctrl-btn').addEventListener('click', () => $('ctrl-form').classList.toggle('hidden'));
-  $('cancel-ctrl-btn').addEventListener('click', () => $('ctrl-form').classList.add('hidden'));
+  $('edit-ctrl-btn').addEventListener('click', () => {
+    const wasHidden = $('ctrl-form').classList.contains('hidden');
+    if (wasHidden && state.snap) {
+      const ctrl = state.snap.parsed?.controller || {};
+      const eff = state.snap.settings?.effective || {};
+      $('cf-controllerId').value = ctrl.currentControllerId || window.sidecar?.conversationId || '';
+      $('cf-status').value = ctrl.currentControllerStatus || 'ONLINE';
+      $('cf-defaultModel').value = ctrl.defaultModel || eff.l0ControllerModel || 'Gemini 4 Neon (High)';
+    }
+    $('ctrl-form').classList.toggle('hidden');
+  });
+  $('cancel-ctrl-btn').addEventListener('click', () => {
+    $('cf-appendHistory').checked = false;
+    $('cf-summary').value = '';
+    $('ctrl-form').classList.add('hidden');
+  });
 
   $('ctrl-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -256,11 +285,12 @@ export function bindOverviewEvents(ctx) {
           summary: $('cf-summary').value.trim(),
         },
       });
+      $('cf-appendHistory').checked = false;
+      $('cf-summary').value = '';
       $('ctrl-form').classList.add('hidden');
       render(res.snapshot);
       showToast('已更新现役总控配置');
     } catch (err) {
-      if (err.status === 409) $('conflict-banner').classList.remove('hidden');
       showToast(err.message, true);
     }
   });
@@ -284,9 +314,11 @@ export function bindOverviewEvents(ctx) {
   $('copy-handover-btn').addEventListener('click', handleCopyHandover);
   $('copy-handover-raw-btn').addEventListener('click', handleCopyHandover);
 
-  $('ctrl-handover-spawn-btn').addEventListener('click', () => {
-    spawnHandoverController(ctx, state.snap?.parsed?.controller?.currentControllerId || '');
-  });
+  $('ctrl-handover-spawn-btn').addEventListener('click', () =>
+    withBusyButton($('ctrl-handover-spawn-btn'), () =>
+      spawnHandoverController(ctx, state.snap?.parsed?.controller?.currentControllerId || '')
+    )
+  );
 
   $('ctrl-ignore-handover-btn').addEventListener('click', async () => {
     const ctrlId = state.snap?.parsed?.controller?.currentControllerId || '';
@@ -307,33 +339,39 @@ export function bindOverviewEvents(ctx) {
     }
   });
 
-  $('sentinel-sweep-btn').addEventListener('click', async () => {
-    if (!state.workspace) return;
-    try {
-      const res = await api('/api/sentinel/sweep', {
-        method: 'POST',
-        body: { workspace: state.workspace },
-      });
-      render(res.snapshot);
-      showToast(`哨兵巡检完成，新捕获 ${res.detectedCount || 0} 条事件`);
-    } catch (err) {
-      showToast(err.message, true);
-    }
-  });
+  $('sentinel-sweep-btn').addEventListener('click', () =>
+    withBusyButton($('sentinel-sweep-btn'), async () => {
+      if (!state.workspace) return;
+      try {
+        const res = await api('/api/sentinel/sweep', {
+          method: 'POST',
+          body: { workspace: state.workspace },
+        });
+        render(res.snapshot);
+        showToast(`哨兵巡检完成，新捕获 ${res.detectedCount || 0} 条事件`);
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    })
+  );
 
-  $('inbox-deliver-all-btn').addEventListener('click', async () => {
-    if (!state.workspace) return;
-    try {
-      const res = await api('/api/inbox/deliver', {
-        method: 'POST',
-        body: { workspace: state.workspace },
-      });
-      render(res.snapshot);
-      showToast(res.deliveredCount > 0 ? `已向总控投递 ${res.deliveredCount} 条信箱事件` : '暂无未读事件可投递');
-    } catch (err) {
-      showToast(err.message, true);
-    }
-  });
+  $('inbox-deliver-all-btn').addEventListener('click', () =>
+    withBusyButton($('inbox-deliver-all-btn'), async () => {
+      if (!state.workspace) return;
+      try {
+        const res = await api('/api/inbox/deliver', {
+          method: 'POST',
+          body: { workspace: state.workspace },
+        });
+        render(res.snapshot);
+        showToast(
+          res.deliveredCount > 0 ? `已向总控投递 ${res.deliveredCount} 条信箱事件` : '暂无未读事件可投递'
+        );
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    })
+  );
 
   $('inbox-ack-all-btn').addEventListener('click', async () => {
     if (!state.workspace) return;

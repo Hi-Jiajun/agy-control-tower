@@ -4,12 +4,20 @@
  * Mines local Antigravity transcripts + control-tower flight logs (never modifies runtime state)
  * and clusters friction into sanitized, evidence-backed engineering proposals.
  */
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readdirSync,
+  readSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveAppDataDirs, resolvePluginDataDir } from '../plugin/lib/paths.mjs';
 import { sanitizeLogString, summarizeFlightEvents } from '../plugin/lib/logger.mjs';
-import { inspectTranscript } from '../plugin/lib/transcript.mjs';
+import { inspectTranscript, loadPluginState } from '../plugin/lib/transcript.mjs';
 
 const MAX_READ_BYTES_PER_FILE = 8 * 1024 * 1024;
 
@@ -43,16 +51,36 @@ function parseArgs(argv) {
 }
 
 function readTranscriptLinesSafe(filePath) {
-  const st = statSync(filePath);
-  if (st.size <= MAX_READ_BYTES_PER_FILE) {
-    return readFileSync(filePath, 'utf8').split(/\r?\n/).filter(Boolean);
+  let fd;
+  try {
+    const st = statSync(filePath);
+    if (!st.isFile() || st.size === 0) return [];
+    const offset = Math.max(0, st.size - MAX_READ_BYTES_PER_FILE);
+    const len = st.size - offset;
+    fd = openSync(filePath, 'r');
+    const buf = Buffer.allocUnsafe(len);
+    let total = 0;
+    while (total < len) {
+      const n = readSync(fd, buf, total, len - total, offset + total);
+      if (n <= 0) break;
+      total += n;
+    }
+    const raw = buf.subarray(0, total).toString('utf8');
+    if (offset === 0) {
+      return raw.split(/\r?\n/).filter(Boolean);
+    }
+    const firstNl = raw.indexOf('\n');
+    const clean = firstNl >= 0 ? raw.slice(firstNl + 1) : '';
+    return clean.split(/\r?\n/).filter(Boolean);
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        // ignore
+      }
+    }
   }
-  // For very large logs, read tail slice safely to stay bounded in memory
-  const raw = readFileSync(filePath, 'utf8');
-  const slice = raw.slice(-MAX_READ_BYTES_PER_FILE);
-  const firstNl = slice.indexOf('\n');
-  const clean = firstNl >= 0 ? slice.slice(firstNl + 1) : slice;
-  return clean.split(/\r?\n/).filter(Boolean);
 }
 
 function pct(num, den) {
@@ -116,6 +144,10 @@ export function mineTelemetryAndLogs({
   const editMismatchByModel = new Map();
   const highCompactionSessions = [];
 
+  const readonlyCache = existsSync(resolvedDataDir)
+    ? loadPluginState(resolvedDataDir).transcriptCache || {}
+    : {};
+
   for (const item of selected) {
     let lines = [];
     try {
@@ -124,7 +156,7 @@ export function mineTelemetryAndLogs({
       continue;
     }
 
-    const inspected = inspectTranscript(item.tp);
+    const inspected = inspectTranscript(item.tp, { cacheEntry: readonlyCache[item.tp] || null });
     if ((inspected.info.compactions || 0) >= 5) {
       highCompactionSessions.push({
         conv: item.convPrefix,
@@ -354,8 +386,9 @@ export function formatMinerMarkdown(report) {
     lines.push(`| (统计窗口内无记录) | 0 | N/A | 0 | 0 |`);
   } else {
     for (const m of report.models.slice(0, 12)) {
+      const safeModel = sanitizeLogString(m.model, 80).replace(/\|/g, '/').replace(/`/g, '');
       lines.push(
-        `| \`${m.model}\` | ${m.steps} | ${m.cacheHitPct ?? 'N/A'}% | ${m.avgUncached} | ${m.switchesInto} |`
+        `| \`${safeModel}\` | ${m.steps} | ${m.cacheHitPct ?? 'N/A'}% | ${m.avgUncached} | ${m.switchesInto} |`
       );
     }
   }

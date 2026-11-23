@@ -1,7 +1,7 @@
 {
   "name": "control-tower",
   "displayName": "Control Tower",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "Universal Chief-of-Staff Control Tower plugin for Antigravity: hidden-surface-first dispatch, 4-surface navigator, zero-token sentinel + Focus Gate inbox, isolation & collaboration contracts, 3-tier project roadmap DAG, and Aux Pane board.",
   "author": "Hi-Jiajun",
   "homepage": "https://github.com/Hi-Jiajun/agy-control-tower",
@@ -9,7 +9,7 @@
   "logo": "assets/logo.svg",
   "suggestedPrompts": [
     "启用 control-tower 总控规程，对当前工作区执行纯只读冷启动盘点并初始化或核对 SESSION-REGISTRY.md。",
-    "按 control-tower 规范评估新需求：通过 ask_question 推荐调度通道（原生 swarm / agentapi 直派 / 手动兜底）并完成模型路由与派单入账。",
+    "按 control-tower 隐藏面优先规范评估新需求：通过 ask_question 推荐最优执行面（原生 swarm / invoke_subagent / run_workflow / 白名单顶层直派）与纯 Gemini 4 模型配置。",
     "按 control-tower 换届规程同步最新会话台账与生效设置，生成交接卡或准备总控接班。"
   ]
 }

@@ -409,8 +409,10 @@ export function saveDocOverride(dataDir, scope, docName, content, wsReal = '') {
 
 export function resetDocOverride(dataDir, scope, docName, wsReal = '') {
   const target = getOverrideDocPath(dataDir, scope, docName, wsReal);
-  if (existsSync(target)) {
+  try {
     unlinkSync(target);
+  } catch (err) {
+    if (err?.code !== 'ENOENT') throw err;
   }
   return { path: target, reset: true };
 }
@@ -561,6 +563,12 @@ export function validateDispatchModel(modelInput, effective = DEFAULT_GLOBAL_SET
   if (/(?:^|[^0-9])(3\.8|3\.7|3\.5|3\.0|2\.\d)/.test(lower)) {
     return { ok: false, reason: `control-tower 规则禁用旧代模型 (${trimmed})，仅限纯 Gemini 4 系列。` };
   }
+  if (/carbon/i.test(trimmed) && !/orchestrator/i.test(trimmed) && /\b(xhigh|extra[\s_-]*high)\b/i.test(trimmed)) {
+    return {
+      ok: false,
+      reason: `Gemini 4 Carbon 无 XHigh (Extra High) 档位 (${trimmed})，请选用 High 或 Medium。`,
+    };
+  }
 
   if (
     effective?.modelGuardPolicy === 'custom_allowlist' &&
@@ -570,7 +578,14 @@ export function validateDispatchModel(modelInput, effective = DEFAULT_GLOBAL_SET
     return { ok: true, model: trimmed, matchedBy: 'custom_allowlist' };
   }
 
-  if (/(carbon|neon|hydrogen|orchestrator)/i.test(trimmed) || lower === 'pro') {
+  const isStrictGemini4 =
+    /^(?:gemini[\s_-]*4[\s_-]*)?(?:carbon|neon|hydrogen)(?:[\s_-]*\(?(?:low|medium|high|xhigh|extra[\s_-]*high)\)?|)?$/i.test(
+      trimmed
+    ) ||
+    /^(?:gemini[\s_-]*pro[\s_-]*)?orchestrator(?:[\s_-]*\(?(?:(?:gemini[\s_-]*4[\s_-]*)?(?:carbon|neon|hydrogen))?(?:[\s_-]*(?:low|medium|high|xhigh|extra[\s_-]*high))?\)?|)?$/i.test(
+      trimmed
+    );
+  if (isStrictGemini4) {
     return { ok: true, model: trimmed, matchedBy: 'gemini4' };
   }
 

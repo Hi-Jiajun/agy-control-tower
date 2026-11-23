@@ -1,10 +1,23 @@
-import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  realpathSync,
+  statSync,
+} from 'node:fs';
 import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
+  assertSafeTargetWithinRoot,
   atomicWriteText,
   getWorkspaceSettingsDir,
+  isInsideDir,
   PathError,
   readJsonSafe,
+  sha256,
+  withFileLockSync,
 } from './paths.mjs';
 
 export const WORKSPACE_ROADMAP_L1_REL = '.agents/ROADMAP.md';
@@ -97,21 +110,46 @@ function cleanStringArray(val, maxItems = 16, maxLen = 120) {
 }
 
 function normalizePathPrefix(raw) {
-  return String(raw || '')
-    .trim()
-    .replace(/\\/g, '/')
+  const trimmed = String(raw || '').trim().replace(/\\/g, '/');
+  if (!trimmed) return '';
+  if (trimmed === '.' || trimmed === './' || trimmed === '*' || trimmed === '**') return '*';
+  const cleaned = trimmed
     .replace(/^\.\//, '')
     .replace(/^\/+/, '')
+    .replace(/(?:\/\*\*|\/\*)+$/, '')
     .replace(/\/+$/, '');
+  if (!cleaned) return '';
+  return cleaned === '.' || cleaned === '*' || cleaned === '**' ? '*' : cleaned;
 }
 
 export function pathsOverlap(pathA, pathB) {
   const a = normalizePathPrefix(pathA);
   const b = normalizePathPrefix(pathB);
   if (!a || !b) return false;
+  if (a === '*' || b === '*') return true;
   if (a === b) return true;
   if (a.startsWith(`${b}/`) || b.startsWith(`${a}/`)) return true;
   return false;
+}
+
+function sanitizeHandoffRelPath(raw, fallbackId) {
+  const fallback = `.agents/handoffs/${fallbackId}.md`;
+  const s = cleanString(raw, fallback, 160);
+  if (
+    !s ||
+    !s.endsWith('.md') ||
+    s.startsWith('/') ||
+    s.startsWith('@') ||
+    /^[A-Za-z]:/.test(s) ||
+    /[\u0000-\u001f\u007f\\]/.test(s)
+  ) {
+    return fallback;
+  }
+  const segs = s.split('/');
+  if (segs.some((seg) => !seg || seg === '.' || seg === '..')) {
+    return fallback;
+  }
+  return s;
 }
 
 export function sanitizeRoadmapData(raw) {
@@ -152,7 +190,7 @@ export function sanitizeRoadmapData(raw) {
             acceptance: cleanString(n.acceptance, '-', 240),
             recommendedModel: cleanString(n.recommendedModel, 'Gemini 4 Neon (High)', 80),
             linkedConvId: cleanString(n.linkedConvId, '', 64),
-            handoffPath: cleanString(n.handoffPath, `.agents/handoffs/${id}.md`, 160),
+            handoffPath: sanitizeHandoffRelPath(n.handoffPath, id),
             notes: cleanString(n.notes, '', 280),
             updatedAt: cleanString(n.updatedAt, '', 40) || new Date().toISOString(),
           };
@@ -333,13 +371,29 @@ export function resolveRoadmapPaths(wsReal, { dataDir = '', storageMode = 'works
       l2Abs: join(dir, 'roadmap.json'),
     };
   }
+  const wsCanon = existsSync(wsReal) ? realpathSync(wsReal) : resolve(wsReal);
+  const l1Abs = assertSafeTargetWithinRoot(wsCanon, join(wsCanon, '.agents', 'ROADMAP.md'), {
+    allowMissing: true,
+    rootLabel: 'workspace',
+  });
+  const l2Abs = assertSafeTargetWithinRoot(wsCanon, join(wsCanon, '.agents', 'roadmap.json'), {
+    allowMissing: true,
+    rootLabel: 'workspace',
+  });
   return {
     isManaged: false,
     l1Rel: WORKSPACE_ROADMAP_L1_REL,
     l2Rel: WORKSPACE_ROADMAP_L2_REL,
-    l1Abs: join(wsReal, '.agents', 'ROADMAP.md'),
-    l2Abs: join(wsReal, '.agents', 'roadmap.json'),
+    l1Abs,
+    l2Abs,
   };
+}
+
+function withRoadmapLock(wsReal, dataDir, fn) {
+  const lockPath = dataDir
+    ? join(getWorkspaceSettingsDir(dataDir, wsReal), '.roadmap.lock')
+    : join(wsReal, '.agents', '.roadmap.lock');
+  return withFileLockSync(lockPath, fn);
 }
 
 /**
@@ -352,49 +406,67 @@ export function findExistingRoadmap(wsReal, { dataDir = '', workspaceSettings = 
 
   for (const mode of order) {
     if (mode === 'plugin_data' && !dataDir) continue;
-    const p = resolveRoadmapPaths(wsReal, { dataDir, storageMode: mode });
-    if (existsSync(p.l2Abs) || existsSync(p.l1Abs)) {
-      return p;
+    try {
+      const p = resolveRoadmapPaths(wsReal, { dataDir, storageMode: mode });
+      if (existsSync(p.l2Abs) || existsSync(p.l1Abs)) {
+        return p;
+      }
+    } catch (err) {
+      if (err instanceof PathError && err.message.includes('symlink')) {
+        throw err;
+      }
     }
   }
   return null;
 }
 
+const MAX_HANDOFF_PREVIEW_BYTES = 4096;
+
 /**
  * Read-only safe inspection of a node's cross-wave handoff contract file (.agents/handoffs/<id>.md).
- * Blocks path traversal and escaping symlinks outside wsReal.
+ * Blocks path traversal, parent/leaf symlink escapes, non-.md files, and unbounded reads.
  */
 export function inspectNodeHandoff(wsReal, node) {
-  const relPath = cleanString(node?.handoffPath, node?.id ? `.agents/handoffs/${node.id}.md` : '', 160);
-  const empty = { exists: false, relPath, preview: '', bytes: 0, updatedAt: '' };
-  if (!wsReal || !relPath) return empty;
-  if (relPath.startsWith('/') || relPath.includes('..') || relPath.includes('\\')) return empty;
+  const rawRel = cleanString(node?.handoffPath, node?.id ? `.agents/handoffs/${node.id}.md` : '', 160);
+  const empty = { exists: false, relPath: rawRel, preview: '', bytes: 0, updatedAt: '' };
+  if (!wsReal || !rawRel || !rawRel.endsWith('.md')) return empty;
+  if (rawRel.startsWith('/') || rawRel.includes('..') || rawRel.includes('\\')) return empty;
+  let fd;
   try {
     const wsCanon = realpathSync(wsReal);
-    const abs = resolve(wsCanon, relPath);
-    const rel = relative(wsCanon, abs);
-    if (rel.startsWith('..') || rel.includes(`..${sep}`) || isAbsolute(rel)) return empty;
-    if (!existsSync(abs)) return empty;
-    const lst = lstatSync(abs);
-    if (lst.isSymbolicLink()) {
-      const targetReal = realpathSync(abs);
-      const tRel = relative(wsCanon, targetReal);
-      if (tRel.startsWith('..') || isAbsolute(tRel)) return empty;
-    }
-    const st = statSync(abs);
+    const abs = resolve(wsCanon, rawRel);
+    assertSafeTargetWithinRoot(wsCanon, abs, { allowMissing: false, rootLabel: 'workspace' });
+    const targetReal = realpathSync(abs);
+    if (!isInsideDir(wsCanon, targetReal)) return empty;
+    const st = statSync(targetReal);
     if (!st.isFile()) return empty;
-    const raw = readFileSync(abs, 'utf8');
+    const readLen = Math.min(MAX_HANDOFF_PREVIEW_BYTES, st.size);
+    let raw = '';
+    if (readLen > 0) {
+      fd = openSync(targetReal, 'r');
+      const buf = Buffer.allocUnsafe(readLen);
+      const n = readSync(fd, buf, 0, readLen, 0);
+      raw = buf.subarray(0, Math.max(0, n)).toString('utf8');
+    }
     const trimmed = raw.trim();
     const preview = trimmed.length > 600 ? `${trimmed.slice(0, 597)}...` : trimmed;
     return {
       exists: true,
-      relPath,
+      relPath: rawRel,
       preview,
       bytes: st.size,
       updatedAt: new Date(st.mtimeMs).toISOString(),
     };
   } catch {
     return empty;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        // ignore
+      }
+    }
   }
 }
 
@@ -408,6 +480,8 @@ export function loadWorkspaceRoadmap(wsReal, { dataDir = '', workspaceSettings =
       l2Rel: '',
       l1Path: '',
       l2Path: '',
+      l1Hash: '',
+      l2Hash: '',
       l1Content: '',
       northStarBrief: '',
       data: null,
@@ -415,7 +489,15 @@ export function loadWorkspaceRoadmap(wsReal, { dataDir = '', workspaceSettings =
     };
   }
   const l1Content = existsSync(found.l1Abs) ? readFileSync(found.l1Abs, 'utf8') : '';
-  const rawL2 = existsSync(found.l2Abs) ? readJsonSafe(found.l2Abs, null) : null;
+  const l2RawText = existsSync(found.l2Abs) ? readFileSync(found.l2Abs, 'utf8') : '';
+  let rawL2 = null;
+  if (l2RawText) {
+    try {
+      rawL2 = JSON.parse(l2RawText);
+    } catch {
+      rawL2 = null;
+    }
+  }
   const data = sanitizeRoadmapData(rawL2 || buildDefaultRoadmapL2(basename(wsReal)));
   const graph = evaluateRoadmapGraph(data);
   graph.nodes = graph.nodes.map((n) => ({
@@ -429,6 +511,8 @@ export function loadWorkspaceRoadmap(wsReal, { dataDir = '', workspaceSettings =
     l2Rel: found.l2Rel,
     l1Path: found.l1Abs,
     l2Path: found.l2Abs,
+    l1Hash: l1Content ? sha256(l1Content) : '',
+    l2Hash: l2RawText ? sha256(l2RawText) : '',
     l1Content,
     northStarBrief: extractNorthStarBrief(l1Content),
     data,
@@ -456,116 +540,189 @@ export function initWorkspaceRoadmap(
   });
 }
 
-export function saveRoadmapL1(wsReal, content, { dataDir = '', workspaceSettings = null } = {}) {
-  const found = findExistingRoadmap(wsReal, { dataDir, workspaceSettings });
-  if (!found) throw new PathError(404, 'Roadmap not initialized in workspace');
-  if (typeof content !== 'string') throw new PathError(400, 'content must be a string');
-  if (Buffer.byteLength(content, 'utf8') > 256 * 1024) {
-    throw new PathError(413, 'ROADMAP.md exceeds 256KB cap');
-  }
-  atomicWriteText(found.l1Abs, content.endsWith('\n') ? content : `${content}\n`);
-  return loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings });
-}
-
-export function upsertRoadmapMilestone(wsReal, milestone, { dataDir = '', workspaceSettings = null } = {}) {
-  const loaded = loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings });
-  if (!loaded.exists) throw new PathError(404, 'Roadmap not initialized in workspace');
-  const id = cleanId(milestone?.id);
-  if (!id) throw new PathError(400, 'Milestone id is required');
-  const data = sanitizeRoadmapData(loaded.data);
-  const nextItem = {
-    id,
-    title: cleanString(milestone?.title, id, 100),
-    dod: cleanString(milestone?.dod, '-', 220),
-    status: ['planned', 'active', 'done'].includes(milestone?.status) ? milestone.status : 'active',
-  };
-  const idx = data.milestones.findIndex((m) => m.id === id);
-  if (idx >= 0) data.milestones[idx] = nextItem;
-  else data.milestones.push(nextItem);
-  data.updatedAt = new Date().toISOString();
-  atomicWriteText(loaded.l2Path, `${JSON.stringify(data, null, 2)}\n`);
-  return loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings });
-}
-
-export function upsertRoadmapNode(wsReal, nodeInput, { dataDir = '', workspaceSettings = null } = {}) {
-  const loaded = loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings });
-  if (!loaded.exists) throw new PathError(404, 'Roadmap not initialized in workspace');
-  const id = cleanId(nodeInput?.id);
-  if (!id) throw new PathError(400, 'Workstream node id is required');
-
-  const data = sanitizeRoadmapData(loaded.data);
-  const origId = cleanId(nodeInput?.originalId) || id;
-  const candidate = sanitizeRoadmapData({
-    ...data,
-    nodes: [
-      ...data.nodes.filter((n) => n.id !== origId && n.id !== id),
-      {
-        ...nodeInput,
-        id,
-        updatedAt: new Date().toISOString(),
-      },
-    ],
+export function saveRoadmapL1(
+  wsReal,
+  content,
+  { dataDir = '', workspaceSettings = null, expectedL1Hash = '' } = {}
+) {
+  return withRoadmapLock(wsReal, dataDir, () => {
+    const loaded = loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings });
+    if (!loaded.exists) throw new PathError(404, 'Roadmap not initialized in workspace');
+    if (expectedL1Hash && loaded.l1Hash && expectedL1Hash !== loaded.l1Hash) {
+      throw new PathError(409, 'ROADMAP.md 已被外部修改，请重载后再保存');
+    }
+    if (typeof content !== 'string') throw new PathError(400, 'content must be a string');
+    if (Buffer.byteLength(content, 'utf8') > 256 * 1024) {
+      throw new PathError(413, 'ROADMAP.md exceeds 256KB cap');
+    }
+    atomicWriteText(loaded.l1Path, content.endsWith('\n') ? content : `${content}\n`);
+    return loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings });
   });
+}
 
-  const cycle = detectDependencyCycle(candidate.nodes);
-  if (cycle.hasCycle) {
-    throw new PathError(400, `检测到循环依赖 (${cycle.cycleNodes.join(' -> ')})，已拒绝保存。`);
-  }
+export function upsertRoadmapMilestone(
+  wsReal,
+  milestone,
+  { dataDir = '', workspaceSettings = null, expectedL2Hash = '' } = {}
+) {
+  return withRoadmapLock(wsReal, dataDir, () => {
+    const loaded = loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings });
+    if (!loaded.exists) throw new PathError(404, 'Roadmap not initialized in workspace');
+    if (expectedL2Hash && loaded.l2Hash && expectedL2Hash !== loaded.l2Hash) {
+      throw new PathError(409, 'roadmap.json 已被外部修改，请刷新后再保存');
+    }
+    const id = cleanId(milestone?.id);
+    if (!id) throw new PathError(400, 'Milestone id is required');
+    const data = sanitizeRoadmapData(loaded.data);
+    const nextItem = {
+      id,
+      title: cleanString(milestone?.title, id, 100),
+      dod: cleanString(milestone?.dod, '-', 220),
+      status: ['planned', 'active', 'done'].includes(milestone?.status) ? milestone.status : 'active',
+    };
+    const idx = data.milestones.findIndex((m) => m.id === id);
+    if (idx >= 0) data.milestones[idx] = nextItem;
+    else data.milestones.push(nextItem);
+    data.updatedAt = new Date().toISOString();
+    atomicWriteText(loaded.l2Path, `${JSON.stringify(data, null, 2)}\n`);
+    return loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings });
+  });
+}
 
-  candidate.updatedAt = new Date().toISOString();
-  atomicWriteText(loaded.l2Path, `${JSON.stringify(candidate, null, 2)}\n`);
-  return loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings });
+export function upsertRoadmapNode(
+  wsReal,
+  nodeInput,
+  { dataDir = '', workspaceSettings = null, expectedL2Hash = '' } = {}
+) {
+  return withRoadmapLock(wsReal, dataDir, () => {
+    const loaded = loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings });
+    if (!loaded.exists) throw new PathError(404, 'Roadmap not initialized in workspace');
+    if (expectedL2Hash && loaded.l2Hash && expectedL2Hash !== loaded.l2Hash) {
+      throw new PathError(409, 'roadmap.json 已被外部修改，请刷新后再保存');
+    }
+    const id = cleanId(nodeInput?.id);
+    if (!id) throw new PathError(400, 'Workstream node id is required');
+
+    const data = sanitizeRoadmapData(loaded.data);
+    const hasExplicitOrig = Boolean(cleanId(nodeInput?.originalId));
+    const origId = cleanId(nodeInput?.originalId) || id;
+    const prevIdx = data.nodes.findIndex((n) => n.id === origId);
+    const prev = prevIdx >= 0 ? data.nodes[prevIdx] : null;
+
+    if (!hasExplicitOrig && nodeInput?.requireNew === true && prev) {
+      throw new PathError(409, `分支节点 ${id} 已存在，如需修改请使用编辑操作`);
+    }
+
+    const mergedNode = {
+      ...(prev || {}),
+      ...nodeInput,
+      id,
+      handoffPath:
+        nodeInput?.handoffPath !== undefined
+          ? nodeInput.handoffPath
+          : prev && origId === id
+            ? prev.handoffPath
+            : `.agents/handoffs/${id}.md`,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const nextNodes = [];
+    let inserted = false;
+    for (let i = 0; i < data.nodes.length; i += 1) {
+      const cur = data.nodes[i];
+      if (i === prevIdx) {
+        nextNodes.push(mergedNode);
+        inserted = true;
+      } else if (cur.id !== id && cur.id !== origId) {
+        const migratedDeps =
+          prev && origId !== id
+            ? (cur.dependsOn || []).map((d) => (d === origId ? id : d))
+            : cur.dependsOn;
+        nextNodes.push({ ...cur, dependsOn: migratedDeps });
+      }
+    }
+    if (!inserted) {
+      nextNodes.push(mergedNode);
+    }
+
+    const candidate = sanitizeRoadmapData({
+      ...data,
+      nodes: nextNodes,
+    });
+
+    const cycle = detectDependencyCycle(candidate.nodes);
+    if (cycle.hasCycle) {
+      throw new PathError(400, `检测到循环依赖 (${cycle.cycleNodes.join(' -> ')})，已拒绝保存。`);
+    }
+
+    candidate.updatedAt = new Date().toISOString();
+    atomicWriteText(loaded.l2Path, `${JSON.stringify(candidate, null, 2)}\n`);
+    return loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings });
+  });
 }
 
 export function updateRoadmapNodeStatus(
   wsReal,
   { id, status, linkedConvId } = {},
-  { dataDir = '', workspaceSettings = null } = {}
+  { dataDir = '', workspaceSettings = null, expectedL2Hash = '' } = {}
 ) {
-  const loaded = loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings });
-  if (!loaded.exists) throw new PathError(404, 'Roadmap not initialized in workspace');
-  const targetId = cleanId(id);
-  if (!targetId) throw new PathError(400, 'Node id is required');
-  if (status && !VALID_NODE_STATUSES.has(status)) {
-    throw new PathError(400, `Invalid node status: ${status}`);
-  }
+  return withRoadmapLock(wsReal, dataDir, () => {
+    const loaded = loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings });
+    if (!loaded.exists) throw new PathError(404, 'Roadmap not initialized in workspace');
+    if (expectedL2Hash && loaded.l2Hash && expectedL2Hash !== loaded.l2Hash) {
+      throw new PathError(409, 'roadmap.json 已被外部修改，请刷新后再保存');
+    }
+    const targetId = cleanId(id);
+    if (!targetId) throw new PathError(400, 'Node id is required');
+    if (status && !VALID_NODE_STATUSES.has(status)) {
+      throw new PathError(400, `Invalid node status: ${status}`);
+    }
 
-  const prevReadySet = new Set(loaded.graph?.readyIds || []);
-  const data = sanitizeRoadmapData(loaded.data);
-  const node = data.nodes.find((n) => n.id === targetId);
-  if (!node) throw new PathError(404, `Workstream node ${targetId} not found`);
+    const prevReadySet = new Set(loaded.graph?.readyIds || []);
+    const data = sanitizeRoadmapData(loaded.data);
+    const node = data.nodes.find((n) => n.id === targetId);
+    if (!node) throw new PathError(404, `Workstream node ${targetId} not found`);
 
-  if (status) node.status = status;
-  if (linkedConvId !== undefined) node.linkedConvId = cleanString(linkedConvId, '', 64);
-  node.updatedAt = new Date().toISOString();
-  data.updatedAt = node.updatedAt;
+    if (status) node.status = status;
+    if (linkedConvId !== undefined) node.linkedConvId = cleanString(linkedConvId, '', 64);
+    node.updatedAt = new Date().toISOString();
+    data.updatedAt = node.updatedAt;
 
-  atomicWriteText(loaded.l2Path, `${JSON.stringify(data, null, 2)}\n`);
-  const next = loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings });
-  const newlyUnlocked = (next.graph?.nodes || [])
-    .filter((n) => n.effectiveStatus === 'ready' && !prevReadySet.has(n.id) && n.id !== targetId)
-    .map((n) => ({ id: n.id, title: n.title, isolation: n.isolation }));
+    atomicWriteText(loaded.l2Path, `${JSON.stringify(data, null, 2)}\n`);
+    const next = loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings });
+    const newlyUnlocked = (next.graph?.nodes || [])
+      .filter((n) => n.effectiveStatus === 'ready' && !prevReadySet.has(n.id) && n.id !== targetId)
+      .map((n) => ({ id: n.id, title: n.title, isolation: n.isolation }));
 
-  return { roadmap: next, newlyUnlocked };
+    return { roadmap: next, newlyUnlocked };
+  });
 }
 
-export function deleteRoadmapNode(wsReal, id, { dataDir = '', workspaceSettings = null } = {}) {
-  const loaded = loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings });
-  if (!loaded.exists) throw new PathError(404, 'Roadmap not initialized in workspace');
-  const targetId = cleanId(id);
-  const data = sanitizeRoadmapData(loaded.data);
-  const nextNodes = data.nodes.filter((n) => n.id !== targetId);
-  if (nextNodes.length === data.nodes.length) {
-    throw new PathError(404, `Workstream node ${targetId} not found`);
-  }
-  // Remove references to deleted node in downstream dependsOn
-  for (const n of nextNodes) {
-    n.dependsOn = (n.dependsOn || []).filter((d) => d !== targetId);
-  }
-  data.nodes = nextNodes;
-  data.updatedAt = new Date().toISOString();
-  atomicWriteText(loaded.l2Path, `${JSON.stringify(data, null, 2)}\n`);
-  return loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings });
+export function deleteRoadmapNode(
+  wsReal,
+  id,
+  { dataDir = '', workspaceSettings = null, expectedL2Hash = '' } = {}
+) {
+  return withRoadmapLock(wsReal, dataDir, () => {
+    const loaded = loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings });
+    if (!loaded.exists) throw new PathError(404, 'Roadmap not initialized in workspace');
+    if (expectedL2Hash && loaded.l2Hash && expectedL2Hash !== loaded.l2Hash) {
+      throw new PathError(409, 'roadmap.json 已被外部修改，请刷新后再保存');
+    }
+    const targetId = cleanId(id);
+    const data = sanitizeRoadmapData(loaded.data);
+    const nextNodes = data.nodes.filter((n) => n.id !== targetId);
+    if (nextNodes.length === data.nodes.length) {
+      throw new PathError(404, `Workstream node ${targetId} not found`);
+    }
+    for (const n of nextNodes) {
+      n.dependsOn = (n.dependsOn || []).filter((d) => d !== targetId);
+    }
+    data.nodes = nextNodes;
+    data.updatedAt = new Date().toISOString();
+    atomicWriteText(loaded.l2Path, `${JSON.stringify(data, null, 2)}\n`);
+    return loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings });
+  });
 }
 
 /**
@@ -611,7 +768,7 @@ export function buildWorkstreamContractPrompt(
     : '当前工作区处于无独占资源模式。';
 
   const ctrlPart = controllerId
-    ? `现役总控: ${controllerId}。遇接口/范围分叉或连续 2 轮失败请发送 [CT_REPORT:DECISION]，收口发送 [CT_REPORT:DONE]。`
+    ? `现役总控: ${controllerId}。遇接口/范围分叉或连续 2 轮失败请发送 [CT_REPORT:DECISION] [${node.id}] ...，收口发送 [CT_REPORT:DONE] [${node.id}] <交付摘要与验证结果>。`
     : '收口后请输出结构化交付清单与验证命令输出。';
 
   return (

@@ -64,6 +64,11 @@ test('Ring 5: release snapshot pruning, doctor health detection, and isolated ro
     assert.equal(installRes.snapshot.created, true);
     assert.equal(installRes.doctor.failedCount, 0);
 
+    // Half-written .tmp-* or broken snapshot directories are ignored by listSnapshots & rollback
+    mkdirSync(join(dataDir, 'releases', '.tmp-99999999T000000Z-v9.9.9'), { recursive: true });
+    mkdirSync(join(dataDir, 'releases', '99999999T000000Z-v9.9.9-broken'), { recursive: true });
+    assert.equal(listSnapshots({ env, dataDir }).length, 3);
+
     // 5) Instant rollback restores v1.2.9 cleanly via official agy plugin install
     const rb = rollbackToSnapshot({
       env,

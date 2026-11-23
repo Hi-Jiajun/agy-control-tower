@@ -261,6 +261,8 @@ body {
 }
 
 .kv-v {
+  min-width: 0;
+  overflow-wrap: anywhere;
   word-break: break-word;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11.5px;
@@ -273,6 +275,8 @@ body {
   border-radius: 999px;
   font-size: 11px;
   font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
   border: 1px solid var(--ct-border);
   background: var(--ct-accent-soft);
   color: var(--ct-accent);
@@ -311,6 +315,12 @@ body {
 
 .btn:active {
   transform: scale(0.97);
+}
+
+.btn:disabled {
+  opacity: 0.52;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .btn-sm {
@@ -380,6 +390,12 @@ body {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+
+@media (max-width: 420px) {
+  .two-col {
+    grid-template-columns: 1fr;
+  }
 }
 
 .subform {
@@ -458,6 +474,15 @@ body {
 
 .switch input:checked + span::before {
   transform: translateX(16px);
+}
+
+.switch input:focus-visible + span,
+.btn:focus-visible,
+.tab:focus-visible,
+.seg-btn:focus-visible,
+.pill-btn:focus-visible {
+  outline: 2px solid var(--ct-accent);
+  outline-offset: 2px;
 }
 
 .segmented {

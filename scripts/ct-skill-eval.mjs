@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Control Tower Ring 4 (L4): Skill & Prompt Behavioral Contract Eval Suite
- * Evaluates 10 golden behavioral contracts across SKILL.md, model-routing.md,
+ * Evaluates 16 golden behavioral contracts across SKILL.md, model-routing.md,
  * templates.md, settings.mjs, hooks.json, and live Hook execution.
  */
 import assert from 'node:assert/strict';
@@ -9,6 +9,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { extractTemplatesFromMarkdown } from '../plugin/lib/registry.mjs';
 import {
   DEFAULT_GLOBAL_SETTINGS,
   normalizeModelForAgentApi,
@@ -16,7 +17,8 @@ import {
 } from '../plugin/lib/settings.mjs';
 import { evaluateFocusGate } from '../plugin/lib/inbox.mjs';
 import { buildWorkstreamContractPrompt, evaluateRoadmapGraph } from '../plugin/lib/roadmap.mjs';
-import { makeConvId, makeSandbox } from '../tests/helpers.mjs';
+import { buildPrefilledHandoverText } from '../plugin/sidecars/tower/ui-logic.mjs';
+import { makeConvId, makeSandbox, makeTranscriptPath } from '../tests/helpers.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
@@ -287,6 +289,121 @@ export function runSkillEval() {
         for (const f of sidecarFiles) {
           assert.equal(/window\.(?:prompt|confirm|alert)\s*\(/.test(f.text), false, `Blocking WebView dialog in ${f.path}`);
           assert.equal(f.text.includes('execFileSync'), false, `Sync execFileSync found in Sidecar ${f.path}`);
+        }
+      },
+    },
+    {
+      id: 'EVAL-16',
+      title: '真实交接卡端到端双证闭环与看板三大入站口令规程完整',
+      run() {
+        assert.ok(
+          skillMd.includes('[CT_ROADMAP_DISPATCH]') &&
+            skillMd.includes('[CT_SWARM_CLEANUP]') &&
+            skillMd.includes('[CT_INBOX_DELIVER]')
+        );
+        const tpls = extractTemplatesFromMarkdown(templatesMd);
+        assert.ok(tpls.handoverTemplate && tpls.domainLeadTemplate && tpls.handoffContractTemplate);
+
+        const sb = makeSandbox();
+        try {
+          const ws = join(sb.dir, 'ws');
+          const appData = join(sb.dir, 'app');
+          const dataDir = join(sb.dir, 'pdata');
+          mkdirSync(join(ws, '.agents'), { recursive: true });
+          const oldCtrl = makeConvId('1', 'a', '4', 'b', 'c');
+          const newCtrl = makeConvId('2', 'b', '4', 'c', 'd');
+          const rogue = makeConvId('3', 'c', '4', 'd', 'e');
+          const regPath = join(ws, '.agents', 'SESSION-REGISTRY.md');
+          writeFileSync(
+            regPath,
+            `# 台账\n## 一、当前独占资源租约\n| 字段 | 当前值 |\n| --- | --- |\n| **锁状态** | \`IDLE\` |\n## 二、常驻主交流总控会话\n- **当前现役总控会话**：\`${oldCtrl}\`（状态：\`ONLINE\`）\n`,
+            'utf8'
+          );
+
+          const handoverCard = buildPrefilledHandoverText({
+            workspace: ws,
+            registryExists: true,
+            registryPath: regPath,
+            registryIsManaged: false,
+            templates: tpls,
+            parsed: {
+              lease: { lockStatus: 'IDLE' },
+              controller: { currentControllerId: oldCtrl, handoverHistory: [] },
+              activeSessions: [],
+              queue: [],
+            },
+            settings: {
+              effective: {
+                exclusiveLeaseEnabled: true,
+                effectiveAutonomy: 'balanced',
+                controllerCompactionThreshold: 5,
+              },
+            },
+            nativeSwarm: { active: false },
+          });
+
+          const newTp = makeTranscriptPath(appData, newCtrl);
+          writeFileSync(
+            newTp,
+            `${JSON.stringify({ step_index: 0, type: 'USER_INPUT', content: handoverCard })}\n`,
+            'utf8'
+          );
+          const rogueTp = makeTranscriptPath(appData, rogue);
+          writeFileSync(
+            rogueTp,
+            `${JSON.stringify({ step_index: 0, type: 'USER_INPUT', content: `<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-24T00:00:00Z sender=${oldCtrl} priority=HIGH content=请审查 control-tower 换届代码\n</SYSTEM_MESSAGE>` })}\n`,
+            'utf8'
+          );
+
+          const env = {
+            ...process.env,
+            ANTIGRAVITY_APP_DATA_DIR: appData,
+            AGY_CONTROL_TOWER_DATA_DIR: dataDir,
+          };
+
+          // 1) Genuine handover card updating Section 2 to self -> allow
+          const allowOut = JSON.parse(
+            execFileSync('node', [HOOK_SCRIPT, 'PreToolUse'], {
+              input: JSON.stringify({
+                conversationId: newCtrl,
+                workspacePaths: [ws],
+                cwd: ws,
+                toolCall: {
+                  name: 'edit_file',
+                  args: {
+                    Path: regPath,
+                    Replacement: `- **当前现役总控会话**：\`${newCtrl}\`（状态：\`ONLINE\`）`,
+                  },
+                },
+              }),
+              env,
+              encoding: 'utf8',
+            })
+          );
+          assert.equal(allowOut.decision, 'allow');
+
+          // 2) Subagent whose SYSTEM_MESSAGE sender=oldCtrl trying to edit Section 1 -> blocked (ask)
+          const blockOut = JSON.parse(
+            execFileSync('node', [HOOK_SCRIPT, 'PreToolUse'], {
+              input: JSON.stringify({
+                conversationId: rogue,
+                workspacePaths: [ws],
+                cwd: ws,
+                toolCall: {
+                  name: 'edit_file',
+                  args: {
+                    Path: regPath,
+                    Replacement: `| **持锁会话** | \`${rogue}\` |`,
+                  },
+                },
+              }),
+              env,
+              encoding: 'utf8',
+            })
+          );
+          assert.equal(blockOut.decision, 'ask');
+        } finally {
+          sb.cleanup();
         }
       },
     },
