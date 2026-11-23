@@ -1,9 +1,24 @@
-import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  ackInboxItems,
+  buildUnifiedAttentionBanner,
+  cleanupWorkspaceInbox,
+  evaluateSentinelSweep,
+  loadWorkspaceInbox,
+  summarizeInbox,
+} from '../../lib/inbox.mjs';
+import {
+  appendFlightEvent,
+  clearFlightLogs,
+  readFlightEvents,
+  SLOW_OP_THRESHOLD_MS,
+  SLOW_RPC_THRESHOLD_MS,
+  summarizeFlightEvents,
+} from '../../lib/logger.mjs';
 import {
   atomicWriteText,
   findExistingRegistry,
@@ -17,29 +32,6 @@ import {
   sha256,
 } from '../../lib/paths.mjs';
 import {
-  appendFlightEvent,
-  clearFlightLogs,
-  readFlightEvents,
-  SLOW_OP_THRESHOLD_MS,
-  summarizeFlightEvents,
-} from '../../lib/logger.mjs';
-import {
-  ackInboxItems,
-  evaluateSentinelSweep,
-  loadWorkspaceInbox,
-  summarizeInbox,
-} from '../../lib/inbox.mjs';
-import {
-  buildWorkstreamContractPrompt,
-  deleteRoadmapNode,
-  initWorkspaceRoadmap,
-  loadWorkspaceRoadmap,
-  saveRoadmapL1,
-  updateRoadmapNodeStatus,
-  upsertRoadmapMilestone,
-  upsertRoadmapNode,
-} from '../../lib/roadmap.mjs';
-import {
   archiveActiveSession,
   deleteQueueRow,
   extractTemplatesFromMarkdown,
@@ -49,6 +41,10 @@ import {
   upsertActiveSessionRow,
   upsertQueueRow,
 } from '../../lib/registry.mjs';
+import {
+  loadWorkspaceRoadmap,
+  updateRoadmapNodeStatus,
+} from '../../lib/roadmap.mjs';
 import {
   MODEL_PRESETS,
   normalizeModelForAgentApi,
@@ -72,6 +68,15 @@ import {
   resolveBrainTranscript,
   savePluginState,
 } from '../../lib/transcript.mjs';
+import {
+  buildDispatchPayload,
+  clearMetadataCache,
+  execAgentApiAsync,
+  extractConversationIdFromResult,
+  getConversationMetadataCached,
+} from './lib/agentapi.mjs';
+import { handleInboxAndSwarmRoute } from './routes/inbox.mjs';
+import { handleRoadmapRoute } from './routes/roadmap.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(__dirname, '..', '..');
@@ -79,7 +84,13 @@ const PLUGIN_ROOT = resolve(__dirname, '..', '..');
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_CACHE_ENTRIES = 200;
-const UUID_EXTRACT_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+const RPC_API_ROUTES = new Set([
+  '/api/dispatch/create',
+  '/api/inbox/deliver',
+  '/api/roadmap/node/dispatch-hidden',
+  '/api/swarm/cleanup-request',
+]);
 
 class HttpError extends Error {
   constructor(status, message, extra = null) {
@@ -130,7 +141,7 @@ function readPluginMeta() {
   return {
     name: raw?.name || 'control-tower',
     displayName: raw?.displayName || 'Control Tower',
-    version: raw?.version || '1.5.0',
+    version: raw?.version || '1.6.0',
   };
 }
 
@@ -150,62 +161,6 @@ function recordRecentWorkspace(wsReal) {
   } catch {
     return [wsReal];
   }
-}
-
-function execAgentApi(args, { projectId } = {}) {
-  const env = { ...process.env };
-  if (projectId) env.ANTIGRAVITY_PROJECT_ID = projectId;
-  const exe = process.env.ANTIGRAVITY_AGENTAPI_EXE;
-  const file = exe || 'agentapi';
-  const execArgs = exe ? ['agentapi', ...args] : args;
-  const out = execFileSync(file, execArgs, { encoding: 'utf8', env });
-  return out && out.trim() ? JSON.parse(out) : {};
-}
-
-function extractConversationIdFromResult(res) {
-  if (!res || typeof res !== 'object') return '';
-  const direct =
-    res.conversationId ||
-    res.conversation_id ||
-    res.id ||
-    res.response?.conversationId ||
-    res.response?.conversation_id ||
-    res.result?.conversationId;
-  if (typeof direct === 'string' && direct.trim()) {
-    return direct.trim();
-  }
-  const m = JSON.stringify(res).match(UUID_EXTRACT_RE);
-  return m ? m[0] : '';
-}
-
-function buildDispatchPayload({
-  prompt,
-  slashPrefix = '',
-  controllerId = '',
-  exclusiveLeaseEnabled = true,
-  lockStatus = '纯离线无锁',
-  registryRelPath = '.agents/SESSION-REGISTRY.md',
-}) {
-  let body = String(prompt || '').trim();
-  const prefix = String(slashPrefix || '').trim();
-  if (prefix && !body.startsWith(prefix)) {
-    body = `${prefix} ${body}`;
-  }
-  if (!controllerId || body.includes('[CT_REPORT:')) {
-    return body;
-  }
-  const lockLine = exclusiveLeaseEnabled
-    ? `当前资源锁约束: ${lockStatus || '纯离线无锁'}。`
-    : '当前工作区处于无独占资源模式。';
-  return (
-    `${body}\n\n` +
-    `【Control Tower 跨会话汇报锚点（现役总控: ${controllerId}）】\n` +
-    `1. ${lockLine}严禁直接改写 ${registryRelPath}。\n` +
-    `2. 遇需要拍板的架构/接口/范围分叉或连续两轮假设失败时，执行：\n` +
-    `   agentapi send-message "${controllerId}" "[CT_REPORT:DECISION] <分叉简述与备选方案>"\n` +
-    `3. 完成收口时汇报交付摘要与验证结果：\n` +
-    `   agentapi send-message "${controllerId}" "[CT_REPORT:DONE] <交付摘要与验证结论>"`
-  );
 }
 
 class ControlTowerServer {
@@ -235,6 +190,10 @@ class ControlTowerServer {
       ['/styles.css', { file: join(__dirname, 'styles.css'), type: 'text/css; charset=utf-8' }],
       ['/app.js', { file: join(__dirname, 'app.js'), type: 'application/javascript; charset=utf-8' }],
       ['/ui-logic.mjs', { file: join(__dirname, 'ui-logic.mjs'), type: 'application/javascript; charset=utf-8' }],
+      ['/views/overview.mjs', { file: join(__dirname, 'views', 'overview.mjs'), type: 'application/javascript; charset=utf-8' }],
+      ['/views/sessions.mjs', { file: join(__dirname, 'views', 'sessions.mjs'), type: 'application/javascript; charset=utf-8' }],
+      ['/views/roadmap.mjs', { file: join(__dirname, 'views', 'roadmap.mjs'), type: 'application/javascript; charset=utf-8' }],
+      ['/views/settings.mjs', { file: join(__dirname, 'views', 'settings.mjs'), type: 'application/javascript; charset=utf-8' }],
     ]);
   }
 
@@ -291,43 +250,6 @@ class ControlTowerServer {
     });
   }
 
-  #buildAttention(dataDir, wsReal, parsed, resolved) {
-    const pluginState = loadPluginState(dataDir);
-    const ctrlId = String(parsed?.controller?.currentControllerId || '').trim();
-    const ctrlEntry = ctrlId ? pluginState.controllers?.[ctrlId] || {} : {};
-    const handoverIgnored = Boolean(ctrlEntry.handoverIgnored);
-    const items = [];
-    const seen = new Set();
-
-    for (const item of pluginState.pendingAttention || []) {
-      if (!item || !item.id) continue;
-      if (item.workspace && wsReal && item.workspace !== wsReal) continue;
-      if (item.kind === 'handover' && handoverIgnored) continue;
-      items.push(item);
-      seen.add(item.id);
-    }
-
-    const comps = Number(parsed?.controller?.telemetry?.compactions || 0);
-    const threshold = resolved.effective.controllerCompactionThreshold || 5;
-    if (ctrlId && !handoverIgnored && comps >= threshold) {
-      const liveId = `handover-${ctrlId.slice(0, 8)}`;
-      if (!seen.has(liveId)) {
-        items.push({
-          id: liveId,
-          kind: 'handover',
-          workspace: wsReal || '',
-          controllerId: ctrlId,
-          compactions: comps,
-          threshold,
-          summary: `总控已累计压缩 ${comps} 次（阈值 ${threshold} 次），可选择换届或本会话忽略`,
-          updatedAt: Date.now(),
-        });
-      }
-    }
-
-    return { items, handoverIgnored };
-  }
-
   #buildSnapshot(wsRaw, { recentOverride = null } = {}) {
     const dataDir = getDataDir();
     const plugin = readPluginMeta();
@@ -347,7 +269,18 @@ class ControlTowerServer {
     const emptySwarm = { active: false, title: '', members: [], recentPosts: [] };
     const emptySurfaces = { swarm: emptySwarm, subagents: [], workflows: [], topLevel: [] };
     const emptyInbox = summarizeInbox(null, { focusCooldownSec: resolved.plugin.focusCooldownSec });
-    const emptyRoadmap = { exists: false, isManaged: false, l1Rel: '', l2Rel: '', l1Path: '', l2Path: '', l1Content: '', northStarBrief: '', data: null, graph: null };
+    const emptyRoadmap = {
+      exists: false,
+      isManaged: false,
+      l1Rel: '',
+      l2Rel: '',
+      l1Path: '',
+      l2Path: '',
+      l1Content: '',
+      northStarBrief: '',
+      data: null,
+      graph: null,
+    };
 
     if (!wsReal) {
       return {
@@ -375,14 +308,15 @@ class ControlTowerServer {
       dataDir,
       workspaceSettings: resolved.workspace,
     });
-    const wsInboxSummary = summarizeInbox(loadWorkspaceInbox(dataDir, wsReal), {
-      focusCooldownSec: resolved.plugin.focusCooldownSec,
-    });
     const wsRoadmap = loadWorkspaceRoadmap(wsReal, {
       dataDir,
       workspaceSettings: resolved.workspace,
     });
+
     if (!found) {
+      const wsInboxSummary = summarizeInbox(loadWorkspaceInbox(dataDir, wsReal), {
+        focusCooldownSec: resolved.plugin.focusCooldownSec,
+      });
       return {
         plugin,
         workspace: wsReal,
@@ -406,8 +340,9 @@ class ControlTowerServer {
 
     const content = readFileSync(found.absPath, 'utf8');
     const parsed = parseRegistry(content);
-    if (parsed.controller.currentControllerId) {
-      parsed.controller.telemetry = inspectById(parsed.controller.currentControllerId, {
+    const ctrlId = String(parsed.controller.currentControllerId || '').trim();
+    if (ctrlId) {
+      parsed.controller.telemetry = inspectById(ctrlId, {
         env: process.env,
         cacheMap: this.#transcriptCache,
       });
@@ -422,21 +357,28 @@ class ControlTowerServer {
         : null,
     }));
 
-    const nativeSwarm = parsed.controller.currentControllerId
-      ? inspectNativeSwarm(parsed.controller.currentControllerId, {
-          env: process.env,
-          cacheMap: this.#transcriptCache,
-        })
+    const nativeSwarm = ctrlId
+      ? inspectNativeSwarm(ctrlId, { env: process.env, cacheMap: this.#transcriptCache })
       : emptySwarm;
-    const hidden = parsed.controller.currentControllerId
-      ? inspectHiddenSurfaces(parsed.controller.currentControllerId, {
-          env: process.env,
-          cacheMap: this.#transcriptCache,
-        })
+    const hidden = ctrlId
+      ? inspectHiddenSurfaces(ctrlId, { env: process.env, cacheMap: this.#transcriptCache })
       : { subagents: [], workflows: [] };
     this.#pruneCache();
 
-    const attention = this.#buildAttention(dataDir, wsReal, parsed, resolved);
+    const pluginState = loadPluginState(dataDir);
+    const handoverIgnored = Boolean(ctrlId && pluginState.controllers?.[ctrlId]?.handoverIgnored);
+    const wsInboxSummary = summarizeInbox(loadWorkspaceInbox(dataDir, wsReal), {
+      focusCooldownSec: resolved.plugin.focusCooldownSec,
+      activeControllerId: ctrlId,
+      handoverIgnored,
+    });
+    const attention = buildUnifiedAttentionBanner(wsInboxSummary, {
+      activeControllerId: ctrlId,
+      controllerCompactions: Number(parsed.controller?.telemetry?.compactions || 0),
+      compactionThreshold: resolved.effective.controllerCompactionThreshold || 5,
+      handoverIgnored,
+    });
+
     const executionSurfaces = {
       swarm: nativeSwarm,
       subagents: hidden.subagents,
@@ -563,11 +505,12 @@ class ControlTowerServer {
     }
     const body = await this.#readBody(req);
     if (url.pathname === '/_sidecar/new-conversation') {
+      const dataDir = getDataDir();
       const wsReal = body.workspace
         ? normalizeWorkspaceInput(body.workspace, { throwOnInvalid: false })
         : '';
       const resolved = resolveEffectiveSettings({
-        dataDir: getDataDir(),
+        dataDir,
         wsReal: wsReal || '',
         pluginRoot: PLUGIN_ROOT,
         env: process.env,
@@ -584,13 +527,26 @@ class ControlTowerServer {
       const args = ['new-conversation', '--model', cliModel];
       if (body.title) args.push('--title', String(body.title).trim());
       args.push(message);
-      const result = execAgentApi(args, { projectId: body.projectId });
-      return this.#sendJson(res, 200, { ok: true, cliModel, result });
+      const result = await execAgentApiAsync(args, { projectId: body.projectId });
+      const newConvId = extractConversationIdFromResult(result);
+
+      // Pre-register legitimate handover successor so PreToolUse allows first registry takeover cleanly
+      if (body.handoverForWorkspace && wsReal && newConvId) {
+        try {
+          const st = loadPluginState(dataDir);
+          const wsHash = sha256(wsReal).slice(0, 16);
+          st.pendingSuccessors[wsHash] = { convId: newConvId, createdAt: Date.now() };
+          savePluginState(dataDir, st);
+        } catch {
+          // ignore
+        }
+      }
+      return this.#sendJson(res, 200, { ok: true, cliModel, conversationId: newConvId, result });
     }
     if (url.pathname === '/_sidecar/get-conversation-metadata') {
       const convId = String(body.conversationId || '').trim();
       if (!convId) throw new HttpError(400, 'conversationId is required');
-      const result = execAgentApi(['get-conversation-metadata', convId]);
+      const result = await getConversationMetadataCached(convId);
       return this.#sendJson(res, 200, result);
     }
     if (url.pathname === '/_sidecar/send-message') {
@@ -602,7 +558,7 @@ class ControlTowerServer {
       const args = ['send-message'];
       if (body.title) args.push('--title', String(body.title));
       args.push(convId, message);
-      const result = execAgentApi(args, { projectId: body.projectId });
+      const result = await execAgentApiAsync(args, { projectId: body.projectId });
       return this.#sendJson(res, 200, result);
     }
     return this.#sendJson(res, 404, { error: 'Not Found' });
@@ -613,6 +569,11 @@ class ControlTowerServer {
 
     if (req.method === 'GET' && url.pathname === '/api/snapshot') {
       const snap = this.#buildSnapshot(url.searchParams.get('workspace') || '');
+      // Auto-arm sentinel daemon if workspace has registry & dataDir already exists (strictly zero-write on fresh dirs)
+      if (snap.workspace && snap.registryExists && existsSync(dataDir) && !this.#activeWorkspace) {
+        this.#activeWorkspace = snap.workspace;
+        this.#ensureSentinelTimer();
+      }
       return this.#sendJson(res, 200, snap);
     }
 
@@ -626,36 +587,6 @@ class ControlTowerServer {
         env: process.env,
       });
       return this.#sendJson(res, 200, { ...resolved, modelPresets: MODEL_PRESETS });
-    }
-
-    if (req.method === 'GET' && url.pathname === '/api/roadmap') {
-      const wsRaw = url.searchParams.get('workspace') || '';
-      const wsReal = wsRaw ? normalizeWorkspaceInput(wsRaw, { throwOnInvalid: true }) : '';
-      const resolved = resolveEffectiveSettings({
-        dataDir,
-        wsReal: wsReal || '',
-        pluginRoot: PLUGIN_ROOT,
-        env: process.env,
-      });
-      const roadmap = wsReal
-        ? loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings: resolved.workspace })
-        : { exists: false };
-      return this.#sendJson(res, 200, { ok: true, roadmap });
-    }
-
-    if (req.method === 'GET' && url.pathname === '/api/inbox') {
-      const wsRaw = url.searchParams.get('workspace') || '';
-      const wsReal = wsRaw ? normalizeWorkspaceInput(wsRaw, { throwOnInvalid: true }) : '';
-      const resolved = resolveEffectiveSettings({
-        dataDir,
-        wsReal: wsReal || '',
-        pluginRoot: PLUGIN_ROOT,
-        env: process.env,
-      });
-      const summary = summarizeInbox(wsReal ? loadWorkspaceInbox(dataDir, wsReal) : null, {
-        focusCooldownSec: resolved.plugin.focusCooldownSec,
-      });
-      return this.#sendJson(res, 200, { ok: true, inbox: summary });
     }
 
     if (req.method === 'GET' && url.pathname === '/api/diagnostics') {
@@ -692,11 +623,27 @@ class ControlTowerServer {
       });
     }
 
+    const body = req.method === 'POST' ? await this.#readBody(req) : {};
+
+    const routeCtx = {
+      req,
+      res,
+      url,
+      body,
+      dataDir,
+      pluginRoot: PLUGIN_ROOT,
+      buildSnapshot: (ws) => this.#buildSnapshot(ws),
+      runSentinelSweep: (ws) => this.#runSentinelSweepForWorkspace(ws),
+      sendJson: (r, s, o) => this.#sendJson(r, s, o),
+      HttpError,
+    };
+
+    if (await handleRoadmapRoute(routeCtx)) return;
+    if (await handleInboxAndSwarmRoute(routeCtx)) return;
+
     if (req.method !== 'POST') {
       return this.#sendJson(res, 405, { error: 'Method Not Allowed' });
     }
-
-    const body = await this.#readBody(req);
 
     if (url.pathname === '/api/workspace/select') {
       const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
@@ -706,135 +653,6 @@ class ControlTowerServer {
       this.#ensureSentinelTimer();
       const snap = this.#buildSnapshot(wsReal, { recentOverride: nextRecent });
       return this.#sendJson(res, 200, { ok: true, snapshot: snap });
-    }
-
-    if (url.pathname === '/api/inbox/ack') {
-      const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
-      if (!wsReal) throw new HttpError(400, 'workspace is required');
-      ackInboxItems(dataDir, wsReal, {
-        id: body.id || '',
-        ackAll: Boolean(body.ackAll),
-        priority: body.priority || '',
-      });
-      return this.#sendJson(res, 200, {
-        ok: true,
-        snapshot: this.#buildSnapshot(wsReal),
-      });
-    }
-
-    if (url.pathname === '/api/inbox/deliver') {
-      const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
-      if (!wsReal) throw new HttpError(400, 'workspace is required');
-      const snapBefore = this.#buildSnapshot(wsReal);
-      const ctrlId = String(snapBefore.parsed?.controller?.currentControllerId || '').trim();
-      if (!ctrlId) throw new HttpError(400, '当前台账未登记现役总控 conversationId');
-      const unread = (snapBefore.inbox?.items || []).filter((x) => !x.acked);
-      const targets = body.id ? unread.filter((x) => x.id === body.id) : unread;
-      if (targets.length === 0) {
-        return this.#sendJson(res, 200, { ok: true, deliveredCount: 0, snapshot: snapBefore });
-      }
-      const lines = targets.map((t) => `[${t.priority}] ${t.title}: ${t.summary}`);
-      const msg = `[CT_INBOX_DELIVER] 用户从看板主动投递以下 ${targets.length} 条后台信箱事件，请核查处理：\n${lines.join('\n')}`;
-      execAgentApi(['send-message', '--title', '[CT信箱投递]', ctrlId, msg], { projectId: body.projectId });
-      for (const t of targets) {
-        ackInboxItems(dataDir, wsReal, { id: t.id });
-      }
-      return this.#sendJson(res, 200, {
-        ok: true,
-        deliveredCount: targets.length,
-        snapshot: this.#buildSnapshot(wsReal),
-      });
-    }
-
-    if (url.pathname === '/api/roadmap/init') {
-      const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
-      if (!wsReal) throw new HttpError(400, 'workspace is required');
-      const storageMode = body.storageMode === 'plugin_data' ? 'plugin_data' : 'workspace';
-      initWorkspaceRoadmap(wsReal, {
-        dataDir,
-        storageMode,
-        projectName: body.projectName || '',
-      });
-      return this.#sendJson(res, 200, { ok: true, snapshot: this.#buildSnapshot(wsReal) });
-    }
-
-    if (url.pathname === '/api/roadmap/l1/save') {
-      const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
-      if (!wsReal) throw new HttpError(400, 'workspace is required');
-      const resolved = resolveEffectiveSettings({ dataDir, wsReal, pluginRoot: PLUGIN_ROOT, env: process.env });
-      saveRoadmapL1(wsReal, body.content, { dataDir, workspaceSettings: resolved.workspace });
-      return this.#sendJson(res, 200, { ok: true, snapshot: this.#buildSnapshot(wsReal) });
-    }
-
-    if (url.pathname === '/api/roadmap/milestone/upsert') {
-      const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
-      if (!wsReal) throw new HttpError(400, 'workspace is required');
-      const resolved = resolveEffectiveSettings({ dataDir, wsReal, pluginRoot: PLUGIN_ROOT, env: process.env });
-      upsertRoadmapMilestone(wsReal, body, { dataDir, workspaceSettings: resolved.workspace });
-      return this.#sendJson(res, 200, { ok: true, snapshot: this.#buildSnapshot(wsReal) });
-    }
-
-    if (url.pathname === '/api/roadmap/node/upsert') {
-      const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
-      if (!wsReal) throw new HttpError(400, 'workspace is required');
-      const resolved = resolveEffectiveSettings({ dataDir, wsReal, pluginRoot: PLUGIN_ROOT, env: process.env });
-      upsertRoadmapNode(wsReal, body, { dataDir, workspaceSettings: resolved.workspace });
-      return this.#sendJson(res, 200, { ok: true, snapshot: this.#buildSnapshot(wsReal) });
-    }
-
-    if (url.pathname === '/api/roadmap/node/status') {
-      const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
-      if (!wsReal) throw new HttpError(400, 'workspace is required');
-      const resolved = resolveEffectiveSettings({ dataDir, wsReal, pluginRoot: PLUGIN_ROOT, env: process.env });
-      const { newlyUnlocked } = updateRoadmapNodeStatus(
-        wsReal,
-        { id: body.id, status: body.status, linkedConvId: body.linkedConvId },
-        { dataDir, workspaceSettings: resolved.workspace }
-      );
-      return this.#sendJson(res, 200, {
-        ok: true,
-        newlyUnlocked,
-        snapshot: this.#buildSnapshot(wsReal),
-      });
-    }
-
-    if (url.pathname === '/api/roadmap/node/delete') {
-      const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
-      if (!wsReal) throw new HttpError(400, 'workspace is required');
-      const resolved = resolveEffectiveSettings({ dataDir, wsReal, pluginRoot: PLUGIN_ROOT, env: process.env });
-      deleteRoadmapNode(wsReal, body.id, { dataDir, workspaceSettings: resolved.workspace });
-      return this.#sendJson(res, 200, { ok: true, snapshot: this.#buildSnapshot(wsReal) });
-    }
-
-    if (url.pathname === '/api/roadmap/node/contract') {
-      const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
-      if (!wsReal) throw new HttpError(400, 'workspace is required');
-      const snap = this.#buildSnapshot(wsReal);
-      if (!snap.roadmap?.exists) throw new HttpError(404, 'Roadmap not initialized in workspace');
-      const node = (snap.roadmap.graph?.nodes || []).find((n) => n.id === body.id);
-      if (!node) throw new HttpError(404, `Workstream node ${body.id} not found`);
-      const overlaps = (snap.roadmap.graph?.overlaps || []).filter(
-        (o) => o.nodeA === node.id || o.nodeB === node.id
-      );
-      const contractPrompt = buildWorkstreamContractPrompt(node, {
-        controllerId: snap.parsed?.controller?.currentControllerId || '',
-        exclusiveLeaseEnabled: snap.settings?.effective?.exclusiveLeaseEnabled !== false,
-        registryRelPath: snap.registryRelPath || '.agents/SESSION-REGISTRY.md',
-        northStarBrief: snap.roadmap.northStarBrief || '',
-        overlaps,
-      });
-      return this.#sendJson(res, 200, { ok: true, node, contractPrompt });
-    }
-
-    if (url.pathname === '/api/sentinel/sweep') {
-      const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
-      if (!wsReal) throw new HttpError(400, 'workspace is required');
-      const sweep = this.#runSentinelSweepForWorkspace(wsReal);
-      return this.#sendJson(res, 200, {
-        ok: true,
-        detectedCount: sweep.detectedCount,
-        snapshot: this.#buildSnapshot(wsReal),
-      });
     }
 
     if (url.pathname === '/api/settings/plugin') {
@@ -925,8 +743,17 @@ class ControlTowerServer {
             (x) => !(x.kind === 'handover' && (!x.controllerId || x.controllerId === ctrlId))
           );
         }
+        if (wsReal && body.id) {
+          ackInboxItems(dataDir, wsReal, { id: body.id });
+        }
+        if (wsReal && body.ignoreForSession !== false) {
+          cleanupWorkspaceInbox(dataDir, wsReal, { activeControllerId: ctrlId, handoverIgnored: true });
+        }
       } else if (body.id) {
         state.pendingAttention = (state.pendingAttention || []).filter((x) => x.id !== body.id);
+        if (wsReal) {
+          ackInboxItems(dataDir, wsReal, { id: body.id });
+        }
       }
       savePluginState(dataDir, state);
       return this.#sendJson(res, 200, {
@@ -951,6 +778,7 @@ class ControlTowerServer {
       const state = loadPluginState(dataDir);
       state.transcriptCache = {};
       this.#transcriptCache = {};
+      clearMetadataCache();
       savePluginState(dataDir, state);
       return this.#sendJson(res, 200, {
         ok: true,
@@ -1017,7 +845,7 @@ class ControlTowerServer {
       const args = ['new-conversation', '--model', cliModel];
       if (title) args.push('--title', title);
       args.push(finalMessage);
-      const apiResult = execAgentApi(args, { projectId: body.projectId });
+      const apiResult = await execAgentApiAsync(args, { projectId: body.projectId });
       const newConvId = extractConversationIdFromResult(apiResult);
 
       let enrolled = false;
@@ -1053,7 +881,7 @@ class ControlTowerServer {
         event: 'dispatch_created',
         conv: newConvId,
         message: `Dispatched worker via ${cliModel}`,
-        detail: { cliModel, enrolled, hasSlash: Boolean(body.slashPrefix) },
+        detail: { cliModel, enrolled, hasSlash: Boolean(body.slashPrefix), workstreamId: body.workstreamId || '' },
       });
 
       return this.#sendJson(res, 200, {
@@ -1255,11 +1083,11 @@ class ControlTowerServer {
         try {
           await this.#handleSidecarBridge(req, res, url);
           const elapsed = Date.now() - t0;
-          if (elapsed >= SLOW_OP_THRESHOLD_MS) {
+          if (elapsed >= SLOW_RPC_THRESHOLD_MS) {
             appendFlightEvent(getDataDir(), {
               level: 'warn',
               source: 'sidecar',
-              event: 'slow_api',
+              event: 'slow_rpc',
               durationMs: elapsed,
               message: `${req.method} ${url.pathname} took ${elapsed}ms`,
             });
@@ -1297,14 +1125,17 @@ class ControlTowerServer {
 
       if (url.pathname.startsWith('/api/')) {
         const t0 = Date.now();
+        const slowThreshold = RPC_API_ROUTES.has(url.pathname)
+          ? SLOW_RPC_THRESHOLD_MS
+          : SLOW_OP_THRESHOLD_MS;
         try {
           await this.#handleApi(req, res, url);
           const elapsed = Date.now() - t0;
-          if (elapsed >= SLOW_OP_THRESHOLD_MS && url.pathname !== '/api/diagnostics') {
+          if (elapsed >= slowThreshold && url.pathname !== '/api/diagnostics') {
             appendFlightEvent(getDataDir(), {
               level: 'warn',
               source: 'sidecar',
-              event: 'slow_api',
+              event: RPC_API_ROUTES.has(url.pathname) ? 'slow_rpc' : 'slow_api',
               durationMs: elapsed,
               message: `${req.method} ${url.pathname} took ${elapsed}ms`,
             });

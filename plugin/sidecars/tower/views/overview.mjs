@@ -1,0 +1,351 @@
+import {
+  buildPrefilledHandoverText,
+  computeControllerHealth,
+  escHtml as esc,
+  formatFocusGateBadge,
+  formatInboxPriorityClass,
+  isLeaseIdle,
+} from '../ui-logic.mjs';
+
+export function renderAttentionBanner(ctx, snap) {
+  const { $ } = ctx;
+  const enabled = snap?.settings?.plugin?.attentionBannerEnabled !== false;
+  const items = Array.isArray(snap?.attention?.items) ? snap.attention.items : [];
+  const banner = $('attention-banner');
+  if (!enabled || items.length === 0) {
+    banner.classList.add('hidden');
+    $('attention-list').innerHTML = '';
+    return;
+  }
+  banner.classList.remove('hidden');
+  $('attention-list').innerHTML = items
+    .map((item) => {
+      const isHandover = item.kind === 'handover';
+      const ctrlId = item.controllerId || snap?.parsed?.controller?.currentControllerId || '';
+      const actionBtns = isHandover
+        ? `
+          <button class="btn btn-primary btn-sm spawn-handover-btn" data-id="${esc(ctrlId)}">一键接班</button>
+          <button class="btn btn-ghost btn-sm jump-conv-btn" data-id="${esc(ctrlId)}">跳转总控</button>
+          <button class="btn btn-ghost btn-sm dismiss-att-btn" data-kind="handover" data-id="${esc(item.id)}" data-ctrl="${esc(ctrlId)}">本会话忽略</button>
+        `
+        : `
+          <button class="btn btn-primary btn-sm jump-conv-btn" data-id="${esc(ctrlId)}">跳转总控拍板</button>
+          <button class="btn btn-ghost btn-sm dismiss-att-btn" data-id="${esc(item.id)}">已处理</button>
+        `;
+      return `
+        <div class="attention-item">
+          <span>${esc(item.summary || item.title || item.kind)}</span>
+          <div class="actions">${actionBtns}</div>
+        </div>
+      `;
+    })
+    .join('');
+}
+
+export function renderOverview(ctx, snap) {
+  const { $ } = ctx;
+  const eff = snap.settings?.effective || {};
+  const leaseEnabled = eff.exclusiveLeaseEnabled !== false;
+  const lease = snap.parsed?.lease || {};
+  const statusText = leaseEnabled ? lease.lockStatus || '-' : '无独占资源模式';
+  const pill = $('lease-status-pill');
+  pill.textContent = statusText;
+  const isIdle = isLeaseIdle(statusText, leaseEnabled);
+  pill.className = `badge ${isIdle ? 'badge-ok' : 'badge-warn'}`;
+
+  $('lease-disabled-note').classList.toggle('hidden', leaseEnabled);
+  $('lease-active-wrap').classList.toggle('hidden', !leaseEnabled);
+
+  if (leaseEnabled) {
+    $('lease-view').innerHTML = [
+      ['锁状态', lease.lockStatus || '-'],
+      ['持锁会话', lease.holder || '-'],
+      ['独占对象', lease.resource || '-'],
+      ['起始时间', lease.since || '-'],
+      ['操作范围', lease.scope || '-'],
+      ['解锁判据', lease.releaseCriteria || '-'],
+    ]
+      .map(([k, v]) => `<div class="kv-k">${esc(k)}</div><div class="kv-v">${esc(v)}</div>`)
+      .join('');
+
+    $('lf-lockStatus').value = lease.lockStatus || '';
+    $('lf-holder').value = lease.holder || '-';
+    $('lf-resource').value = lease.resource || '-';
+    $('lf-since').value = lease.since || '-';
+    $('lf-scope').value = lease.scope || '-';
+    $('lf-releaseCriteria').value = lease.releaseCriteria || '-';
+  }
+
+  const ctrl = snap.parsed?.controller || {};
+  const tel = ctrl.telemetry || {};
+  const health = computeControllerHealth({
+    compactions: Number(tel.compactions || 0),
+    threshold: Number(eff.controllerCompactionThreshold || 5),
+    ignored: Boolean(snap?.attention?.handoverIgnored),
+  });
+  const compBadge = $('ctrl-comp-badge');
+  compBadge.textContent = health.badgeText;
+  compBadge.className = `badge ${health.badgeClass}`;
+  $('ctrl-alert').classList.toggle('hidden', !health.showAlert);
+  $('ctrl-alert-text').textContent = health.alertText;
+
+  const autoBadge = $('ctrl-autonomy-badge');
+  autoBadge.textContent = `代决策: ${eff.effectiveAutonomy || 'balanced'}`;
+
+  const stepStr = tel.exists ? `${tel.maxStepIndex || tel.lineCount} 步 (${tel.lineCount} 条)` : '未定位到日志';
+  $('ctrl-view').innerHTML = [
+    ['总控 ID', ctrl.currentControllerId || '未登记'],
+    ['常驻模型', ctrl.defaultModel || eff.l0ControllerModel || '-'],
+    ['运行状态', `${ctrl.currentControllerStatus || '-'} | ${tel.lastModel || '-'}`],
+    ['日志进度', `${stepStr}${tel.lastUpdatedAt ? ` | ${tel.lastUpdatedAt}` : ''}`],
+  ]
+    .map(([k, v]) => `<div class="kv-k">${esc(k)}</div><div class="kv-v">${esc(v)}</div>`)
+    .join('');
+
+  $('cf-controllerId').value = ctrl.currentControllerId || window.sidecar?.conversationId || '';
+  $('cf-status').value = ctrl.currentControllerStatus || 'ONLINE';
+  $('cf-defaultModel').value = ctrl.defaultModel || eff.l0ControllerModel || 'Gemini 4 Neon (High)';
+
+  // Zero-token Sentinel & Priority Inbox
+  const inbox = snap.inbox || {
+    focus: { mode: 'idle' },
+    unreadCounts: { P0: 0, P1: 0, P2: 0, total: 0 },
+    items: [],
+  };
+  const focusBadge = formatFocusGateBadge(inbox.focus);
+  const fbEl = $('inbox-focus-badge');
+  fbEl.textContent = focusBadge.text;
+  fbEl.className = `badge ${focusBadge.badgeClass}`;
+
+  const uc = inbox.unreadCounts || { P0: 0, P1: 0, P2: 0, total: 0 };
+  $('inbox-counts-badge').textContent = `未读 ${uc.total || 0} (P0:${uc.P0 || 0} P1:${uc.P1 || 0} P2:${uc.P2 || 0})`;
+  $('inbox-counts-badge').className = `badge ${
+    (uc.P0 || 0) > 0 ? 'badge-danger' : (uc.P1 || 0) > 0 ? 'badge-warn' : 'badge-muted'
+  }`;
+
+  const inboxList = $('inbox-list');
+  const items = Array.isArray(inbox.items) ? inbox.items.slice(0, 12) : [];
+  if (items.length === 0) {
+    inboxList.innerHTML = '<p class="muted">哨兵巡检正常，暂无待处理后台事件。</p>';
+  } else {
+    inboxList.innerHTML = items
+      .map((it) => {
+        const pCls = formatInboxPriorityClass(it.priority);
+        return `
+          <div class="item-box ${it.acked ? 'inbox-row-acked' : ''}">
+            <div class="card-head">
+              <strong>${esc(it.title || it.kind)}</strong>
+              <span class="badge ${pCls}">${esc(it.priority)}${it.acked ? ' 已读' : ''}</span>
+            </div>
+            <div class="item-meta">${esc(it.summary || '-')}</div>
+            ${
+              !it.acked
+                ? `<div class="actions">
+                    <button class="btn btn-primary btn-sm inbox-deliver-btn" data-id="${esc(it.id)}">投递总控</button>
+                    <button class="btn btn-ghost btn-sm inbox-ack-btn" data-id="${esc(it.id)}">已读</button>
+                    ${it.convId ? `<button class="btn btn-ghost btn-sm jump-conv-btn" data-id="${esc(it.convId)}">跳转</button>` : ''}
+                  </div>`
+                : ''
+            }
+          </div>
+        `;
+      })
+      .join('');
+  }
+}
+
+export async function spawnHandoverController(ctx, oldCtrlId) {
+  const { state, api, showToast, copyText } = ctx;
+  const eff = state.snap?.settings?.effective || {};
+  const model = eff.l0ControllerModel || 'Gemini 4 Neon (High)';
+  const handoverPrompt = buildPrefilledHandoverText(state.snap);
+  try {
+    const res = await api('/_sidecar/new-conversation', {
+      method: 'POST',
+      body: {
+        workspace: state.workspace,
+        handoverForWorkspace: true,
+        model,
+        title: 'Control Tower 换届接班总控',
+        message: handoverPrompt,
+      },
+    });
+    const cid =
+      res.conversationId ||
+      res.result?.conversationId ||
+      res.result?.conversation_id ||
+      res.result?.response?.conversationId ||
+      '';
+    showToast(cid ? `已拉起接班总控 ${cid.slice(0, 8)}（已预授权写保护放行）` : '已发起换届接班会话');
+    if (cid) {
+      window.sidecar?.ui?.toggleConversation?.(cid);
+    } else if (oldCtrlId) {
+      await copyText(handoverPrompt);
+    }
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
+
+export function bindOverviewEvents(ctx) {
+  const { $, state, api, render, showToast, copyText } = ctx;
+
+  $('edit-lease-btn').addEventListener('click', () => $('lease-form').classList.toggle('hidden'));
+  $('cancel-lease-btn').addEventListener('click', () => $('lease-form').classList.add('hidden'));
+
+  $('lease-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const res = await api('/api/lease/update', {
+        method: 'POST',
+        body: {
+          workspace: state.workspace,
+          relPath: state.snap.registryRelPath,
+          expectedHash: state.snap.hash,
+          lockStatus: $('lf-lockStatus').value,
+          holder: $('lf-holder').value,
+          resource: $('lf-resource').value,
+          since: $('lf-since').value,
+          scope: $('lf-scope').value,
+          releaseCriteria: $('lf-releaseCriteria').value,
+        },
+      });
+      $('lease-form').classList.add('hidden');
+      render(res.snapshot);
+      showToast('已更新独占资源租约');
+    } catch (err) {
+      if (err.status === 409) $('conflict-banner').classList.remove('hidden');
+      showToast(err.message, true);
+    }
+  });
+
+  $('release-lease-btn').addEventListener('click', async () => {
+    try {
+      const res = await api('/api/lease/update', {
+        method: 'POST',
+        body: {
+          workspace: state.workspace,
+          relPath: state.snap.registryRelPath,
+          expectedHash: state.snap.hash,
+          action: 'release',
+        },
+      });
+      render(res.snapshot);
+      showToast('已一键释放独占锁为 IDLE');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  $('edit-ctrl-btn').addEventListener('click', () => $('ctrl-form').classList.toggle('hidden'));
+  $('cancel-ctrl-btn').addEventListener('click', () => $('ctrl-form').classList.add('hidden'));
+
+  $('ctrl-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const res = await api('/api/controller/update', {
+        method: 'POST',
+        body: {
+          workspace: state.workspace,
+          relPath: state.snap.registryRelPath,
+          expectedHash: state.snap.hash,
+          controllerId: $('cf-controllerId').value.trim(),
+          status: $('cf-status').value,
+          defaultModel: $('cf-defaultModel').value.trim(),
+          appendHistory: $('cf-appendHistory').checked,
+          summary: $('cf-summary').value.trim(),
+        },
+      });
+      $('ctrl-form').classList.add('hidden');
+      render(res.snapshot);
+      showToast('已更新现役总控配置');
+    } catch (err) {
+      if (err.status === 409) $('conflict-banner').classList.remove('hidden');
+      showToast(err.message, true);
+    }
+  });
+
+  $('jump-ctrl-btn').addEventListener('click', () => {
+    const id = state.snap?.parsed?.controller?.currentControllerId;
+    if (!id) return showToast('未登记总控 ID', true);
+    window.sidecar?.ui?.toggleConversation?.(id);
+  });
+
+  $('copy-ctrl-id-btn').addEventListener('click', async () => {
+    const id = state.snap?.parsed?.controller?.currentControllerId;
+    const ok = id ? await copyText(id) : false;
+    showToast(ok ? '已复制总控 ID' : '暂无可复制的总控 ID', !ok);
+  });
+
+  const handleCopyHandover = async () => {
+    const ok = await copyText(buildPrefilledHandoverText(state.snap));
+    showToast(ok ? '已复制预填换届交接卡' : '复制失败', !ok);
+  };
+  $('copy-handover-btn').addEventListener('click', handleCopyHandover);
+  $('copy-handover-raw-btn').addEventListener('click', handleCopyHandover);
+
+  $('ctrl-handover-spawn-btn').addEventListener('click', () => {
+    spawnHandoverController(ctx, state.snap?.parsed?.controller?.currentControllerId || '');
+  });
+
+  $('ctrl-ignore-handover-btn').addEventListener('click', async () => {
+    const ctrlId = state.snap?.parsed?.controller?.currentControllerId || '';
+    try {
+      const res = await api('/api/attention/dismiss', {
+        method: 'POST',
+        body: {
+          workspace: state.workspace,
+          kind: 'handover',
+          controllerId: ctrlId,
+          ignoreForSession: true,
+        },
+      });
+      render(res.snapshot);
+      showToast('已标记当前总控会话忽略换届提醒');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  $('sentinel-sweep-btn').addEventListener('click', async () => {
+    if (!state.workspace) return;
+    try {
+      const res = await api('/api/sentinel/sweep', {
+        method: 'POST',
+        body: { workspace: state.workspace },
+      });
+      render(res.snapshot);
+      showToast(`哨兵巡检完成，新捕获 ${res.detectedCount || 0} 条事件`);
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  $('inbox-deliver-all-btn').addEventListener('click', async () => {
+    if (!state.workspace) return;
+    try {
+      const res = await api('/api/inbox/deliver', {
+        method: 'POST',
+        body: { workspace: state.workspace },
+      });
+      render(res.snapshot);
+      showToast(res.deliveredCount > 0 ? `已向总控投递 ${res.deliveredCount} 条信箱事件` : '暂无未读事件可投递');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  $('inbox-ack-all-btn').addEventListener('click', async () => {
+    if (!state.workspace) return;
+    try {
+      const res = await api('/api/inbox/ack', {
+        method: 'POST',
+        body: { workspace: state.workspace, ackAll: true },
+      });
+      render(res.snapshot);
+      showToast('已将全部后台信箱事件标为已读');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+}

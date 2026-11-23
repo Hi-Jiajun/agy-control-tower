@@ -12,6 +12,7 @@ import { join, resolve } from 'node:path';
 export const DEFAULT_LOG_MAX_BYTES = 2 * 1024 * 1024;
 export const DEFAULT_LOG_MAX_FILES = 3;
 export const SLOW_OP_THRESHOLD_MS = 100;
+export const SLOW_RPC_THRESHOLD_MS = 500;
 
 const HOME_DIR_RE = new RegExp('/(?:' + 'ho' + 'me|' + 'Us' + 'ers)/[^/\\s"\'`]+', 'g');
 const PRIVATE_IP_RE = new RegExp(

@@ -766,6 +766,44 @@ export function inspectHiddenSurfaces(
   };
 }
 
+export function extractFirstUserPromptRaw(tp, maxChars = 4000) {
+  if (!tp || !existsSync(tp)) return '';
+  let fd;
+  try {
+    const st = statSync(tp);
+    if (!st.isFile() || st.size === 0) return '';
+    fd = openSync(tp, 'r');
+    const len = Math.min(HEAD_BYTES, st.size);
+    const buf = readRangeSync(fd, 0, len);
+    const text = buf.toString('utf8');
+    const lines = st.size > len ? text.split('\n').slice(0, -1) : text.split('\n');
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      try {
+        const step = JSON.parse(line);
+        if (step && typeof step === 'object' && String(step.type || '').toUpperCase() === 'USER_INPUT') {
+          const content = String(step.content || '').trim();
+          if (content) return content.slice(0, maxChars);
+        }
+      } catch {
+        // skip
+      }
+    }
+    return '';
+  } catch {
+    return '';
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
 function pruneMapLru(obj, maxEntries = STATE_MAX_ENTRIES) {
   if (!obj || typeof obj !== 'object') return {};
   const entries = Object.entries(obj);
@@ -781,26 +819,52 @@ function pruneAttentionList(list, maxEntries = ATTENTION_MAX_ENTRIES) {
   return filtered.slice(-maxEntries);
 }
 
+function prunePendingSuccessors(obj, nowMs = Date.now(), ttlMs = 2 * 3600 * 1000) {
+  if (!obj || typeof obj !== 'object') return {};
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (!v || typeof v !== 'object' || !v.convId) continue;
+    const age = Math.max(0, nowMs - (Number(v.createdAt || 0) || 0));
+    if (age <= ttlMs) {
+      out[k] = { convId: String(v.convId), createdAt: Number(v.createdAt || nowMs) };
+    }
+  }
+  return out;
+}
+
 export function loadPluginState(dataDir) {
   const filePath = join(dataDir, 'state.json');
   const raw = readJsonSafe(filePath, null);
   if (!raw || typeof raw !== 'object') {
-    return { controllers: {}, workers: {}, pendingAttention: [], transcriptCache: {} };
+    return {
+      controllers: {},
+      workers: {},
+      pendingAttention: [],
+      pendingSuccessors: {},
+      transcriptCache: {},
+    };
   }
   return {
     controllers: raw.controllers && typeof raw.controllers === 'object' ? raw.controllers : {},
     workers: raw.workers && typeof raw.workers === 'object' ? raw.workers : {},
     pendingAttention: pruneAttentionList(raw.pendingAttention),
+    pendingSuccessors: prunePendingSuccessors(raw.pendingSuccessors),
     transcriptCache:
       raw.transcriptCache && typeof raw.transcriptCache === 'object' ? raw.transcriptCache : {},
   };
 }
 
 export function savePluginState(dataDir, state) {
+  const nowMs = Date.now();
+  const prunedAtt = pruneAttentionList(state?.pendingAttention, ATTENTION_MAX_ENTRIES).filter((x) => {
+    const age = Math.max(0, nowMs - (Number(x.updatedAt || 0) || 0));
+    return age <= 24 * 3600 * 1000;
+  });
   const normalized = {
     controllers: pruneMapLru(state?.controllers, STATE_MAX_ENTRIES),
     workers: pruneMapLru(state?.workers, STATE_MAX_ENTRIES),
-    pendingAttention: pruneAttentionList(state?.pendingAttention, ATTENTION_MAX_ENTRIES),
+    pendingAttention: prunedAtt,
+    pendingSuccessors: prunePendingSuccessors(state?.pendingSuccessors, nowMs),
     transcriptCache: pruneMapLru(state?.transcriptCache, STATE_MAX_ENTRIES),
   };
   atomicWriteText(join(dataDir, 'state.json'), `${JSON.stringify(normalized, null, 2)}\n`);

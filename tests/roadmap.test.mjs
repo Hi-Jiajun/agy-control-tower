@@ -8,6 +8,7 @@ import {
   buildWorkstreamContractPrompt,
   deleteRoadmapNode,
   initWorkspaceRoadmap,
+  inspectNodeHandoff,
   loadWorkspaceRoadmap,
   pathsOverlap,
   saveRoadmapL1,
@@ -163,6 +164,15 @@ test('Phase 3: 3-tier hybrid roadmap supports DAG readiness, cycle rejection, ow
     const ssText = ssOut.injectSteps?.[0]?.systemMessage?.systemMessage || '';
     assert.ok(ssText.includes('路线图(工作区): 1/2 完成'));
     assert.ok(ssText.includes('就绪可并行分支: W2'));
+
+    // 9) Handoff contract discovery & path traversal guard
+    mkdirSync(join(ws, '.agents', 'handoffs'), { recursive: true });
+    writeFileSync(join(ws, '.agents', 'handoffs', 'W2.md'), '# Handoff W2\nAPI ready\n', 'utf8');
+    const hfOk = inspectNodeHandoff(ws, { id: 'W2', handoffPath: '.agents/handoffs/W2.md' });
+    assert.equal(hfOk.exists, true);
+    assert.ok(hfOk.preview.includes('API ready'));
+    const hfBlocked = inspectNodeHandoff(ws, { id: 'W2', handoffPath: '../../etc/passwd' });
+    assert.equal(hfBlocked.exists, false);
   } finally {
     sb.cleanup();
   }

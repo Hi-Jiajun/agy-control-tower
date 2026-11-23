@@ -400,6 +400,26 @@ if (args.includes('new-conversation')) {
     const rmDel = await req('POST', '/api/roadmap/node/delete', { workspace: ws, id: 'W2' });
     assert.equal(rmDel.status, 200);
     assert.equal(rmDel.data.snapshot.roadmap.graph.counts.total, 1);
+
+    // 16) Phase 4 (v1.6.0): Modular view assets, hidden roadmap dispatch, swarm cleanup, metadata cache & handover pre-register
+    for (const viewPath of ['/views/overview.mjs', '/views/sessions.mjs', '/views/roadmap.mjs', '/views/settings.mjs']) {
+      const vr = await fetch(`${base}${viewPath}`);
+      assert.equal(vr.status, 200, `Expected 200 for ${viewPath}`);
+    }
+
+    const rmHidden = await req('POST', '/api/roadmap/node/dispatch-hidden', { workspace: ws, id: 'W1' });
+    assert.equal(rmHidden.status, 200);
+    assert.equal(rmHidden.data.nodeId, 'W1');
+
+    const meta1 = await req('POST', '/_sidecar/get-conversation-metadata', { conversationId: ctrlId });
+    assert.equal(meta1.status, 200);
+    const meta2 = await req('POST', '/_sidecar/get-conversation-metadata', { conversationId: ctrlId });
+    assert.equal(meta2.status, 200);
+    assert.equal(meta2.data._cached, true);
+
+    const swarmClean = await req('POST', '/api/swarm/cleanup-request', { workspace: ws });
+    assert.equal(swarmClean.status, 200);
+    assert.equal(swarmClean.data.ok, true);
   } finally {
     if (server) await server.close();
     process.env = prevEnv;

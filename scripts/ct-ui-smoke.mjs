@@ -222,10 +222,16 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
     const dataDir = join(sb.dir, 'plugin_data');
     const cfgDir = join(sb.dir, 'cfg');
     const profileDir = join(sb.dir, 'chrome-profile');
-    mkdirSync(join(ws, '.agents'), { recursive: true });
+    mkdirSync(join(ws, '.agents', 'handoffs'), { recursive: true });
     mkdirSync(appData, { recursive: true });
     mkdirSync(cfgDir, { recursive: true });
     mkdirSync(profileDir, { recursive: true });
+
+    writeFileSync(
+      join(ws, '.agents', 'handoffs', 'W1.md'),
+      '# 接力契约：W1\n- 对外接口: parsePacket()\n- 验收命令: npm test\n',
+      'utf8'
+    );
 
     const ctrlId = makeConvId('c', '1', '4', '8', 'a');
     const workerId = makeConvId('a', '2', '4', '8', 'b');
@@ -375,7 +381,7 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
       checks.push(`narrow-dark:${tab}`);
     }
 
-    // 1b) Interactive Roadmap init in narrow 390px viewport
+    // 1b) Interactive Roadmap init, node creation, handoff preview, cycle error guard, and fill-dispatch bridge
     await cdp.evaluate(`document.querySelector('.tab[data-tab="roadmap"]')?.click()`);
     await new Promise((r) => setTimeout(r, 60));
     await cdp.evaluate(`document.getElementById('rm-init-ws-btn')?.click()`);
@@ -383,18 +389,85 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
       async () => Boolean(await cdp.evaluate(`!document.getElementById('rm-body')?.classList.contains('hidden')`)),
       { label: 'roadmap interactive init' }
     );
+    await cdp.evaluate(`(() => {
+      document.getElementById('rm-toggle-node-form-btn').click();
+      document.getElementById('rnf-id').value = 'W1';
+      document.getElementById('rnf-title').value = '协议层核心';
+      document.getElementById('rnf-ownership').value = 'src/proto/';
+      document.getElementById('rnf-acceptance').value = 'npm test';
+      document.getElementById('rm-node-form').requestSubmit();
+    })()`);
+    await waitForCondition(
+      async () => Boolean(await cdp.evaluate(`document.querySelectorAll('#rm-nodes-list .handoff-details').length === 1`)),
+      { label: 'roadmap node W1 with handoff details rendered' }
+    );
+    await cdp.evaluate(`(() => {
+      document.getElementById('rm-toggle-node-form-btn').click();
+      document.getElementById('rnf-id').value = 'W2';
+      document.getElementById('rnf-title').value = '下游消费';
+      document.getElementById('rnf-dependsOn').value = 'W1';
+      document.getElementById('rm-node-form').requestSubmit();
+    })()`);
+    await waitForCondition(
+      async () => Boolean(await cdp.evaluate(`document.getElementById('rm-nodes-list')?.textContent?.includes('W2')`)),
+      { label: 'roadmap node W2 rendered' }
+    );
+    // Attempt cyclic dependency W1 -> W2 and verify error toast without uncaught exception
+    await cdp.evaluate(`(() => {
+      document.querySelector('.rm-edit-node-btn[data-id="W1"]').click();
+      document.getElementById('rnf-dependsOn').value = 'W2';
+      document.getElementById('rm-node-form').requestSubmit();
+    })()`);
+    await waitForCondition(
+      async () => Boolean(await cdp.evaluate(`document.getElementById('toast')?.textContent?.includes('循环依赖')`)),
+      { label: 'roadmap cycle error toast' }
+    );
+    await cdp.evaluate(`document.getElementById('rm-node-cancel-btn')?.click()`);
     const rmOverflow = await cdp.evaluate(`document.documentElement.scrollWidth <= window.innerWidth + 2`);
-    assert.equal(rmOverflow, true, 'Narrow 390px overflow after roadmap init');
-    checks.push('roadmap-interactive-init');
+    assert.equal(rmOverflow, true, 'Narrow 390px overflow after roadmap interactive flow');
+    checks.push('roadmap-interactive-crud-handoff-cycle');
 
-    // Return to settings tab for diagnostics checks
+    // Click fill-dispatch on W1 -> jumps to sessions tab with workstreamId=W1 prefilled
+    await cdp.evaluate(`document.querySelector('.rm-fill-dispatch-btn[data-id="W1"]')?.click()`);
+    await waitForCondition(
+      async () => (await cdp.evaluate(`document.getElementById('df-workstreamId')?.value`)) === 'W1',
+      { label: 'roadmap fill-dispatch prefill' }
+    );
+    checks.push('roadmap-fill-dispatch');
+
+    // 1c) Native inline archive form (zero window.prompt) in sessions tab
+    await cdp.evaluate(`document.querySelector('.archive-conv-btn')?.click()`);
+    await waitForCondition(
+      async () => Boolean(await cdp.evaluate(`!document.getElementById('archive-form')?.classList.contains('hidden')`)),
+      { label: 'inline archive form opened' }
+    );
+    await cdp.evaluate(`(() => {
+      document.getElementById('af-summary').value = 'L3 冒烟归档验证通过';
+      document.getElementById('archive-form').requestSubmit();
+    })()`);
+    await waitForCondition(
+      async () => (await cdp.evaluate(`document.getElementById('archived-count-badge')?.textContent?.trim()`)) === '1',
+      { label: 'inline archive completed' }
+    );
+    checks.push('inline-archive-form');
+
+    // Return to settings tab for diagnostics + plugin settings form save check
     await cdp.evaluate(`document.querySelector('.tab[data-tab="settings"]')?.click()`);
     await new Promise((r) => setTimeout(r, 80));
+    await cdp.evaluate(`document.getElementById('plugin-settings-form')?.requestSubmit()`);
+    await waitForCondition(
+      async () => Boolean(await cdp.evaluate(`document.getElementById('toast')?.textContent?.includes('已保存插件设置')`)),
+      { label: 'plugin settings form submit' }
+    );
+    checks.push('plugin-settings-submit');
 
     // 2) Verify diagnostics card renders real flight events & filtering works
     await waitForCondition(
       async () => Number(await cdp.evaluate(`document.querySelectorAll('#diag-events-list .diag-row').length`)) >= 2,
       { label: 'diagnostics rows rendered' }
+    );
+    const totalDiagRows = Number(
+      await cdp.evaluate(`document.querySelectorAll('#diag-events-list .diag-row').length`)
     );
     await cdp.evaluate(`(() => {
       const sel = document.getElementById('diag-level-filter');
@@ -402,7 +475,14 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
       sel.dispatchEvent(new Event('change'));
     })()`);
     await waitForCondition(
-      async () => Number(await cdp.evaluate(`document.querySelectorAll('#diag-events-list .diag-row').length`)) === 1,
+      async () =>
+        Boolean(
+          await cdp.evaluate(`(() => {
+            const rows = document.querySelectorAll('#diag-events-list .diag-row');
+            const txt = document.getElementById('diag-events-list')?.textContent || '';
+            return rows.length >= 1 && rows.length < ${totalDiagRows} && !txt.includes('Smoke test info event') && txt.includes('Smoke test write guard warn event');
+          })()`)
+        ),
       { label: 'diagnostics warn_or_error filter' }
     );
     checks.push('diagnostics-filter');

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import {
   findRegistryInWorkspaces,
   resolvePluginDataDir,
+  sha256,
 } from '../lib/paths.mjs';
 import {
   appendFlightEvent,
@@ -14,7 +15,9 @@ import {
 } from '../lib/logger.mjs';
 import {
   buildInboxDigestLine,
+  cleanupWorkspaceInbox,
   evaluateFocusGate,
+  evaluateSentinelSweep,
   loadWorkspaceInbox,
   recordControllerFocus,
   upsertInboxItem,
@@ -27,8 +30,11 @@ import {
 } from '../lib/registry.mjs';
 import { resolveEffectiveSettings } from '../lib/settings.mjs';
 import {
+  extractFirstUserPromptRaw,
   extractPromptSessionIds,
   hasOutboundAgentApiReport,
+  inspectById,
+  inspectNativeSwarm,
   inspectTranscript,
   isValidConvIdOrPrefix,
   loadPluginState,
@@ -140,7 +146,104 @@ function sendAgentApiMessage(recipientId, title, message) {
   });
 }
 
-function handlePreToolUse(payload, regFound, parsedReg, resolved, dataDir, convId) {
+function toolArgsWriteOwnConvId(args, convId) {
+  if (!args || typeof args !== 'object' || !convId) return false;
+  const full = String(convId).trim().toLowerCase();
+  const short = full.slice(0, 8);
+  const blob = [
+    args.Replacement,
+    args.replacement,
+    args.Content,
+    args.content,
+    args.NewText,
+    args.new_text,
+  ]
+    .filter((v) => typeof v === 'string')
+    .join('\n')
+    .toLowerCase();
+  if (!blob) return false;
+  return blob.includes(full) || (short.length >= 8 && blob.includes(short));
+}
+
+function isLegitimateHandoverTakeover({ payload, regFound, parsedReg, dataDir, hintPath, convId }) {
+  // 1) Never allow enrolled active worker sessions to self-promote
+  const enrolledWorker = findActiveWorkerSession(convId, parsedReg);
+  if (enrolledWorker && String(enrolledWorker.status || '').toUpperCase() !== 'DONE') {
+    return { allowed: false, reason: 'enrolled_worker' };
+  }
+
+  // 2) Must actually be writing its own conversationId into SESSION-REGISTRY.md
+  const args = payload?.toolCall?.args && typeof payload.toolCall.args === 'object' ? payload.toolCall.args : {};
+  if (!toolArgsWriteOwnConvId(args, convId)) {
+    return { allowed: false, reason: 'missing_self_id_in_write' };
+  }
+
+  // 3a) Pre-registered successor from Sidecar one-click handover
+  const wsHash = sha256(regFound.workspace).slice(0, 16);
+  const state = loadPluginState(dataDir);
+  const pending = state.pendingSuccessors?.[wsHash];
+  if (pending?.convId && sameControllerId(pending.convId, convId)) {
+    return { allowed: true, reason: 'pre_registered_successor', wsHash };
+  }
+
+  // 3b) Manual handover card: first USER_INPUT contains handover intent + outgoing controller ID
+  const oldCtrlId = String(parsedReg?.controller?.currentControllerId || '').trim();
+  const selfTp = resolveSelfTranscript(payload, convId, hintPath);
+  if (oldCtrlId && selfTp) {
+    const firstPrompt = extractFirstUserPromptRaw(selfTp, 4000);
+    const lowerPrompt = firstPrompt.toLowerCase();
+    const oldLower = oldCtrlId.toLowerCase();
+    const oldPrefix = oldLower.slice(0, 8);
+    const mentionsOldCtrl =
+      lowerPrompt.includes(oldLower) || (oldPrefix.length >= 8 && lowerPrompt.includes(oldPrefix));
+    const hasHandoverIntent =
+      /常驻主交流总控|control-tower|chief-of-staff/i.test(firstPrompt) &&
+      /接班|换届|前任总控|handover/i.test(firstPrompt);
+    if (mentionsOldCtrl && hasHandoverIntent) {
+      return { allowed: true, reason: 'handover_card_verified', wsHash };
+    }
+  }
+
+  return { allowed: false, reason: 'unverified_non_controller' };
+}
+
+function runThrottledHookSentinel(regFound, parsedReg, resolved, dataDir, hintPath) {
+  if (resolved.plugin.sentinelEnabled === false) return;
+  const activeSessions = parsedReg.activeSessions || [];
+  const ctrlId = String(parsedReg?.controller?.currentControllerId || '').trim();
+  if (activeSessions.length === 0 && !ctrlId) return;
+
+  const inbox = loadWorkspaceInbox(dataDir, regFound.workspace);
+  const intervalMs = Math.max(15, Number(resolved.plugin.sentinelIntervalSec || 15)) * 1000;
+  const nowMs = Date.now();
+  if (inbox.lastSweepAt > 0 && nowMs - inbox.lastSweepAt < intervalMs) {
+    return;
+  }
+
+  const enrichedActive = activeSessions.map((s) => ({
+    ...s,
+    telemetry: s.conversationId ? inspectById(s.conversationId, { hintPath }) : null,
+  }));
+  const nativeSwarm = ctrlId ? inspectNativeSwarm(ctrlId, { hintPath }) : null;
+  if (enrichedActive.length === 0 && !nativeSwarm?.active) return;
+
+  try {
+    evaluateSentinelSweep({
+      dataDir,
+      wsReal: regFound.workspace,
+      activeSessions: enrichedActive,
+      nativeSwarm,
+      subagents: [],
+      workerCompactionThreshold: resolved.effective.workerCompactionThreshold || 2,
+      stuckThresholdMin: resolved.plugin.stuckThresholdMin || 15,
+      nowMs,
+    });
+  } catch {
+    // keep hook resilient
+  }
+}
+
+function handlePreToolUse(payload, regFound, parsedReg, resolved, dataDir, hintPath, convId) {
   const guardMode = resolved.plugin.registryWriteGuard || 'ask';
   if (guardMode === 'off') {
     process.stdout.write('{"decision":"allow"}\n');
@@ -163,6 +266,62 @@ function handlePreToolUse(payload, regFound, parsedReg, resolved, dataDir, convI
   }
 
   if (!hasValidController(parsedReg) || isActiveController(convId, parsedReg)) {
+    // If cold-starting a brand-new controller (no valid controller yet) and writing own ID, stamp current version silently
+    if (!hasValidController(parsedReg) && toolArgsWriteOwnConvId(args, convId)) {
+      try {
+        const curVer = readInstalledPluginVersion();
+        if (curVer) {
+          const st = loadPluginState(dataDir);
+          st.controllers[convId] = {
+            ...(st.controllers[convId] || {}),
+            lastSyncedVersion: curVer,
+            updatedAt: Date.now(),
+          };
+          savePluginState(dataDir, st);
+        }
+      } catch {
+        // ignore
+      }
+    }
+    process.stdout.write('{"decision":"allow"}\n');
+    return;
+  }
+
+  // Double-evidence legitimate handover takeover check
+  const takeover = isLegitimateHandoverTakeover({
+    payload,
+    regFound,
+    parsedReg,
+    dataDir,
+    hintPath,
+    convId,
+  });
+  if (takeover.allowed) {
+    try {
+      const curVer = readInstalledPluginVersion();
+      const st = loadPluginState(dataDir);
+      st.controllers[convId] = {
+        ...(st.controllers[convId] || {}),
+        lastSyncedVersion: curVer || st.controllers[convId]?.lastSyncedVersion || '',
+        updatedAt: Date.now(),
+      };
+      if (takeover.wsHash && st.pendingSuccessors?.[takeover.wsHash]) {
+        delete st.pendingSuccessors[takeover.wsHash];
+      }
+      savePluginState(dataDir, st);
+      cleanupWorkspaceInbox(dataDir, regFound.workspace, { activeControllerId: convId });
+    } catch {
+      // ignore state sync error during takeover
+    }
+    appendFlightEvent(dataDir, {
+      level: 'info',
+      source: 'hook',
+      event: 'handover_takeover_allowed',
+      ok: true,
+      conv: convId,
+      message: `Allowed legitimate controller handover (${takeover.reason}) on ${regFound.relPath}`,
+      detail: { reason: takeover.reason, relPath: regFound.relPath },
+    });
     process.stdout.write('{"decision":"allow"}\n');
     return;
   }
@@ -177,6 +336,7 @@ function handlePreToolUse(payload, regFound, parsedReg, resolved, dataDir, convI
     message: `PreToolUse ${decision} on ${regFound.relPath}`,
     detail: {
       decision,
+      reason: takeover.reason,
       toolName: payload?.toolCall?.name || '',
       relPath: regFound.relPath,
     },
@@ -339,9 +499,54 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
         // ignore inbox error
       }
       stateDirty = true;
+    } else if (lastInput.includes('[CT_REPORT:DONE]')) {
+      const cleanSummary = lastInput.replace(/\s+/g, ' ').trim().slice(0, 140);
+      try {
+        upsertInboxItem(dataDir, regFound.workspace, {
+          dedupKey: `done:${cleanSummary.slice(0, 48)}`,
+          priority: 'P2',
+          kind: 'worker_done',
+          source: 'worker',
+          convId,
+          title: '收到专职会话完成汇报',
+          summary: cleanSummary,
+        });
+      } catch {
+        // ignore inbox error
+      }
+      try {
+        const rm = loadWorkspaceRoadmap(regFound.workspace, {
+          dataDir,
+          workspaceSettings: resolved.workspace,
+        });
+        if (rm.exists && rm.graph) {
+          const activeNodes = rm.graph.nodes.filter((n) => n.effectiveStatus === 'active');
+          const matchedNodes = activeNodes.filter(
+            (n) =>
+              (n.linkedConvId && lastInput.toLowerCase().includes(n.linkedConvId.slice(0, 8).toLowerCase())) ||
+              lastInput.includes(n.id)
+          );
+          if (matchedNodes.length > 0) {
+            injectSteps.push({
+              systemMessage: {
+                systemMessage: `[control-tower 路线图联动] 本次完成汇报关联活跃分支 ${matchedNodes
+                  .map((n) => `${n.id}(${n.title})`)
+                  .join('、')}，核验通过后可在看板或 roadmap.json 标记 done 以解锁下游并行分支。`,
+              },
+            });
+          }
+        }
+      } catch {
+        // ignore roadmap check error
+      }
     } else {
-      // Focus Gate passive 1-line inbox digest on user foreground turns
-      const inbox = loadWorkspaceInbox(dataDir, regFound.workspace);
+      // Throttled zero-token sentinel sweep + single-source inbox cleanup
+      runThrottledHookSentinel(regFound, parsedReg, resolved, dataDir, hintPath);
+      const handoverIgnored = Boolean(state.controllers[convId]?.handoverIgnored);
+      const inbox = cleanupWorkspaceInbox(dataDir, regFound.workspace, {
+        activeControllerId: convId,
+        handoverIgnored,
+      });
       const digestLine = buildInboxDigestLine(inbox);
       if (digestLine) {
         injectSteps.push({ systemMessage: { systemMessage: digestLine } });
@@ -459,6 +664,19 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
         summary: `总控已累计压缩 ${comps} 次（阈值 ${threshold} 次），待确认是否换届`,
         updatedAt: Date.now(),
       });
+      try {
+        upsertInboxItem(dataDir, regFound.workspace, {
+          dedupKey: `handover:${convId.slice(0, 8)}`,
+          priority: 'P1',
+          kind: 'handover',
+          source: 'hook',
+          convId,
+          title: '现役总控达到换届提醒阈值',
+          summary: `总控已累计压缩 ${comps} 次（阈值 ${threshold} 次），可一键接班或忽略`,
+        });
+      } catch {
+        // ignore inbox error
+      }
       stateDirty = true;
     }
   }
@@ -491,30 +709,32 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
 }
 
 function handleStop(payload, regFound, parsedReg, resolved, dataDir, hintPath, convId) {
+  // Always release controller inFlight when controller stops (even on ask_question, cancel, or non-NO_TOOL_CALL)
+  if (isActiveController(convId, parsedReg)) {
+    if (payload.continuationActive !== true) {
+      try {
+        const curInbox = loadWorkspaceInbox(dataDir, regFound.workspace);
+        if (curInbox.focus.inFlight || curInbox.focus.lastUserInputAt > 0) {
+          recordControllerFocus(dataDir, regFound.workspace, {
+            controllerId: convId,
+            inFlight: false,
+            lastTurnEndAt: Date.now(),
+          });
+        }
+      } catch {
+        // ignore focus update errors
+      }
+    }
+    process.stdout.write('{}\n');
+    return;
+  }
+
   if (
     resolved.plugin.stopHookReportEnabled === false ||
     payload.continuationActive === true ||
     payload.terminationReason !== 'NO_TOOL_CALL' ||
     payload.fullyIdle === false
   ) {
-    process.stdout.write('{}\n');
-    return;
-  }
-
-  // Controller turn finished -> release inFlight flag while keeping focus cooldown timestamp
-  if (isActiveController(convId, parsedReg)) {
-    try {
-      const curInbox = loadWorkspaceInbox(dataDir, regFound.workspace);
-      if (curInbox.focus.inFlight || curInbox.focus.lastUserInputAt > 0) {
-        recordControllerFocus(dataDir, regFound.workspace, {
-          controllerId: convId,
-          inFlight: false,
-          lastTurnEndAt: Date.now(),
-        });
-      }
-    } catch {
-      // ignore focus update errors
-    }
     process.stdout.write('{}\n');
     return;
   }
@@ -764,7 +984,7 @@ function run() {
   });
 
   if (eventName === 'PreToolUse') {
-    handlePreToolUse(payload, regFound, parsedReg, resolved, dataDir, convId);
+    handlePreToolUse(payload, regFound, parsedReg, resolved, dataDir, hintPath, convId);
   } else if (eventName === 'SessionStart') {
     handleSessionStart(regFound, parsedReg, resolved, dataDir, convId);
   } else if (eventName === 'PreInvocation') {

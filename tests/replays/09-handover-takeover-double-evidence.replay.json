@@ -1,0 +1,88 @@
+{
+  "id": "INC-009",
+  "title": "Legitimate handover successor passes PreToolUse write guard without false version-sync while active workers stay blocked",
+  "incidentDate": "2026-11-23",
+  "category": "hook",
+  "description": "Reproduces live flight-log incident where incoming handover controllers were blocked by PreToolUse and then hit with a bogus version sync notice on the next turn.",
+  "kind": "hook",
+  "setup": {
+    "registryRelPath": ".agents/SESSION-REGISTRY.md",
+    "registryMarkdown": "# 台账\n## 一、当前独占资源租约\n| 字段 | 当前值 |\n| --- | --- |\n| **锁状态** | `IDLE` |\n## 二、常驻主交流总控会话\n- **当前现役总控会话**：`${CTRL_ID}`（状态：`ONLINE`）\n## 三、活跃 / 挂起专职会话台账\n| 会话链接与 ID | 任务编号 / 主题 | 模型与工具 | 资源锁状态 | 当前状态 | 工作目录与日志回查路径 |\n| --- | --- | --- | --- | --- | --- |\n| [`${WORKER_A}`](conversation://${WORKER_A}) | 专职开发 | Neon | 纯离线无锁 | `ACTIVE` | - |\n",
+    "transcripts": {
+      "${OTHER_ID}": [
+        {
+          "step_index": 0,
+          "type": "USER_INPUT",
+          "content": "请作为当前工作区「常驻主交流总控（第 2 任）」接班，加载 control-tower 技能。前任总控：${CTRL_ID}（已归档）。请在 SESSION-REGISTRY.md 更新现役总控槽位为本会话。"
+        },
+        {
+          "step_index": 1,
+          "type": "PLANNER_RESPONSE",
+          "model": "gemini-4-neon-high",
+          "status": "DONE"
+        }
+      ],
+      "${WORKER_A}": [
+        {
+          "step_index": 0,
+          "type": "USER_INPUT",
+          "content": "请作为常驻主交流总控接班 前任总控 ${CTRL_ID}"
+        }
+      ]
+    }
+  },
+  "action": {
+    "calls": [
+      {
+        "eventName": "PreToolUse",
+        "payload": {
+          "conversationId": "${WORKER_A}",
+          "workspacePaths": ["${WORKSPACE}"],
+          "cwd": "${WORKSPACE}",
+          "toolCall": {
+            "name": "edit_file",
+            "args": {
+              "Path": "${WORKSPACE}/.agents/SESSION-REGISTRY.md",
+              "Replacement": "- **当前现役总控会话**：`${WORKER_A}`（状态：`ONLINE`）"
+            }
+          }
+        },
+        "expect": {
+          "decision": "ask"
+        }
+      },
+      {
+        "eventName": "PreToolUse",
+        "payload": {
+          "conversationId": "${OTHER_ID}",
+          "workspacePaths": ["${WORKSPACE}"],
+          "cwd": "${WORKSPACE}",
+          "toolCall": {
+            "name": "edit_file",
+            "args": {
+              "Path": "${WORKSPACE}/.agents/SESSION-REGISTRY.md",
+              "Replacement": "- **当前现役总控会话**：`${OTHER_ID}`（状态：`ONLINE`）"
+            }
+          }
+        },
+        "expect": {
+          "decision": "allow",
+          "flightEvent": "handover_takeover_allowed"
+        }
+      },
+      {
+        "writeRegistryMarkdown": "# 台账\n## 一、当前独占资源租约\n| 字段 | 当前值 |\n| --- | --- |\n| **锁状态** | `IDLE` |\n## 二、常驻主交流总控会话\n- **当前现役总控会话**：`${OTHER_ID}`（状态：`ONLINE`）\n",
+        "eventName": "PreInvocation",
+        "payload": {
+          "conversationId": "${OTHER_ID}",
+          "workspacePaths": ["${WORKSPACE}"],
+          "lastUserInput": "接班后第一条日常指令",
+          "invocationNum": 2
+        },
+        "expect": {
+          "notContains": ["[control-tower 版本同步]"]
+        }
+      }
+    ]
+  }
+}

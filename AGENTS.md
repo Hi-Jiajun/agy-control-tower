@@ -12,8 +12,8 @@
 | `plugin/plugin.json` | Antigravity 原生插件清单与唯一 SemVer 版本真源（仅使用官方白名单字段） |
 | `plugin/hooks.json` | 四事件生命周期钩子配置（`SessionStart`、`PreInvocation`、`PreToolUse`、`Stop` -> `node ./scripts/ct-hook.mjs`） |
 | `plugin/lib/` | 零依赖共享核心（`paths.mjs`、`logger.mjs`、`inbox.mjs`、`roadmap.mjs`、`registry.mjs`、`settings.mjs`、`transcript.mjs`），供 Hooks 与 Sidecar 共用 |
-| `plugin/scripts/ct-hook.mjs` | 四事件统一钩子入口（双角色感知与路线图北极星摘要、`PreToolUse` 台账写保护、裸/多 ID 速查与前台焦点门禁摘要、`Stop` 防漏报兜底与焦点暂缓、弹性换届提醒与黑匣子诊断） |
-| `plugin/sidecars/tower/` | 零依赖可读写 Aux Pane 总控看板（四执行面统一导航器、零 Token 后台哨兵与 P0/P1/P2 收件箱、三层路线图交互依赖树与四象限契约派单、第 1~5 节全结构化运维、三层隔离设置中心、黑匣子诊断日志抽屉、纯逻辑模块 `ui-logic.mjs` 与全路由 Token 鉴权） |
+| `plugin/scripts/ct-hook.mjs` | 四事件统一钩子入口（双角色感知与路线图北极星摘要、`PreToolUse` 双证换届放行与台账写保护、裸/多 ID 速查、节流兜底哨兵与 `[CT_REPORT:DONE]` 路线图联动、`Stop` 无条件释放焦点锁与防漏报兜底、弹性换届与静默版本戳） |
+| `plugin/sidecars/tower/` | 零依赖模块化 Aux Pane 总控看板（后端 `main.mjs` + `lib/agentapi.mjs` 异步缓存桥 + `routes/{roadmap,inbox}.mjs`；前端 `app.js` + `views/{overview,sessions,roadmap,settings}.mjs` + `ui-logic.mjs`；四执行面统一导航与 Swarm 隔离回收、统一 `inbox.json` 横幅与零 Token 哨兵、三层路线图隐藏面派单与 Handoff 预览、原生内联归档与三层设置中心） |
 | `plugin/skills/control-tower/` | 总控核心规程、`model-routing.md` 路由手册（含新版 Orchestrator 双层自定义）与去硬编码 `templates.md` |
 | `scripts/ct-{miner,replay,ui-smoke,skill-eval,doctor,release}.mjs` | 五环自演化研发工具链（遥测复盘提案、事故回放、无头浏览器 CDP 冒烟、Skill 契约评测、实装体检与快照秒回滚） |
 | `scripts/cleanup-legacy-skill.sh` | 安全核查与清理旧散装 `$AGY_CONFIG_DIR/skills/control-tower`（消除双重发现） |

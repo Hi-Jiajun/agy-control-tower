@@ -1,0 +1,41 @@
+{
+  "id": "INC-010",
+  "title": "Active controller Stop releases focusModeInFlight even when pausing on ask_question or non-NO_TOOL_CALL",
+  "incidentDate": "2026-11-24",
+  "category": "hook",
+  "description": "Reproduces live production issue where 6/8 workspaces stayed stuck with focus.inFlight=true after controller paused on ask_question or user interruption.",
+  "kind": "hook",
+  "setup": {
+    "registryRelPath": ".agents/SESSION-REGISTRY.md",
+    "registryMarkdown": "# 台账\n## 一、当前独占资源租约\n| 字段 | 当前值 |\n| --- | --- |\n| **锁状态** | `IDLE` |\n## 二、常驻主交流总控会话\n- **当前现役总控会话**：`${CTRL_ID}`（状态：`ONLINE`）\n"
+  },
+  "action": {
+    "calls": [
+      {
+        "eventName": "PreInvocation",
+        "payload": {
+          "conversationId": "${CTRL_ID}",
+          "workspacePaths": ["${WORKSPACE}"],
+          "lastUserInput": "请用 ask_question 帮我确认方案",
+          "invocationNum": 1
+        },
+        "expect": {
+          "focusInFlight": true
+        }
+      },
+      {
+        "eventName": "Stop",
+        "payload": {
+          "conversationId": "${CTRL_ID}",
+          "workspacePaths": ["${WORKSPACE}"],
+          "terminationReason": "WAITING_FOR_USER",
+          "fullyIdle": false,
+          "continuationActive": false
+        },
+        "expect": {
+          "focusInFlight": false
+        }
+      }
+    ]
+  }
+}

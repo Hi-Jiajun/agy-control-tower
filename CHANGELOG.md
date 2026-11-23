@@ -5,6 +5,26 @@ All notable changes to `control-tower` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-11-24
+
+### Fixed
+- **总控换届双证放行与静默版本戳**：修复现役总控合法换届交接时新总控首次更新 `SESSION-REGISTRY.md` 被 `PreToolUse` 误拦截及 2 秒后收到虚假 `[control-tower 版本同步]` 提醒的问题。`ct-hook.mjs` 引入双证校验（看板一键换届预登记 `pendingSuccessors` 或首轮提示含换届交接卡与卸任总控 ID，且写入内容须含自身 ID，绝不放行已入账专职会话），换届接班或冷启动登记成功时自动静默写入 `lastSyncedVersion` 并清理卸任总控遗留项。
+- **提醒单真源收敛、双擎零 Token 哨兵与焦点锁无条件释放**：
+  - 看板顶部横幅统一收敛至 `inbox.json` 单真源，自动裁剪已卸任总控的换届/决策僵尸条目及超期已读或低优项，彻底消除跨天僵尸横幅。
+  - 修复总控 `Stop` 因非 `NO_TOOL_CALL` 或 `fullyIdle: false` 跳过而导致 `focusModeInFlight` 长期卡死 `true` 的缺陷（改为总控任意 `Stop` 无条件释放 `inFlight` 且 `inbox.mjs` 将过期兜底窗收紧至 5 分钟）；同时补齐 Sidecar `GET /api/snapshot` 自动激活哨兵定时与 `PreInvocation` 节流兜底哨兵双引擎。
+- **消除 WebView 原生弹窗阻塞与 Sidecar 同步阻塞**：
+  - 将看板归档操作的 `window.prompt()` 替换为原生内联表单 `#archive-form`，消除 Antigravity WebView 静默屏蔽风险。
+  - 将 Sidecar `agentapi` 调用由同步阻塞 `execFileSync` 升级为异步 `execFile`，为 `/_sidecar/get-conversation-metadata` 增加 5 秒 TTL 内存缓存，并区分本地接口慢阈值（`100ms`）与外部 RPC 慢阈值（`SLOW_RPC_THRESHOLD_MS = 500ms`），消除误报 `slow_api`。
+
+### Added
+- **路线图派单三按钮与 Handoff 契约预览**：路线图分支卡片新增主按钮「交总控隐藏面派单」（`POST /api/roadmap/node/dispatch-hidden`）、次按钮「填入白名单直派」（自动预填 `#dispatch-form` 与 `workstreamId`）及「复制契约词」；`plugin/lib/roadmap.mjs` 新增防路径穿越的只读 `inspectNodeHandoff()`，自动发现并折叠展示 `.agents/handoffs/<id>.md` 交付摘要。
+- **Swarm 隔离徽章与休眠回收请求**：看板原生 Swarm 成员卡展示 `workspace` 隔离档位徽章（`share` / `branch` / `inherit`），并提供「回收休眠成员」按钮（`POST /api/swarm/cleanup-request`）通知现役总控安全收尾。
+- **`[CT_REPORT:DONE]` 路线图闭环联动**：`PreInvocation` 识别 `[CT_REPORT:DONE]` 回执时自动写入工作区信箱并在命中活跃路线图节点时向总控注入 1 行 `[control-tower 路线图联动]` 进度更新提示。
+- **深化 L2 / L3 / L4 质量门禁**：沉淀 4 条线上实战事故为脱敏 L2 回放样本（`INC-009` ~ `INC-012`，共 12 条）；L3 无头 Chrome CDP 真浏览器冒烟升级为端到端交互测试（路线图初始化、新建分支、Handoff 预览、循环依赖错误提示、填入白名单直派、原生内联归档表单与设置保存）；新增 `EVAL-15` 禁止 Sidecar 使用阻塞式弹窗或同步 `execFileSync`（共 15 项评测）。
+
+### Changed
+- **Sidecar 前后端模块化拆分**：后端 `plugin/sidecars/tower/main.mjs` 拆出 `lib/agentapi.mjs`、`routes/roadmap.mjs`、`routes/inbox.mjs`；前端 `plugin/sidecars/tower/app.js` 拆出 `views/{overview,sessions,roadmap,settings}.mjs`，保持零第三方依赖与纯 ESM 架构。
+
 ## [1.5.0] - 2026-11-23
 
 ### Added

@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
   atomicWriteText,
   getWorkspaceSettingsDir,
@@ -360,6 +360,44 @@ export function findExistingRoadmap(wsReal, { dataDir = '', workspaceSettings = 
   return null;
 }
 
+/**
+ * Read-only safe inspection of a node's cross-wave handoff contract file (.agents/handoffs/<id>.md).
+ * Blocks path traversal and escaping symlinks outside wsReal.
+ */
+export function inspectNodeHandoff(wsReal, node) {
+  const relPath = cleanString(node?.handoffPath, node?.id ? `.agents/handoffs/${node.id}.md` : '', 160);
+  const empty = { exists: false, relPath, preview: '', bytes: 0, updatedAt: '' };
+  if (!wsReal || !relPath) return empty;
+  if (relPath.startsWith('/') || relPath.includes('..') || relPath.includes('\\')) return empty;
+  try {
+    const wsCanon = realpathSync(wsReal);
+    const abs = resolve(wsCanon, relPath);
+    const rel = relative(wsCanon, abs);
+    if (rel.startsWith('..') || rel.includes(`..${sep}`) || isAbsolute(rel)) return empty;
+    if (!existsSync(abs)) return empty;
+    const lst = lstatSync(abs);
+    if (lst.isSymbolicLink()) {
+      const targetReal = realpathSync(abs);
+      const tRel = relative(wsCanon, targetReal);
+      if (tRel.startsWith('..') || isAbsolute(tRel)) return empty;
+    }
+    const st = statSync(abs);
+    if (!st.isFile()) return empty;
+    const raw = readFileSync(abs, 'utf8');
+    const trimmed = raw.trim();
+    const preview = trimmed.length > 600 ? `${trimmed.slice(0, 597)}...` : trimmed;
+    return {
+      exists: true,
+      relPath,
+      preview,
+      bytes: st.size,
+      updatedAt: new Date(st.mtimeMs).toISOString(),
+    };
+  } catch {
+    return empty;
+  }
+}
+
 export function loadWorkspaceRoadmap(wsReal, { dataDir = '', workspaceSettings = null } = {}) {
   const found = findExistingRoadmap(wsReal, { dataDir, workspaceSettings });
   if (!found) {
@@ -380,6 +418,10 @@ export function loadWorkspaceRoadmap(wsReal, { dataDir = '', workspaceSettings =
   const rawL2 = existsSync(found.l2Abs) ? readJsonSafe(found.l2Abs, null) : null;
   const data = sanitizeRoadmapData(rawL2 || buildDefaultRoadmapL2(basename(wsReal)));
   const graph = evaluateRoadmapGraph(data);
+  graph.nodes = graph.nodes.map((n) => ({
+    ...n,
+    handoff: inspectNodeHandoff(wsReal, n),
+  }));
   return {
     exists: true,
     isManaged: found.isManaged,

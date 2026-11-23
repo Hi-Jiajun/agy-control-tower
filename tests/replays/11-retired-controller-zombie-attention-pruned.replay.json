@@ -1,0 +1,67 @@
+{
+  "id": "INC-011",
+  "title": "Unified inbox auto-prunes retired-controller zombie alerts and expired routine items",
+  "incidentDate": "2026-11-24",
+  "category": "inbox",
+  "description": "Reproduces live issue where 9/10 pendingAttention items were 9-37h old relics from retired controllers; unified inbox must prune retired controllers and expired P2 items while preserving active P0.",
+  "kind": "inbox_attention_prune",
+  "action": {
+    "nowMs": 1700200000000,
+    "activeControllerId": "${CTRL_ID}",
+    "controllerCompactions": 1,
+    "compactionThreshold": 5,
+    "inbox": {
+      "version": 1,
+      "items": [
+        {
+          "id": "old-handover",
+          "priority": "P1",
+          "kind": "handover",
+          "convId": "${OTHER_ID}",
+          "title": "旧总控换届",
+          "summary": "已卸任老总控的残留提醒",
+          "acked": false,
+          "createdAt": 1700190000000,
+          "updatedAt": 1700190000000
+        },
+        {
+          "id": "old-decision",
+          "priority": "P0",
+          "kind": "decision",
+          "convId": "${OTHER_ID}",
+          "title": "旧总控决策",
+          "summary": "36小时前旧总控的僵尸决策",
+          "acked": false,
+          "createdAt": 1700050000000,
+          "updatedAt": 1700050000000
+        },
+        {
+          "id": "expired-p2",
+          "priority": "P2",
+          "kind": "worker_done",
+          "convId": "${WORKER_A}",
+          "title": "三天前的常规完成",
+          "summary": "已超 48h TTL",
+          "acked": false,
+          "createdAt": 1699900000000,
+          "updatedAt": 1699900000000
+        },
+        {
+          "id": "active-p0",
+          "priority": "P0",
+          "kind": "decision",
+          "convId": "${CTRL_ID}",
+          "title": "当前总控有效决策",
+          "summary": "需要当前总控拍板",
+          "acked": false,
+          "createdAt": 1700199000000,
+          "updatedAt": 1700199000000
+        }
+      ]
+    }
+  },
+  "expect": {
+    "remainingInboxCount": 1,
+    "bannerCount": 1
+  }
+}

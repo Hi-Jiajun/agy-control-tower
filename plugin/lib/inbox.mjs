@@ -101,8 +101,9 @@ export function evaluateFocusGate(focus, { nowMs = Date.now(), focusCooldownSec 
   const lastActivity = Math.max(Number(f.lastUserInputAt || 0), Number(f.lastTurnEndAt || 0));
   const elapsedMs = lastActivity > 0 ? Math.max(0, nowMs - lastActivity) : Infinity;
 
-  // Guard against stale inFlight flag if controller crashed or never triggered Stop (> 10 min)
-  const isInFlight = Boolean(f.inFlight) && elapsedMs < 10 * 60 * 1000;
+  // Guard against stale inFlight flag if controller crashed or never triggered Stop
+  const staleFlightMs = Math.max(cooldownMs, 5 * 60 * 1000);
+  const isInFlight = Boolean(f.inFlight) && elapsedMs < staleFlightMs;
   let mode = 'idle';
   if (isInFlight) {
     mode = 'in_flight';
@@ -185,15 +186,147 @@ export function ackInboxItems(dataDir, wsReal, { id = '', ackAll = false, priori
   return saveWorkspaceInbox(dataDir, wsReal, inbox);
 }
 
-export function summarizeInbox(inbox, { nowMs = Date.now(), focusCooldownSec = DEFAULT_FOCUS_COOLDOWN_SEC } = {}) {
+function sameConvIdPrefix(a, b) {
+  if (!a || !b) return false;
+  const x = String(a).trim().toLowerCase();
+  const y = String(b).trim().toLowerCase();
+  return x === y || (x.length >= 8 && y.length >= 8 && (x.startsWith(y) || y.startsWith(x)));
+}
+
+/**
+ * Automatically prune retired-controller handover/decision relics and expired routine items.
+ */
+export function pruneInboxItems(
+  items,
+  {
+    activeControllerId = '',
+    handoverIgnored = false,
+    nowMs = Date.now(),
+    ackedTtlMs = 24 * 3600 * 1000,
+    p2TtlMs = 48 * 3600 * 1000,
+    decisionTtlMs = 24 * 3600 * 1000,
+  } = {}
+) {
+  if (!Array.isArray(items)) return [];
+  const ctrl = String(activeControllerId || '').trim();
+  return items.filter((item) => {
+    if (!item || typeof item !== 'object') return false;
+    const age = Math.max(0, nowMs - (Number(item.updatedAt || item.createdAt || 0) || nowMs));
+    if (item.acked && age > ackedTtlMs) return false;
+    if (item.priority === 'P2' && age > p2TtlMs) return false;
+    if (item.kind === 'decision' && age > decisionTtlMs) return false;
+    if (
+      handoverIgnored &&
+      item.kind === 'handover' &&
+      (!ctrl || !item.convId || sameConvIdPrefix(item.convId, ctrl))
+    ) {
+      return false;
+    }
+    if (
+      ctrl &&
+      (item.kind === 'handover' || item.kind === 'decision') &&
+      item.convId &&
+      !sameConvIdPrefix(item.convId, ctrl)
+    ) {
+      return false;
+    }
+    return true;
+  });
+}
+
+export function cleanupWorkspaceInbox(dataDir, wsReal, opts = {}) {
+  const inbox = loadWorkspaceInbox(dataDir, wsReal);
+  const nextItems = pruneInboxItems(inbox.items, opts);
+  if (nextItems.length !== inbox.items.length) {
+    inbox.items = nextItems;
+    return saveWorkspaceInbox(dataDir, wsReal, inbox);
+  }
+  return inbox;
+}
+
+export function buildUnifiedAttentionBanner(
+  inboxSummary,
+  {
+    activeControllerId = '',
+    controllerCompactions = 0,
+    compactionThreshold = 5,
+    handoverIgnored = false,
+  } = {}
+) {
+  const items = [];
+  const seen = new Set();
+  const ctrl = String(activeControllerId || '').trim();
+  const sourceItems = Array.isArray(inboxSummary?.items) ? inboxSummary.items : [];
+
+  for (const it of sourceItems) {
+    if (!it || it.acked) continue;
+    if (it.kind === 'handover' && handoverIgnored) continue;
+    if (
+      ctrl &&
+      (it.kind === 'handover' || it.kind === 'decision') &&
+      it.convId &&
+      !sameConvIdPrefix(it.convId, ctrl)
+    ) {
+      continue;
+    }
+    if (it.priority === 'P0' || it.kind === 'handover') {
+      items.push({
+        id: it.id,
+        kind: it.kind,
+        priority: it.priority,
+        controllerId: it.kind === 'handover' || it.kind === 'decision' ? it.convId || ctrl : ctrl,
+        convId: it.convId || '',
+        title: it.title || '',
+        summary: it.summary || it.title || it.kind,
+        updatedAt: it.updatedAt || Date.now(),
+        source: 'inbox',
+      });
+      seen.add(it.kind === 'handover' ? `handover-${(it.convId || ctrl).slice(0, 8)}` : it.id);
+    }
+  }
+
+  const comps = Number(controllerCompactions || 0);
+  const thresh = Math.max(1, Number(compactionThreshold || 5));
+  if (ctrl && !handoverIgnored && comps >= thresh) {
+    const liveKey = `handover-${ctrl.slice(0, 8)}`;
+    if (!seen.has(liveKey)) {
+      items.unshift({
+        id: liveKey,
+        kind: 'handover',
+        priority: 'P1',
+        controllerId: ctrl,
+        convId: ctrl,
+        compactions: comps,
+        threshold: thresh,
+        title: '现役总控达到换届提醒阈值',
+        summary: `总控已累计压缩 ${comps} 次（阈值 ${thresh} 次），可选择一键接班或本会话忽略`,
+        updatedAt: Date.now(),
+        source: 'live',
+      });
+    }
+  }
+
+  return { items, handoverIgnored };
+}
+
+export function summarizeInbox(
+  inbox,
+  {
+    nowMs = Date.now(),
+    focusCooldownSec = DEFAULT_FOCUS_COOLDOWN_SEC,
+    activeControllerId = '',
+    handoverIgnored = false,
+  } = {}
+) {
   const norm = normalizeInbox(inbox);
-  const unread = norm.items.filter((x) => !x.acked);
+  const pruned = pruneInboxItems(norm.items, { activeControllerId, handoverIgnored, nowMs });
+  const unread = pruned.filter((x) => !x.acked);
   const unreadCounts = { P0: 0, P1: 0, P2: 0, total: unread.length };
   for (const item of unread) {
     unreadCounts[item.priority] = (unreadCounts[item.priority] || 0) + 1;
   }
   const priorityRank = { P0: 0, P1: 1, P2: 2 };
-  const sortedItems = [...norm.items].sort((a, b) => {
+  const sortedItems = [...pruned].sort((a, b) => {
     if (a.acked !== b.acked) return a.acked ? 1 : -1;
     if (priorityRank[a.priority] !== priorityRank[b.priority]) {
       return priorityRank[a.priority] - priorityRank[b.priority];

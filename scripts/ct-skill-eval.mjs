@@ -279,6 +279,17 @@ export function runSkillEval() {
         assert.equal(g.overlaps.length, 1);
       },
     },
+    {
+      id: 'EVAL-15',
+      title: 'WebView 安全交互与零同步阻塞门禁（无 window.prompt/confirm/alert，Sidecar 异步非阻塞）',
+      run() {
+        const sidecarFiles = pluginFiles.filter((f) => f.path.includes('/sidecars/tower/'));
+        for (const f of sidecarFiles) {
+          assert.equal(/window\.(?:prompt|confirm|alert)\s*\(/.test(f.text), false, `Blocking WebView dialog in ${f.path}`);
+          assert.equal(f.text.includes('execFileSync'), false, `Sync execFileSync found in Sidecar ${f.path}`);
+        }
+      },
+    },
   ];
 
   const results = [];

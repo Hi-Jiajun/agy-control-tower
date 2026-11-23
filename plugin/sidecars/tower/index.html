@@ -14,7 +14,7 @@
         <div class="brand-title">
           <span id="live-dot" class="brand-dot" title="监测指示"></span>
           <strong>Control Tower</strong>
-          <span id="version-badge" class="badge">v1.5.0</span>
+          <span id="version-badge" class="badge">v1.6.0</span>
         </div>
         <div class="actions">
           <button id="poll-toggle-btn" class="pill-btn" title="切换实时自动监测">实时监测</button>
@@ -172,6 +172,11 @@
           </div>
           <p class="muted" id="dispatch-policy-hint">隐藏面优先：常规开发/调研建议在总控会话内走 Swarm / Subagent / Workflow；此处仅用于需人工盯屏实操、跨天史诗或单开窗口场景。</p>
           <form id="dispatch-form" class="subform hidden">
+            <input type="hidden" id="df-workstreamId" />
+            <div id="df-workstream-note" class="info-banner hidden">
+              <span id="df-workstream-text"></span>
+              <button type="button" id="df-clear-ws-btn" class="btn btn-ghost btn-sm">取消关联</button>
+            </div>
             <label>任务主题 / 标题 <input id="df-topic" class="input" placeholder="例如：M2 协议解析修复" required /></label>
             <div class="two-col">
               <label>选定模型（受路由护栏校验）
@@ -206,7 +211,10 @@
         <div id="swarm-card" class="card hidden">
           <div class="card-head">
             <h3>原生 Swarm 实时集群（隐藏面）</h3>
-            <span id="swarm-title-badge" class="badge">-</span>
+            <div class="actions">
+              <button id="swarm-cleanup-btn" type="button" class="btn btn-warn btn-sm hidden">回收休眠成员</button>
+              <span id="swarm-title-badge" class="badge">-</span>
+            </div>
           </div>
           <div id="swarm-members-list" class="list-stack"></div>
           <div id="swarm-posts-list" class="list-stack"></div>
@@ -257,6 +265,16 @@
             <div class="actions">
               <button type="submit" class="btn btn-primary btn-sm">入账活跃表</button>
               <button type="button" id="cancel-session-form-btn" class="btn btn-ghost btn-sm">取消</button>
+            </div>
+          </form>
+          <form id="archive-form" class="subform hidden">
+            <input type="hidden" id="af-convId" />
+            <div class="divider-label" id="af-title">归档专职会话至里程碑</div>
+            <label>归档里程碑标题 <input id="af-milestone" class="input" required /></label>
+            <label>核心产出与验证摘要 <input id="af-summary" class="input" value="已完成验证并收口" required /></label>
+            <div class="actions">
+              <button type="submit" class="btn btn-warn btn-sm">确认归档</button>
+              <button type="button" id="cancel-archive-form-btn" class="btn btn-ghost btn-sm">取消</button>
             </div>
           </form>
           <div id="active-sessions-list" class="list-stack"></div>

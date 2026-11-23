@@ -9,6 +9,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildUnifiedAttentionBanner, loadWorkspaceInbox, summarizeInbox } from '../plugin/lib/inbox.mjs';
 import { readFlightEvents, sanitizeLogString } from '../plugin/lib/logger.mjs';
 import { resolvePluginDataDir } from '../plugin/lib/paths.mjs';
 import { evaluateRoadmapGraph } from '../plugin/lib/roadmap.mjs';
@@ -144,12 +145,38 @@ export function runReplayFixture(fixture) {
       return { id: spec.id, ok: true };
     }
 
+    if (kind === 'inbox_attention_prune') {
+      const nowMs = Number(spec.action?.nowMs || Date.now());
+      const summary = summarizeInbox(spec.action?.inbox || {}, {
+        nowMs,
+        activeControllerId: spec.action?.activeControllerId || '',
+      });
+      const banner = buildUnifiedAttentionBanner(summary, {
+        activeControllerId: spec.action?.activeControllerId || '',
+        controllerCompactions: Number(spec.action?.controllerCompactions || 0),
+        compactionThreshold: Number(spec.action?.compactionThreshold || 5),
+        handoverIgnored: Boolean(spec.action?.handoverIgnored),
+      });
+      if (spec.expect?.remainingInboxCount !== undefined) {
+        assert.equal(summary.items.length, spec.expect.remainingInboxCount);
+      }
+      if (spec.expect?.bannerCount !== undefined) {
+        assert.equal(banner.items.length, spec.expect.bannerCount);
+      }
+      return { id: spec.id, ok: true };
+    }
+
     if (kind === 'hook') {
       if (spec.setup?.registryMarkdown) {
         const rel = spec.setup.registryRelPath || '.agents/SESSION-REGISTRY.md';
         const abs = join(ws, rel);
         mkdirSync(dirname(abs), { recursive: true });
         writeFileSync(abs, spec.setup.registryMarkdown, 'utf8');
+      }
+      if (spec.setup?.roadmapJson) {
+        const rmPath = join(ws, '.agents', 'roadmap.json');
+        mkdirSync(dirname(rmPath), { recursive: true });
+        writeFileSync(rmPath, JSON.stringify(spec.setup.roadmapJson, null, 2), 'utf8');
       }
       for (const [convKey, rows] of Object.entries(spec.setup?.transcripts || {})) {
         const tp = makeTranscriptPath(appData, convKey);
@@ -164,6 +191,10 @@ export function runReplayFixture(fixture) {
       const calls = Array.isArray(spec.action?.calls) ? spec.action.calls : [spec.action];
       for (let i = 0; i < calls.length; i += 1) {
         const call = calls[i];
+        if (call.writeRegistryMarkdown) {
+          const rel = spec.setup?.registryRelPath || '.agents/SESSION-REGISTRY.md';
+          writeFileSync(join(ws, rel), call.writeRegistryMarkdown, 'utf8');
+        }
         const env = {
           ...process.env,
           ANTIGRAVITY_APP_DATA_DIR: appData,
@@ -196,6 +227,14 @@ export function runReplayFixture(fixture) {
             events.some((ev) => ev.event === exp.flightEvent),
             `Expected flight log event "${exp.flightEvent}"`
           );
+        }
+        if (exp.focusInFlight !== undefined) {
+          const curInbox = loadWorkspaceInbox(dataDir, ws);
+          assert.equal(curInbox.focus.inFlight, exp.focusInFlight);
+        }
+        if (exp.minInboxItems !== undefined) {
+          const curInbox = loadWorkspaceInbox(dataDir, ws);
+          assert.ok(curInbox.items.length >= exp.minInboxItems);
         }
       }
       return { id: spec.id, ok: true };

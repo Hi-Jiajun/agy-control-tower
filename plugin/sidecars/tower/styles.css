@@ -667,6 +667,30 @@ body {
   transition: width 0.25s var(--ct-ease);
 }
 
+.handoff-details {
+  border: 1px dashed var(--ct-border);
+  border-radius: 7px;
+  padding: 5px 8px;
+  font-size: 11px;
+}
+
+.handoff-details summary {
+  cursor: pointer;
+  color: var(--ct-accent);
+  font-weight: 600;
+}
+
+.handoff-preview {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--ct-muted);
+  max-height: 140px;
+  overflow-y: auto;
+}
+
 .muted {
   color: var(--ct-muted);
   margin: 0;
