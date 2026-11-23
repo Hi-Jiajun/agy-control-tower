@@ -23,6 +23,10 @@ export const DEFAULT_PLUGIN_SETTINGS = Object.freeze({
   stopHookReportEnabled: true,
   maxLookupInputLength: 2000,
   maxLookupCandidates: 6,
+  sentinelEnabled: true,
+  sentinelIntervalSec: 15,
+  focusCooldownSec: 180,
+  stuckThresholdMin: 15,
 });
 
 export const DEFAULT_GLOBAL_SETTINGS = Object.freeze({
@@ -38,6 +42,7 @@ export const DEFAULT_GLOBAL_SETTINGS = Object.freeze({
   notifyOnSingleTaskDone: false,
   controllerCompactionThreshold: 5,
   workerCompactionThreshold: 2,
+  dispatchSurfacePolicy: 'hidden_first',
 });
 
 export const DEFAULT_WORKSPACE_SETTINGS = Object.freeze({
@@ -199,6 +204,20 @@ export function sanitizePluginSettings(raw, base = DEFAULT_PLUGIN_SETTINGS) {
       src.maxLookupCandidates !== undefined
         ? clampInt(src.maxLookupCandidates, 1, 20, b.maxLookupCandidates)
         : b.maxLookupCandidates,
+    sentinelEnabled:
+      typeof src.sentinelEnabled === 'boolean' ? src.sentinelEnabled : b.sentinelEnabled,
+    sentinelIntervalSec:
+      src.sentinelIntervalSec !== undefined
+        ? clampInt(src.sentinelIntervalSec, 5, 300, b.sentinelIntervalSec)
+        : b.sentinelIntervalSec,
+    focusCooldownSec:
+      src.focusCooldownSec !== undefined
+        ? clampInt(src.focusCooldownSec, 30, 900, b.focusCooldownSec)
+        : b.focusCooldownSec,
+    stuckThresholdMin:
+      src.stuckThresholdMin !== undefined
+        ? clampInt(src.stuckThresholdMin, 5, 120, b.stuckThresholdMin)
+        : b.stuckThresholdMin,
   };
 }
 
@@ -222,6 +241,8 @@ function sanitizeGlobalField(key, val, fallback) {
     case 'controllerCompactionThreshold':
     case 'workerCompactionThreshold':
       return val !== undefined ? clampInt(val, 1, 20, fallback) : fallback;
+    case 'dispatchSurfacePolicy':
+      return ['hidden_first', 'slot_reuse', 'allow_toplevel'].includes(val) ? val : fallback;
     default:
       return fallback;
   }

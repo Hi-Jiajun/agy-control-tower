@@ -631,9 +631,11 @@ export function inspectNativeSwarm(
       role,
       conversationId: cid,
       model: String(m.model || tel?.lastModel || '-'),
+      workspace: String(m.workspace || 'inherit'),
       state,
       compactions: tel?.compactions || 0,
       steps: tel?.maxStepIndex || tel?.lineCount || 0,
+      lastUpdatedAt: tel?.lastUpdatedAt || '',
       lastError: tel?.lastError || '',
     };
   });
@@ -665,6 +667,102 @@ export function inspectNativeSwarm(
     title: String(membersData.title || 'Native Swarm'),
     members,
     recentPosts: recentPosts.slice(-5),
+  };
+}
+
+const SUBAGENT_ID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+/**
+ * Inspect hidden execution surfaces (invoke_subagent & run_workflow) launched from
+ * the active controller's recent transcript tail (bounded 64KB read, zero sidebar clutter).
+ */
+export function inspectHiddenSurfaces(
+  controllerConvId,
+  { env = process.env, hintPath = '', cacheMap = null } = {}
+) {
+  const empty = { subagents: [], workflows: [] };
+  if (!controllerConvId || !isValidConvIdOrPrefix(controllerConvId)) return empty;
+  const resolved = resolveBrainTranscript(controllerConvId, { env, hintPath });
+  if (resolved.status !== 'ok' || !resolved.path) return empty;
+
+  const tailText = readTailText(resolved.path, TAIL_BYTES);
+  if (!tailText) return empty;
+
+  const steps = [];
+  for (const rawLine of tailText.split('\n')) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    try {
+      const obj = JSON.parse(line);
+      if (obj && typeof obj === 'object') steps.push(obj);
+    } catch {
+      // skip partial tail line
+    }
+  }
+
+  const subagents = [];
+  const workflows = [];
+  const seenSub = new Set();
+
+  for (let i = 0; i < steps.length; i += 1) {
+    const step = steps[i];
+    const toolCalls = Array.isArray(step.tool_calls) ? step.tool_calls : [];
+    for (const tc of toolCalls) {
+      const name = String(tc?.name || tc?.function?.name || '').trim();
+      const args = tc?.args && typeof tc.args === 'object' ? tc.args : {};
+
+      if (name === 'invoke_subagent') {
+        let childId = '';
+        let resultStatus = 'RUNNING';
+        // Scan next few steps for tool output containing spawned conversationId
+        for (let j = i + 1; j < Math.min(steps.length, i + 6); j += 1) {
+          const next = steps[j];
+          if (String(next.type || '').toUpperCase() === 'PLANNER_RESPONSE') break;
+          const content = String(next.content || '');
+          const m = content.match(SUBAGENT_ID_RE);
+          if (m && m[0].toLowerCase() !== controllerConvId.toLowerCase()) {
+            childId = m[0];
+            resultStatus = String(next.status || 'DONE').toUpperCase();
+            break;
+          }
+        }
+        const dedup = childId || `${args.Role || args.TypeName || 'sub'}-${step.step_index || i}`;
+        if (seenSub.has(dedup)) continue;
+        seenSub.add(dedup);
+
+        const tel = childId ? inspectById(childId, { env, hintPath, cacheMap }) : null;
+        subagents.push({
+          role: String(args.Role || args.TypeName || 'Subagent').slice(0, 60),
+          typeName: String(args.TypeName || 'self'),
+          model: String(args.Model || tel?.lastModel || 'inherit'),
+          workspace: String(args.Workspace || 'inherit'),
+          conversationId: childId,
+          status: tel?.exists ? tel.lastStatus || resultStatus : resultStatus,
+          steps: tel?.maxStepIndex || tel?.lineCount || 0,
+          compactions: tel?.compactions || 0,
+          lastUpdatedAt: tel?.lastUpdatedAt || String(step.created_at || ''),
+          lastError: tel?.lastError || '',
+          telemetry: tel,
+        });
+      } else if (name === 'run_workflow') {
+        let wfStatus = String(step.status || 'DONE').toUpperCase();
+        if (i + 1 < steps.length && String(steps[i + 1].type || '').toUpperCase() === 'GENERIC') {
+          wfStatus = String(steps[i + 1].status || wfStatus).toUpperCase();
+        }
+        workflows.push({
+          description: String(args.Description || 'Dynamic Workflow').slice(0, 100),
+          scriptPath: String(args.ScriptPath || '').split('/').pop() || 'inline',
+          status: wfStatus,
+          stepIndex: Number(step.step_index || i),
+          createdAt: String(step.created_at || ''),
+        });
+      }
+    }
+  }
+
+  return {
+    subagents: subagents.slice(-8).reverse(),
+    workflows: workflows.slice(-6).reverse(),
   };
 }
 

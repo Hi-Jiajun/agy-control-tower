@@ -1,0 +1,382 @@
+import { join } from 'node:path';
+import { atomicWriteText, getWorkspaceSettingsDir, readJsonSafe } from './paths.mjs';
+
+export const INBOX_MAX_ITEMS = 50;
+export const DEFAULT_FOCUS_COOLDOWN_SEC = 180;
+export const DEFAULT_STUCK_THRESHOLD_MIN = 15;
+
+const VALID_PRIORITIES = new Set(['P0', 'P1', 'P2']);
+
+export function getWorkspaceInboxPath(dataDir, wsReal) {
+  return join(getWorkspaceSettingsDir(dataDir, wsReal), 'inbox.json');
+}
+
+function defaultInbox() {
+  return {
+    version: 1,
+    focus: {
+      controllerId: '',
+      inFlight: false,
+      lastUserInputAt: 0,
+      lastTurnEndAt: 0,
+      updatedAt: 0,
+    },
+    lastSweepAt: 0,
+    items: [],
+  };
+}
+
+function normalizePriority(p) {
+  const up = String(p || 'P2').trim().toUpperCase();
+  return VALID_PRIORITIES.has(up) ? up : 'P2';
+}
+
+function normalizeInbox(raw) {
+  const base = defaultInbox();
+  if (!raw || typeof raw !== 'object') return base;
+  const f = raw.focus && typeof raw.focus === 'object' ? raw.focus : {};
+  const items = Array.isArray(raw.items)
+    ? raw.items
+        .filter((x) => x && typeof x === 'object' && x.id)
+        .map((x) => ({
+          id: String(x.id),
+          dedupKey: String(x.dedupKey || x.id),
+          priority: normalizePriority(x.priority),
+          kind: String(x.kind || 'event'),
+          source: String(x.source || 'sentinel'),
+          convId: String(x.convId || ''),
+          title: String(x.title || '').slice(0, 120),
+          summary: String(x.summary || '').slice(0, 280),
+          acked: Boolean(x.acked),
+          createdAt: Number(x.createdAt || 0) || Date.now(),
+          updatedAt: Number(x.updatedAt || 0) || Date.now(),
+        }))
+        .slice(-INBOX_MAX_ITEMS)
+    : [];
+
+  return {
+    version: 1,
+    focus: {
+      controllerId: String(f.controllerId || ''),
+      inFlight: Boolean(f.inFlight),
+      lastUserInputAt: Number(f.lastUserInputAt || 0) || 0,
+      lastTurnEndAt: Number(f.lastTurnEndAt || 0) || 0,
+      updatedAt: Number(f.updatedAt || 0) || 0,
+    },
+    lastSweepAt: Number(raw.lastSweepAt || 0) || 0,
+    items,
+  };
+}
+
+export function loadWorkspaceInbox(dataDir, wsReal) {
+  if (!dataDir || !wsReal) return defaultInbox();
+  const raw = readJsonSafe(getWorkspaceInboxPath(dataDir, wsReal), null);
+  return normalizeInbox(raw);
+}
+
+export function saveWorkspaceInbox(dataDir, wsReal, inbox) {
+  if (!dataDir || !wsReal) return normalizeInbox(inbox);
+  const norm = normalizeInbox(inbox);
+  atomicWriteText(getWorkspaceInboxPath(dataDir, wsReal), `${JSON.stringify(norm, null, 2)}\n`);
+  return norm;
+}
+
+export function recordControllerFocus(dataDir, wsReal, patch = {}) {
+  const inbox = loadWorkspaceInbox(dataDir, wsReal);
+  const now = Number(patch.nowMs) || Date.now();
+  inbox.focus = {
+    ...inbox.focus,
+    ...(patch.controllerId !== undefined ? { controllerId: String(patch.controllerId || '') } : {}),
+    ...(patch.inFlight !== undefined ? { inFlight: Boolean(patch.inFlight) } : {}),
+    ...(patch.lastUserInputAt !== undefined ? { lastUserInputAt: Number(patch.lastUserInputAt) || 0 } : {}),
+    ...(patch.lastTurnEndAt !== undefined ? { lastTurnEndAt: Number(patch.lastTurnEndAt) || 0 } : {}),
+    updatedAt: now,
+  };
+  return saveWorkspaceInbox(dataDir, wsReal, inbox);
+}
+
+export function evaluateFocusGate(focus, { nowMs = Date.now(), focusCooldownSec = DEFAULT_FOCUS_COOLDOWN_SEC } = {}) {
+  const f = focus && typeof focus === 'object' ? focus : {};
+  const cooldownMs = Math.max(30, Number(focusCooldownSec) || DEFAULT_FOCUS_COOLDOWN_SEC) * 1000;
+  const lastActivity = Math.max(Number(f.lastUserInputAt || 0), Number(f.lastTurnEndAt || 0));
+  const elapsedMs = lastActivity > 0 ? Math.max(0, nowMs - lastActivity) : Infinity;
+
+  // Guard against stale inFlight flag if controller crashed or never triggered Stop (> 10 min)
+  const isInFlight = Boolean(f.inFlight) && elapsedMs < 10 * 60 * 1000;
+  let mode = 'idle';
+  if (isInFlight) {
+    mode = 'in_flight';
+  } else if (lastActivity > 0 && elapsedMs < cooldownMs) {
+    mode = 'focused';
+  }
+
+  return {
+    mode,
+    isForegroundBusy: mode !== 'idle',
+    remainingCooldownSec: mode === 'focused' ? Math.max(0, Math.ceil((cooldownMs - elapsedMs) / 1000)) : 0,
+    shouldInterruptFor(priority) {
+      const p = normalizePriority(priority);
+      if (mode === 'in_flight') return false;
+      if (mode === 'focused') return false;
+      return p === 'P0' || p === 'P1';
+    },
+  };
+}
+
+export function upsertInboxItem(dataDir, wsReal, entry) {
+  const inbox = loadWorkspaceInbox(dataDir, wsReal);
+  const now = Number(entry?.nowMs) || Date.now();
+  const dedupKey = String(entry?.dedupKey || entry?.id || `${entry?.kind || 'ev'}-${now}`);
+  const idx = inbox.items.findIndex((x) => x.dedupKey === dedupKey);
+  const priority = normalizePriority(entry?.priority);
+
+  if (idx >= 0) {
+    const prev = inbox.items[idx];
+    const changed =
+      prev.summary !== String(entry?.summary || prev.summary).slice(0, 280) ||
+      prev.priority !== priority;
+    inbox.items[idx] = {
+      ...prev,
+      priority,
+      kind: String(entry?.kind || prev.kind),
+      source: String(entry?.source || prev.source),
+      convId: String(entry?.convId ?? prev.convId),
+      title: String(entry?.title || prev.title).slice(0, 120),
+      summary: String(entry?.summary || prev.summary).slice(0, 280),
+      acked: entry?.reopenOnUpdate === false ? prev.acked : changed ? false : prev.acked,
+      updatedAt: now,
+    };
+  } else {
+    inbox.items.push({
+      id: String(entry?.id || `inb-${now.toString(36)}-${Math.random().toString(16).slice(2, 6)}`),
+      dedupKey,
+      priority,
+      kind: String(entry?.kind || 'event'),
+      source: String(entry?.source || 'sentinel'),
+      convId: String(entry?.convId || ''),
+      title: String(entry?.title || '事件通知').slice(0, 120),
+      summary: String(entry?.summary || '').slice(0, 280),
+      acked: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  if (inbox.items.length > INBOX_MAX_ITEMS) {
+    // Keep unacked items first, then newest acked items
+    const unacked = inbox.items.filter((x) => !x.acked);
+    const acked = inbox.items.filter((x) => x.acked);
+    const keepAcked = Math.max(0, INBOX_MAX_ITEMS - unacked.length);
+    inbox.items = [...acked.slice(-keepAcked), ...unacked.slice(-INBOX_MAX_ITEMS)];
+  }
+  return saveWorkspaceInbox(dataDir, wsReal, inbox);
+}
+
+export function ackInboxItems(dataDir, wsReal, { id = '', ackAll = false, priority = '' } = {}) {
+  const inbox = loadWorkspaceInbox(dataDir, wsReal);
+  const now = Date.now();
+  const wantP = priority ? normalizePriority(priority) : '';
+  for (const item of inbox.items) {
+    if (ackAll || (id && item.id === id) || (wantP && item.priority === wantP)) {
+      item.acked = true;
+      item.updatedAt = now;
+    }
+  }
+  return saveWorkspaceInbox(dataDir, wsReal, inbox);
+}
+
+export function summarizeInbox(inbox, { nowMs = Date.now(), focusCooldownSec = DEFAULT_FOCUS_COOLDOWN_SEC } = {}) {
+  const norm = normalizeInbox(inbox);
+  const unread = norm.items.filter((x) => !x.acked);
+  const unreadCounts = { P0: 0, P1: 0, P2: 0, total: unread.length };
+  for (const item of unread) {
+    unreadCounts[item.priority] = (unreadCounts[item.priority] || 0) + 1;
+  }
+  const priorityRank = { P0: 0, P1: 1, P2: 2 };
+  const sortedItems = [...norm.items].sort((a, b) => {
+    if (a.acked !== b.acked) return a.acked ? 1 : -1;
+    if (priorityRank[a.priority] !== priorityRank[b.priority]) {
+      return priorityRank[a.priority] - priorityRank[b.priority];
+    }
+    return b.updatedAt - a.updatedAt;
+  });
+
+  const gate = evaluateFocusGate(norm.focus, { nowMs, focusCooldownSec });
+  return {
+    focus: {
+      ...norm.focus,
+      mode: gate.mode,
+      isForegroundBusy: gate.isForegroundBusy,
+      remainingCooldownSec: gate.remainingCooldownSec,
+    },
+    lastSweepAt: norm.lastSweepAt,
+    unreadCounts,
+    items: sortedItems,
+  };
+}
+
+export function buildInboxDigestLine(inbox) {
+  const norm = normalizeInbox(inbox);
+  const unread = norm.items.filter((x) => !x.acked);
+  if (unread.length === 0) return '';
+  const counts = { P0: 0, P1: 0, P2: 0 };
+  for (const it of unread) counts[it.priority] = (counts[it.priority] || 0) + 1;
+  const topP0 = unread.find((x) => x.priority === 'P0');
+  const topP1 = unread.find((x) => x.priority === 'P1');
+  const headline = topP0
+    ? `最高优先 P0: ${topP0.title} (${topP0.summary.slice(0, 70)})`
+    : topP1
+      ? `阶段待处理 P1: ${topP1.title}`
+      : `常规完成 P2: ${unread[0].title}`;
+
+  if (counts.P0 > 0) {
+    return (
+      `[control-tower 收件箱 P0 提醒] 待处理 ${unread.length} 项 (P0:${counts.P0} P1:${counts.P1} P2:${counts.P2}) | ` +
+      `${headline}。请先处理用户当前诉求，并在本轮同步提示该 P0 阻塞项供拍板。`
+    );
+  }
+  return (
+    `[control-tower 后台信箱静默摘要] 待处理 ${unread.length} 项 (P0:0 P1:${counts.P1} P2:${counts.P2}) | ` +
+    `${headline}。当前处于前台对话焦点保护期，请 100% 优先回答用户当前问题，仅在回复末尾用 1 行简短附注提及（待用户要求时再展开处理）。`
+  );
+}
+
+/**
+ * Zero-Token Background Sentinel Sweep:
+ * Evaluates active top-level sessions, Swarm members, and hidden subagents purely from
+ * local transcript telemetry (0 LLM tokens) and upserts deduplicated P0/P1/P2 events.
+ */
+export function evaluateSentinelSweep({
+  dataDir,
+  wsReal,
+  activeSessions = [],
+  nativeSwarm = null,
+  subagents = [],
+  workerCompactionThreshold = 2,
+  stuckThresholdMin = DEFAULT_STUCK_THRESHOLD_MIN,
+  nowMs = Date.now(),
+} = {}) {
+  const detected = [];
+  const stuckMs = Math.max(5, Number(stuckThresholdMin) || DEFAULT_STUCK_THRESHOLD_MIN) * 60 * 1000;
+  const compThresh = Math.max(1, Number(workerCompactionThreshold) || 2);
+
+  const inspectTarget = ({ surface, id, label, status, telemetry }) => {
+    if (!telemetry || !telemetry.exists) return;
+    const shortId = id ? id.slice(0, 8) : label;
+    const upperSt = String(status || '').toUpperCase();
+    const lastUpdMs = telemetry.lastUpdatedAt ? Date.parse(telemetry.lastUpdatedAt) : 0;
+    const idleMs = lastUpdMs > 0 ? Math.max(0, nowMs - lastUpdMs) : 0;
+
+    if (telemetry.lastError || String(telemetry.lastStatus || '').toUpperCase() === 'ERROR') {
+      detected.push({
+        dedupKey: `sentinel:err:${shortId}:${telemetry.maxStepIndex || telemetry.lineCount}`,
+        priority: 'P0',
+        kind: 'worker_error',
+        source: 'sentinel',
+        convId: id || '',
+        title: `[${surface}] ${label} 检测到异常报错`,
+        summary: telemetry.lastError || `尾步状态为 ERROR (步数 ${telemetry.maxStepIndex || telemetry.lineCount})`,
+      });
+    }
+
+    if (
+      (upperSt === 'ACTIVE' || upperSt === 'WORKING' || upperSt === 'RUNNING') &&
+      String(telemetry.lastStatus || '').toUpperCase() !== 'DONE' &&
+      lastUpdMs > 0 &&
+      idleMs >= stuckMs
+    ) {
+      const mins = Math.round(idleMs / 60000);
+      detected.push({
+        dedupKey: `sentinel:stuck:${shortId}:${telemetry.maxStepIndex || telemetry.lineCount}`,
+        priority: 'P1',
+        kind: 'worker_stuck',
+        source: 'sentinel',
+        convId: id || '',
+        title: `[${surface}] ${label} 疑似卡死 (${mins}m 无推进)`,
+        summary: `已连续 ${mins} 分钟停留在步数 ${telemetry.maxStepIndex || telemetry.lineCount}，建议抽查尾步或止损`,
+      });
+    }
+
+    if ((telemetry.compactions || 0) >= compThresh) {
+      detected.push({
+        dedupKey: `sentinel:comp:${shortId}:${telemetry.compactions}`,
+        priority: 'P2',
+        kind: 'worker_compaction',
+        source: 'sentinel',
+        convId: id || '',
+        title: `[${surface}] ${label} 压缩已达 ${telemetry.compactions} 次`,
+        summary: `达到专职会话新建建议阈值 (${compThresh} 次)，下一子任务建议切干净新会话`,
+      });
+    }
+
+    if (
+      surface === 'topLevel' &&
+      upperSt === 'ACTIVE' &&
+      String(telemetry.lastStatus || '').toUpperCase() === 'DONE' &&
+      lastUpdMs > 0 &&
+      idleMs >= 60 * 1000
+    ) {
+      detected.push({
+        dedupKey: `sentinel:done:${shortId}:${telemetry.maxStepIndex || telemetry.lineCount}`,
+        priority: 'P2',
+        kind: 'worker_done_unarchived',
+        source: 'sentinel',
+        convId: id || '',
+        title: `[顶层会话] ${label} 已运行至 DONE 待收口`,
+        summary: `尾步已停稳于步数 ${telemetry.maxStepIndex || telemetry.lineCount}，可在看板一键归档里程碑`,
+      });
+    }
+  };
+
+  for (const s of activeSessions || []) {
+    inspectTarget({
+      surface: 'topLevel',
+      id: s.conversationId || '',
+      label: s.topic || (s.conversationId || '').slice(0, 8) || 'worker',
+      status: s.status || 'ACTIVE',
+      telemetry: s.telemetry,
+    });
+  }
+
+  if (nativeSwarm?.active && Array.isArray(nativeSwarm.members)) {
+    for (const m of nativeSwarm.members) {
+      if (m.state === 'killed') continue;
+      inspectTarget({
+        surface: 'swarm',
+        id: m.conversationId || '',
+        label: m.name || 'swarm-worker',
+        status: m.state || 'waiting',
+        telemetry: {
+          exists: Boolean(m.steps || m.lastError || m.lastUpdatedAt),
+          maxStepIndex: m.steps || 0,
+          lineCount: m.steps || 0,
+          compactions: m.compactions || 0,
+          lastStatus: m.state === 'working' ? 'RUNNING' : 'DONE',
+          lastError: m.lastError || '',
+          lastUpdatedAt: m.lastUpdatedAt || '',
+        },
+      });
+    }
+  }
+
+  for (const sub of subagents || []) {
+    inspectTarget({
+      surface: 'subagent',
+      id: sub.conversationId || '',
+      label: sub.role || sub.typeName || 'subagent',
+      status: sub.status || 'ACTIVE',
+      telemetry: sub.telemetry || null,
+    });
+  }
+
+  let inbox = loadWorkspaceInbox(dataDir, wsReal);
+  const hadChanges = detected.length > 0;
+  for (const item of detected) {
+    inbox = upsertInboxItem(dataDir, wsReal, { ...item, nowMs, reopenOnUpdate: false });
+  }
+  if (dataDir && wsReal && (hadChanges || inbox.items.length > 0)) {
+    inbox.lastSweepAt = nowMs;
+    inbox = saveWorkspaceInbox(dataDir, wsReal, inbox);
+  }
+  return { detectedCount: detected.length, detected, inbox };
+}

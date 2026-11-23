@@ -332,6 +332,23 @@ if (args.includes('new-conversation')) {
     const diagClear = await req('POST', '/api/diagnostics/clear', {});
     assert.equal(diagClear.status, 200);
     assert.equal(diagClear.data.events.length, 0);
+
+    // 14) Phase 2: Execution surfaces + Inbox + Zero-token sentinel sweep APIs
+    const snapSurf = await req('GET', `/api/snapshot?workspace=${encodeURIComponent(ws)}`);
+    assert.equal(snapSurf.status, 200);
+    assert.ok(snapSurf.data.executionSurfaces);
+    assert.ok(snapSurf.data.inbox);
+
+    const sweepRes = await req('POST', '/api/sentinel/sweep', { workspace: ws });
+    assert.equal(sweepRes.status, 200);
+    assert.equal(sweepRes.data.ok, true);
+
+    const inboxGet = await req('GET', `/api/inbox?workspace=${encodeURIComponent(ws)}`);
+    assert.equal(inboxGet.status, 200);
+    assert.equal(inboxGet.data.ok, true);
+
+    const inboxAck = await req('POST', '/api/inbox/ack', { workspace: ws, ackAll: true });
+    assert.equal(inboxAck.status, 200);
   } finally {
     if (server) await server.close();
     process.env = prevEnv;

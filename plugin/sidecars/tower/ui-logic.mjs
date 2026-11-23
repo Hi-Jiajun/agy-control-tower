@@ -129,3 +129,38 @@ export function formatFlightEventRow(ev) {
     message: ev?.message || (ev?.detail ? JSON.stringify(ev.detail) : ''),
   };
 }
+
+export function formatFocusGateBadge(focus) {
+  const mode = focus?.mode || 'idle';
+  if (mode === 'in_flight') {
+    return { text: '前台回复中 (防打扰)', badgeClass: 'badge-warn' };
+  }
+  if (mode === 'focused') {
+    const sec = Number(focus?.remainingCooldownSec || 0);
+    return { text: `前台聚焦防打扰 (${sec}s)`, badgeClass: 'badge-warn' };
+  }
+  return { text: '空闲待命 (可唤醒)', badgeClass: 'badge-ok' };
+}
+
+export function formatInboxPriorityClass(priority) {
+  const p = String(priority || 'P2').toUpperCase();
+  if (p === 'P0') return 'badge-danger';
+  if (p === 'P1') return 'badge-warn';
+  return 'badge-muted';
+}
+
+export function summarizeExecutionSurfaces(surfaces) {
+  const s = surfaces && typeof surfaces === 'object' ? surfaces : {};
+  const swarmAlive = (s.swarm?.members || []).filter((m) => m.state !== 'killed').length;
+  const subagents = Array.isArray(s.subagents) ? s.subagents.length : 0;
+  const workflows = Array.isArray(s.workflows) ? s.workflows.length : 0;
+  const topLevel = Array.isArray(s.topLevel) ? s.topLevel.length : 0;
+  return {
+    swarm: swarmAlive,
+    subagents,
+    workflows,
+    topLevel,
+    hiddenTotal: swarmAlive + subagents + workflows,
+    sidebarWarning: topLevel >= 3,
+  };
+}

@@ -14,7 +14,7 @@
         <div class="brand-title">
           <span id="live-dot" class="brand-dot" title="监测指示"></span>
           <strong>Control Tower</strong>
-          <span id="version-badge" class="badge">v1.3.0</span>
+          <span id="version-badge" class="badge">v1.4.0</span>
         </div>
         <div class="actions">
           <button id="poll-toggle-btn" class="pill-btn" title="切换实时自动监测">实时监测</button>
@@ -137,15 +137,40 @@
             </div>
           </form>
         </div>
+        <div class="card" id="inbox-card">
+          <div class="card-head">
+            <h3>零 Token 哨兵与优先级收件箱</h3>
+            <span id="inbox-focus-badge" class="badge badge-ok">空闲待命</span>
+          </div>
+          <div class="inline-row">
+            <span id="inbox-counts-badge" class="badge badge-muted">未读 0 (P0:0 P1:0 P2:0)</span>
+            <button id="sentinel-sweep-btn" class="btn btn-ghost btn-sm" title="立即执行零 Token 状态巡检">巡检</button>
+            <button id="inbox-deliver-all-btn" class="btn btn-primary btn-sm" title="把未读项汇总投递给总控">投递总控</button>
+            <button id="inbox-ack-all-btn" class="btn btn-ghost btn-sm">全已读</button>
+          </div>
+          <div id="inbox-list" class="list-stack"></div>
+        </div>
       </section>
 
       <section id="tab-sessions" class="tab-panel hidden">
+        <div class="card" id="surfaces-card">
+          <div class="card-head">
+            <h3>四执行面统一任务导航</h3>
+            <span id="surfaces-summary-badge" class="badge">隐藏面优先</span>
+          </div>
+          <div id="surfaces-grid" class="surface-grid"></div>
+          <div id="sidebar-hint" class="info-banner hidden">
+            <span>顶层会话已达 3 个以上，建议后续常规任务优先使用原生 Swarm / Subagent / Workflow 隐藏执行面，避免左侧栏膨胀。</span>
+          </div>
+        </div>
+
         <div class="card">
           <div class="card-head">
-            <h3>受控直派新专职会话</h3>
+            <h3>受控直派顶层会话（白名单通道）</h3>
             <button id="toggle-dispatch-btn" class="btn btn-ghost btn-sm">展开 / 收起</button>
           </div>
-          <form id="dispatch-form" class="subform">
+          <p class="muted" id="dispatch-policy-hint">隐藏面优先：常规开发/调研建议在总控会话内走 Swarm / Subagent / Workflow；此处仅用于需人工盯屏实操、跨天史诗或单开窗口场景。</p>
+          <form id="dispatch-form" class="subform hidden">
             <label>任务主题 / 标题 <input id="df-topic" class="input" placeholder="例如：M2 协议解析修复" required /></label>
             <div class="two-col">
               <label>选定模型（受路由护栏校验）
@@ -179,11 +204,20 @@
 
         <div id="swarm-card" class="card hidden">
           <div class="card-head">
-            <h3>原生 Swarm 实时集群</h3>
+            <h3>原生 Swarm 实时集群（隐藏面）</h3>
             <span id="swarm-title-badge" class="badge">-</span>
           </div>
           <div id="swarm-members-list" class="list-stack"></div>
           <div id="swarm-posts-list" class="list-stack"></div>
+        </div>
+
+        <div id="hidden-surfaces-card" class="card hidden">
+          <div class="card-head">
+            <h3>Subagent 与 Workflow 隐藏执行面</h3>
+            <span id="hidden-surfaces-badge" class="badge badge-muted">0</span>
+          </div>
+          <div id="subagents-list" class="list-stack"></div>
+          <div id="workflows-list" class="list-stack"></div>
         </div>
 
         <div class="card">
@@ -371,6 +405,24 @@
                   <input type="number" min="1" max="20" id="ps-maxLookupCandidates" class="input" />
                 </label>
               </div>
+              <div class="switch-row">
+                <div>
+                  <strong>零 Token Sidecar 后台哨兵</strong>
+                  <div class="item-meta">低频本地巡检报错/卡死/老化，写入 P0/P1/P2 信箱不耗 Token</div>
+                </div>
+                <label class="switch"><input type="checkbox" id="ps-sentinelEnabled" /><span></span></label>
+              </div>
+              <div class="two-col">
+                <label>哨兵巡检间隔（5~300 秒）
+                  <input type="number" min="5" max="300" id="ps-sentinelIntervalSec" class="input" />
+                </label>
+                <label>焦点防打扰窗口（30~900 秒）
+                  <input type="number" min="30" max="900" id="ps-focusCooldownSec" class="input" />
+                </label>
+              </div>
+              <label>专职会话卡死告警阈值（5~120 分钟）
+                <input type="number" min="5" max="120" id="ps-stuckThresholdMin" class="input" />
+              </label>
               <div class="actions">
                 <button type="submit" class="btn btn-primary btn-sm">保存插件设置</button>
                 <button type="button" id="ps-reset-btn" class="btn btn-ghost btn-sm">恢复插件默认</button>
@@ -455,6 +507,13 @@
                   <input type="number" min="1" max="20" id="gs-workerCompactionThreshold" class="input" />
                 </label>
               </div>
+              <label>默认执行面派遣策略（控制左侧栏瘦身）
+                <select id="gs-dispatchSurfacePolicy" class="select">
+                  <option value="hidden_first">隐藏面优先 + 顶层会话白名单（推荐）</option>
+                  <option value="slot_reuse">固定角色槽位复用</option>
+                  <option value="allow_toplevel">允许常规顶层会话</option>
+                </select>
+              </label>
               <div class="actions">
                 <button type="submit" class="btn btn-primary btn-sm">保存全局设置</button>
                 <button type="button" id="gs-reset-btn" class="btn btn-ghost btn-sm">重置全局默认</button>

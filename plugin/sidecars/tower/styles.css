@@ -618,6 +618,34 @@ body {
   word-break: break-word;
 }
 
+.surface-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.surface-pill {
+  border: 1px solid var(--ct-border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11.5px;
+  background: rgba(148, 163, 184, 0.04);
+  min-width: 0;
+}
+
+.surface-pill strong {
+  font-size: 13px;
+  color: var(--ct-fg);
+}
+
+.inbox-row-acked {
+  opacity: 0.6;
+}
+
 .muted {
   color: var(--ct-muted);
   margin: 0;

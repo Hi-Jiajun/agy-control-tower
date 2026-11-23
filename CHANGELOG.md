@@ -5,6 +5,18 @@ All notable changes to `control-tower` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-11-23
+
+### Added
+- **第二阶段（方向一）：左侧会话栏瘦身与四执行面统一任务导航**
+  - 在 `plugin/lib/transcript.mjs` 新增 `inspectHiddenSurfaces()`，增量扫描主总控尾步自动聚合零左侧栏污染的隐藏执行面（原生 `swarm` + `invoke_subagent` + `run_workflow`），与顶层 `agentapi` 会话共同组成看板「四执行面统一任务导航器」。
+  - 在 `plugin/lib/settings.mjs` 新增全局 `dispatchSurfacePolicy`（默认 `hidden_first` 隐藏面优先，支持 `slot_reuse` 与 `allow_toplevel`）；看板受控直派卡片改为白名单折叠态并在顶层会话达 3 个以上时给出瘦身提示。
+- **第二阶段（方向二）：冷热解耦零 Token 后台哨兵 + 焦点防打扰门禁（Focus Gate）**
+  - 新增 `plugin/lib/inbox.mjs`：实现工作区隔离优先级事件队列 `inbox.json`（`P0` 紧急阻塞 / `P1` 阶段里程碑 / `P2` 静默例行）、前台聚焦状态跟踪与防打扰门禁 `evaluateFocusGate()`，以及零 Token 哨兵巡检引擎 `evaluateSentinelSweep()`（自动检测报错、卡死、高压缩与停稳待归档）。
+  - 升级 `plugin/scripts/ct-hook.mjs`：`PreInvocation` 识别真实用户前台对话记录焦点态并被动注入 1 行信箱摘要；`Stop` 钩子在总控回复结束时释放 `inFlight`，在专职会话停下时若主总控处于前台聚焦窗口则自动暂缓抢占式唤醒并沉淀至 `inbox.json`。
+  - 升级 Sidecar `plugin/sidecars/tower/`：新增零 Token 后台巡检定时器、`/api/inbox`、`/api/inbox/ack`、`/api/inbox/deliver`、`/api/sentinel/sweep` 路由与总览页「零 Token 哨兵与优先级收件箱」交互卡片。
+  - 在 `plugin/skills/control-tower/{SKILL.md,references/templates.md}` 落地隐藏面优先白名单、冷热解耦防打扰规程与「模板 C：按需临时域分总控（Domain Lead）」授权契约。
+
 ## [1.3.0] - 2026-11-23
 
 ### Added

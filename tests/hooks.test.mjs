@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'n
 import { join } from 'node:path';
 import test from 'node:test';
 import { saveGlobalSettings, savePluginSettings } from '../plugin/lib/settings.mjs';
+import { loadWorkspaceInbox, recordControllerFocus } from '../plugin/lib/inbox.mjs';
 import { loadPluginState, savePluginState } from '../plugin/lib/transcript.mjs';
 import { makeConvId, makeSandbox, makeTranscriptPath } from './helpers.mjs';
 
@@ -273,7 +274,8 @@ process.stdout.write(JSON.stringify({ ok: true }));
     assert.ok(receiptMsgs.some((m) => m.includes('[control-tower 阶段收口指引]')));
     assert.equal(receiptMsgs.some((m) => m.includes('[control-tower 裸ID速查]')), false);
 
-    // 8) Stop hook stays silent on first worker A (B still active), then batches A+B when B stops
+    // 8) Focus Gate deferral when controller is foreground-busy, then batched Stop wake when controller is idle
+    // First: worker A stops while B is active -> stays silent + recorded as P2 in inbox
     callHook(
       'Stop',
       {
@@ -286,7 +288,40 @@ process.stdout.write(JSON.stringify({ ok: true }));
       env
     );
     assert.equal(existsSync(mockLog), false);
+    const inboxAfterA = loadWorkspaceInbox(dataDir, ws);
+    assert.ok(inboxAfterA.items.some((x) => x.convId === workerA && x.priority === 'P2'));
 
+    // Next: worker B stops while controller is STILL inside foreground Focus Gate -> deferred, no interruption!
+    callHook(
+      'Stop',
+      {
+        conversationId: workerB,
+        workspacePaths: [ws],
+        terminationReason: 'NO_TOOL_CALL',
+        fullyIdle: true,
+        transcriptPath: wLogB,
+      },
+      env
+    );
+    assert.equal(existsSync(mockLog), false);
+    const inboxAfterB = loadWorkspaceInbox(dataDir, ws);
+    assert.ok(inboxAfterB.items.some((x) => x.convId === workerB && x.priority === 'P1'));
+
+    // Simulate controller becoming idle (older than focusCooldownSec) & worker B advances 1 step -> fires batched wake!
+    recordControllerFocus(dataDir, ws, {
+      controllerId: ctrlId,
+      inFlight: false,
+      lastUserInputAt: Date.now() - 600 * 1000,
+      lastTurnEndAt: Date.now() - 600 * 1000,
+    });
+    writeFileSync(
+      wLogB,
+      [
+        JSON.stringify({ step_index: 0, type: 'USER_INPUT', content: '<USER_REQUEST>\n任务B收口\n</USER_REQUEST>' }),
+        JSON.stringify({ step_index: 7, type: 'PLANNER_RESPONSE', model: 'gemini-4-carbon-medium', status: 'DONE' }),
+      ].join('\n') + '\n',
+      'utf8'
+    );
     callHook(
       'Stop',
       {

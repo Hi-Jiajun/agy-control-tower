@@ -24,6 +24,12 @@ import {
   summarizeFlightEvents,
 } from '../../lib/logger.mjs';
 import {
+  ackInboxItems,
+  evaluateSentinelSweep,
+  loadWorkspaceInbox,
+  summarizeInbox,
+} from '../../lib/inbox.mjs';
+import {
   archiveActiveSession,
   deleteQueueRow,
   extractTemplatesFromMarkdown,
@@ -49,6 +55,7 @@ import {
 } from '../../lib/settings.mjs';
 import {
   inspectById,
+  inspectHiddenSurfaces,
   inspectNativeSwarm,
   inspectTranscript,
   loadPluginState,
@@ -113,7 +120,7 @@ function readPluginMeta() {
   return {
     name: raw?.name || 'control-tower',
     displayName: raw?.displayName || 'Control Tower',
-    version: raw?.version || '1.3.0',
+    version: raw?.version || '1.4.0',
   };
 }
 
@@ -197,6 +204,8 @@ class ControlTowerServer {
   #staticAssets;
   #transcriptCache;
   #server;
+  #activeWorkspace;
+  #sentinelTimer;
 
   constructor({
     port = Number.parseInt(process.env.ANTIGRAVITY_SIDECAR_WEB_PORT || '0', 10),
@@ -208,6 +217,8 @@ class ControlTowerServer {
     this.#port = port;
     this.#token = token;
     this.#transcriptCache = {};
+    this.#activeWorkspace = '';
+    this.#sentinelTimer = null;
     this.#staticAssets = new Map([
       ['/', { file: join(__dirname, 'index.html'), type: 'text/html; charset=utf-8' }],
       ['/index.html', { file: join(__dirname, 'index.html'), type: 'text/html; charset=utf-8' }],
@@ -324,6 +335,8 @@ class ControlTowerServer {
     const templates = extractTemplatesFromMarkdown(resolved.docs['templates.md']?.content || '');
     const settingsPayload = { ...resolved, modelPresets: MODEL_PRESETS };
     const emptySwarm = { active: false, title: '', members: [], recentPosts: [] };
+    const emptySurfaces = { swarm: emptySwarm, subagents: [], workflows: [], topLevel: [] };
+    const emptyInbox = summarizeInbox(null, { focusCooldownSec: resolved.plugin.focusCooldownSec });
 
     if (!wsReal) {
       return {
@@ -340,6 +353,8 @@ class ControlTowerServer {
         templates,
         settings: settingsPayload,
         nativeSwarm: emptySwarm,
+        executionSurfaces: emptySurfaces,
+        inbox: emptyInbox,
         attention: { items: [], handoverIgnored: false },
       };
     }
@@ -347,6 +362,9 @@ class ControlTowerServer {
     const found = findExistingRegistry(wsReal, {
       dataDir,
       workspaceSettings: resolved.workspace,
+    });
+    const wsInboxSummary = summarizeInbox(loadWorkspaceInbox(dataDir, wsReal), {
+      focusCooldownSec: resolved.plugin.focusCooldownSec,
     });
     if (!found) {
       return {
@@ -363,6 +381,8 @@ class ControlTowerServer {
         templates,
         settings: settingsPayload,
         nativeSwarm: emptySwarm,
+        executionSurfaces: emptySurfaces,
+        inbox: wsInboxSummary,
         attention: { items: [], handoverIgnored: false },
       };
     }
@@ -391,9 +411,21 @@ class ControlTowerServer {
           cacheMap: this.#transcriptCache,
         })
       : emptySwarm;
+    const hidden = parsed.controller.currentControllerId
+      ? inspectHiddenSurfaces(parsed.controller.currentControllerId, {
+          env: process.env,
+          cacheMap: this.#transcriptCache,
+        })
+      : { subagents: [], workflows: [] };
     this.#pruneCache();
 
     const attention = this.#buildAttention(dataDir, wsReal, parsed, resolved);
+    const executionSurfaces = {
+      swarm: nativeSwarm,
+      subagents: hidden.subagents,
+      workflows: hidden.workflows,
+      topLevel: parsed.activeSessions,
+    };
 
     return {
       plugin,
@@ -409,8 +441,60 @@ class ControlTowerServer {
       templates,
       settings: settingsPayload,
       nativeSwarm,
+      executionSurfaces,
+      inbox: wsInboxSummary,
       attention,
     };
+  }
+
+  #runSentinelSweepForWorkspace(wsReal) {
+    if (!wsReal) return { detectedCount: 0, detected: [] };
+    const dataDir = getDataDir();
+    const snap = this.#buildSnapshot(wsReal);
+    if (!snap.registryExists) return { detectedCount: 0, detected: [] };
+    return evaluateSentinelSweep({
+      dataDir,
+      wsReal,
+      activeSessions: snap.parsed?.activeSessions || [],
+      nativeSwarm: snap.nativeSwarm,
+      subagents: snap.executionSurfaces?.subagents || [],
+      workerCompactionThreshold: snap.settings?.effective?.workerCompactionThreshold || 2,
+      stuckThresholdMin: snap.settings?.plugin?.stuckThresholdMin || 15,
+    });
+  }
+
+  #ensureSentinelTimer() {
+    if (this.#sentinelTimer) {
+      clearInterval(this.#sentinelTimer);
+      this.#sentinelTimer = null;
+    }
+    const dataDir = getDataDir();
+    if (!this.#activeWorkspace || !existsSync(dataDir)) return;
+    const resolved = resolveEffectiveSettings({
+      dataDir,
+      wsReal: this.#activeWorkspace,
+      pluginRoot: PLUGIN_ROOT,
+      env: process.env,
+    });
+    if (resolved.plugin.sentinelEnabled === false) return;
+    const sec = Math.max(5, Number(resolved.plugin.sentinelIntervalSec || 15));
+    this.#sentinelTimer = setInterval(() => {
+      try {
+        if (!this.#activeWorkspace || !existsSync(getDataDir())) return;
+        this.#runSentinelSweepForWorkspace(this.#activeWorkspace);
+      } catch (err) {
+        appendFlightEvent(getDataDir(), {
+          level: 'warn',
+          source: 'sidecar',
+          event: 'sentinel_sweep_error',
+          ok: false,
+          message: err?.message || 'Sentinel sweep failed',
+        });
+      }
+    }, sec * 1000);
+    if (typeof this.#sentinelTimer.unref === 'function') {
+      this.#sentinelTimer.unref();
+    }
   }
 
   #loadRegistryForMutation(body) {
@@ -526,6 +610,21 @@ class ControlTowerServer {
       return this.#sendJson(res, 200, { ...resolved, modelPresets: MODEL_PRESETS });
     }
 
+    if (req.method === 'GET' && url.pathname === '/api/inbox') {
+      const wsRaw = url.searchParams.get('workspace') || '';
+      const wsReal = wsRaw ? normalizeWorkspaceInput(wsRaw, { throwOnInvalid: true }) : '';
+      const resolved = resolveEffectiveSettings({
+        dataDir,
+        wsReal: wsReal || '',
+        pluginRoot: PLUGIN_ROOT,
+        env: process.env,
+      });
+      const summary = summarizeInbox(wsReal ? loadWorkspaceInbox(dataDir, wsReal) : null, {
+        focusCooldownSec: resolved.plugin.focusCooldownSec,
+      });
+      return this.#sendJson(res, 200, { ok: true, inbox: summary });
+    }
+
     if (req.method === 'GET' && url.pathname === '/api/diagnostics') {
       const limit = Math.max(1, Math.min(200, Number.parseInt(url.searchParams.get('limit') || '60', 10) || 60));
       const level = (url.searchParams.get('level') || '').trim();
@@ -569,14 +668,66 @@ class ControlTowerServer {
     if (url.pathname === '/api/workspace/select') {
       const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
       if (!wsReal) throw new HttpError(400, 'workspace is required');
+      this.#activeWorkspace = wsReal;
       const nextRecent = recordRecentWorkspace(wsReal);
+      this.#ensureSentinelTimer();
       const snap = this.#buildSnapshot(wsReal, { recentOverride: nextRecent });
       return this.#sendJson(res, 200, { ok: true, snapshot: snap });
+    }
+
+    if (url.pathname === '/api/inbox/ack') {
+      const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
+      if (!wsReal) throw new HttpError(400, 'workspace is required');
+      ackInboxItems(dataDir, wsReal, {
+        id: body.id || '',
+        ackAll: Boolean(body.ackAll),
+        priority: body.priority || '',
+      });
+      return this.#sendJson(res, 200, {
+        ok: true,
+        snapshot: this.#buildSnapshot(wsReal),
+      });
+    }
+
+    if (url.pathname === '/api/inbox/deliver') {
+      const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
+      if (!wsReal) throw new HttpError(400, 'workspace is required');
+      const snapBefore = this.#buildSnapshot(wsReal);
+      const ctrlId = String(snapBefore.parsed?.controller?.currentControllerId || '').trim();
+      if (!ctrlId) throw new HttpError(400, '当前台账未登记现役总控 conversationId');
+      const unread = (snapBefore.inbox?.items || []).filter((x) => !x.acked);
+      const targets = body.id ? unread.filter((x) => x.id === body.id) : unread;
+      if (targets.length === 0) {
+        return this.#sendJson(res, 200, { ok: true, deliveredCount: 0, snapshot: snapBefore });
+      }
+      const lines = targets.map((t) => `[${t.priority}] ${t.title}: ${t.summary}`);
+      const msg = `[CT_INBOX_DELIVER] 用户从看板主动投递以下 ${targets.length} 条后台信箱事件，请核查处理：\n${lines.join('\n')}`;
+      execAgentApi(['send-message', '--title', '[CT信箱投递]', ctrlId, msg], { projectId: body.projectId });
+      for (const t of targets) {
+        ackInboxItems(dataDir, wsReal, { id: t.id });
+      }
+      return this.#sendJson(res, 200, {
+        ok: true,
+        deliveredCount: targets.length,
+        snapshot: this.#buildSnapshot(wsReal),
+      });
+    }
+
+    if (url.pathname === '/api/sentinel/sweep') {
+      const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
+      if (!wsReal) throw new HttpError(400, 'workspace is required');
+      const sweep = this.#runSentinelSweepForWorkspace(wsReal);
+      return this.#sendJson(res, 200, {
+        ok: true,
+        detectedCount: sweep.detectedCount,
+        snapshot: this.#buildSnapshot(wsReal),
+      });
     }
 
     if (url.pathname === '/api/settings/plugin') {
       const next =
         body.action === 'reset' ? resetPluginSettings(dataDir) : savePluginSettings(dataDir, body);
+      this.#ensureSentinelTimer();
       const wsReal = body.workspace
         ? normalizeWorkspaceInput(body.workspace, { throwOnInvalid: false })
         : '';
@@ -1080,6 +1231,10 @@ class ControlTowerServer {
   }
 
   close() {
+    if (this.#sentinelTimer) {
+      clearInterval(this.#sentinelTimer);
+      this.#sentinelTimer = null;
+    }
     return new Promise((resolveClose) => {
       if (this.#server) {
         this.#server.close(() => resolveClose());

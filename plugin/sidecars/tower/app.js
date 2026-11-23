@@ -5,8 +5,11 @@ import {
   computeTabVisibility,
   escHtml,
   formatFlightEventRow,
+  formatFocusGateBadge,
+  formatInboxPriorityClass,
   isLeaseIdle,
   summarizeDiagnosticsBadge,
+  summarizeExecutionSurfaces,
 } from './ui-logic.mjs';
 
 const $ = (id) => document.getElementById(id);
@@ -257,7 +260,48 @@ const state = {
 
     $('cf-controllerId').value = ctrl.currentControllerId || window.sidecar?.conversationId || '';
     $('cf-status').value = ctrl.currentControllerStatus || 'ONLINE';
-    $('cf-defaultModel').value = ctrl.defaultModel || eff.l0ControllerModel || 'Orchestrator (Neon)';
+    $('cf-defaultModel').value = ctrl.defaultModel || eff.l0ControllerModel || 'Gemini 4 Neon (High)';
+
+    // Zero-token Sentinel & Priority Inbox
+    const inbox = snap.inbox || { focus: { mode: 'idle' }, unreadCounts: { P0: 0, P1: 0, P2: 0, total: 0 }, items: [] };
+    const focusBadge = formatFocusGateBadge(inbox.focus);
+    const fbEl = $('inbox-focus-badge');
+    fbEl.textContent = focusBadge.text;
+    fbEl.className = `badge ${focusBadge.badgeClass}`;
+
+    const uc = inbox.unreadCounts || { P0: 0, P1: 0, P2: 0, total: 0 };
+    $('inbox-counts-badge').textContent = `未读 ${uc.total || 0} (P0:${uc.P0 || 0} P1:${uc.P1 || 0} P2:${uc.P2 || 0})`;
+    $('inbox-counts-badge').className = `badge ${(uc.P0 || 0) > 0 ? 'badge-danger' : (uc.P1 || 0) > 0 ? 'badge-warn' : 'badge-muted'}`;
+
+    const inboxList = $('inbox-list');
+    const items = Array.isArray(inbox.items) ? inbox.items.slice(0, 12) : [];
+    if (items.length === 0) {
+      inboxList.innerHTML = '<p class="muted">哨兵巡检正常，暂无待处理后台事件。</p>';
+    } else {
+      inboxList.innerHTML = items
+        .map((it) => {
+          const pCls = formatInboxPriorityClass(it.priority);
+          return `
+            <div class="item-box ${it.acked ? 'inbox-row-acked' : ''}">
+              <div class="card-head">
+                <strong>${esc(it.title || it.kind)}</strong>
+                <span class="badge ${pCls}">${esc(it.priority)}${it.acked ? ' 已读' : ''}</span>
+              </div>
+              <div class="item-meta">${esc(it.summary || '-')}</div>
+              ${
+                !it.acked
+                  ? `<div class="actions">
+                      <button class="btn btn-primary btn-sm inbox-deliver-btn" data-id="${esc(it.id)}">投递总控</button>
+                      <button class="btn btn-ghost btn-sm inbox-ack-btn" data-id="${esc(it.id)}">已读</button>
+                      ${it.convId ? `<button class="btn btn-ghost btn-sm jump-conv-btn" data-id="${esc(it.convId)}">跳转</button>` : ''}
+                    </div>`
+                  : ''
+              }
+            </div>
+          `;
+        })
+        .join('');
+    }
   }
 
   function renderSessions(snap) {
@@ -265,7 +309,78 @@ const state = {
     const leaseEnabled = eff.exclusiveLeaseEnabled !== false;
     $('df-lock-wrap').classList.toggle('hidden', !leaseEnabled);
     if (!$('df-model').dataset.userEdited) {
-      $('df-model').value = eff.l2StandardModel || 'Orchestrator (Neon)';
+      $('df-model').value = eff.l2StandardModel || 'Gemini 4 Neon (High)';
+    }
+
+    // 4-Surface Unified Task Navigator
+    const surfaces = snap.executionSurfaces || {
+      swarm: snap.nativeSwarm,
+      subagents: [],
+      workflows: [],
+      topLevel: snap.parsed?.activeSessions || [],
+    };
+    const surfSum = summarizeExecutionSurfaces(surfaces);
+    const policyLabel =
+      eff.dispatchSurfacePolicy === 'slot_reuse'
+        ? '固定槽位复用'
+        : eff.dispatchSurfacePolicy === 'allow_toplevel'
+          ? '允许常规顶层'
+          : '隐藏面优先';
+    $('surfaces-summary-badge').textContent = `${policyLabel} | 隐藏 ${surfSum.hiddenTotal}`;
+    $('surfaces-grid').innerHTML = [
+      ['Swarm 隐藏成员', surfSum.swarm, 'badge-ok'],
+      ['Subagent 子代理', surfSum.subagents, 'badge-muted'],
+      ['Workflow 流水线', surfSum.workflows, 'badge-muted'],
+      ['顶层侧栏会话', surfSum.topLevel, surfSum.sidebarWarning ? 'badge-warn' : 'badge-muted'],
+    ]
+      .map(
+        ([label, count, cls]) =>
+          `<div class="surface-pill"><span>${esc(label)}</span><span class="badge ${cls}"><strong>${esc(count)}</strong></span></div>`
+      )
+      .join('');
+    $('sidebar-hint').classList.toggle('hidden', !surfSum.sidebarWarning);
+
+    // Hidden Subagents & Workflows card
+    const subs = Array.isArray(surfaces.subagents) ? surfaces.subagents : [];
+    const wfs = Array.isArray(surfaces.workflows) ? surfaces.workflows : [];
+    const hasHiddenOther = subs.length > 0 || wfs.length > 0;
+    $('hidden-surfaces-card').classList.toggle('hidden', !hasHiddenOther);
+    if (hasHiddenOther) {
+      $('hidden-surfaces-badge').textContent = `子代理 ${subs.length} | 流水线 ${wfs.length}`;
+      $('subagents-list').innerHTML = subs
+        .map(
+          (sub) => `
+          <div class="item-box">
+            <div class="card-head">
+              <strong>[Subagent] ${esc(sub.role)} (${esc(sub.typeName)})</strong>
+              <span class="badge badge-muted">${esc(sub.status)}</span>
+            </div>
+            <div class="item-meta">模型: ${esc(sub.model)} | 隔离: ${esc(sub.workspace)} | 步数: ${esc(sub.steps)}</div>
+            ${
+              sub.conversationId
+                ? `<div class="actions">
+                    <button class="btn btn-ghost btn-sm jump-conv-btn" data-id="${esc(sub.conversationId)}">跳转子代理</button>
+                    <button class="btn btn-ghost btn-sm copy-conv-btn" data-id="${esc(sub.conversationId)}">复制 ID</button>
+                  </div>`
+                : ''
+            }
+          </div>
+        `
+        )
+        .join('');
+      $('workflows-list').innerHTML = wfs
+        .map(
+          (wf) => `
+          <div class="item-box">
+            <div class="card-head">
+              <strong>[Workflow] ${esc(wf.description)}</strong>
+              <span class="badge badge-muted">${esc(wf.status)}</span>
+            </div>
+            <div class="item-meta">脚本: ${esc(wf.scriptPath)} | 步序: #${esc(wf.stepIndex)}</div>
+          </div>
+        `
+        )
+        .join('');
     }
 
     // Native Swarm panel
@@ -458,15 +573,19 @@ const state = {
     $('ps-registryWriteGuard').value = p.registryWriteGuard || 'ask';
     $('ps-maxLookupInputLength').value = String(p.maxLookupInputLength ?? 2000);
     $('ps-maxLookupCandidates').value = String(p.maxLookupCandidates ?? 6);
+    $('ps-sentinelEnabled').checked = p.sentinelEnabled !== false;
+    $('ps-sentinelIntervalSec').value = String(p.sentinelIntervalSec ?? 15);
+    $('ps-focusCooldownSec').value = String(p.focusCooldownSec ?? 180);
+    $('ps-stuckThresholdMin').value = String(p.stuckThresholdMin ?? 15);
 
     // Layer 2: Global
     const hostDesc = hp.available
       ? `宿主权限检测: preset=${hp.permissionPreset || '-'} | exec=${hp.autoExecutionPolicy || '-'} -> 映射档位: ${eff.effectiveAutonomy || 'balanced'}`
       : `未检测到宿主权限文件，跟随模式下默认采用 balanced 均衡档`;
     $('host-perm-summary').textContent = hostDesc;
-    $('gs-l0ControllerModel').value = g.l0ControllerModel || 'Orchestrator (Neon)';
+    $('gs-l0ControllerModel').value = g.l0ControllerModel || 'Gemini 4 Neon (High)';
     $('gs-l1LightModel').value = g.l1LightModel || 'Gemini 4 Hydrogen (Low)';
-    $('gs-l2StandardModel').value = g.l2StandardModel || 'Orchestrator (Neon)';
+    $('gs-l2StandardModel').value = g.l2StandardModel || 'Gemini 4 Neon (High)';
     $('gs-l3DeepModel').value = g.l3DeepModel || 'Orchestrator (Carbon)';
     $('gs-l4IntegrationModel').value = g.l4IntegrationModel || 'Orchestrator (Neon)';
     $('gs-modelGuardPolicy').value = g.modelGuardPolicy || 'strict_gemini4';
@@ -478,6 +597,7 @@ const state = {
     $('gs-notifyOnSingleTaskDone').checked = Boolean(g.notifyOnSingleTaskDone);
     $('gs-controllerCompactionThreshold').value = String(g.controllerCompactionThreshold ?? 5);
     $('gs-workerCompactionThreshold').value = String(g.workerCompactionThreshold ?? 2);
+    $('gs-dispatchSurfacePolicy').value = g.dispatchSurfacePolicy || 'hidden_first';
     syncGlobalDocEditor(snap);
 
     // Layer 3: Workspace
@@ -602,7 +722,7 @@ const state = {
 
   function render(snap) {
     state.snap = snap;
-    $('version-badge').textContent = `v${snap.plugin?.version || '1.3.0'}`;
+    $('version-badge').textContent = `v${snap.plugin?.version || '1.4.0'}`;
     applyMotionSetting(snap);
     renderWorkspaces(snap);
     renderAttentionBanner(snap);
@@ -966,6 +1086,10 @@ const state = {
           registryWriteGuard: $('ps-registryWriteGuard').value,
           maxLookupInputLength: Number($('ps-maxLookupInputLength').value),
           maxLookupCandidates: Number($('ps-maxLookupCandidates').value),
+          sentinelEnabled: $('ps-sentinelEnabled').checked,
+          sentinelIntervalSec: Number($('ps-sentinelIntervalSec').value),
+          focusCooldownSec: Number($('ps-focusCooldownSec').value),
+          stuckThresholdMin: Number($('ps-stuckThresholdMin').value),
         },
       });
       render(res.snapshot);
@@ -1036,6 +1160,7 @@ const state = {
           notifyOnSingleTaskDone: $('gs-notifyOnSingleTaskDone').checked,
           controllerCompactionThreshold: Number($('gs-controllerCompactionThreshold').value),
           workerCompactionThreshold: Number($('gs-workerCompactionThreshold').value),
+          dispatchSurfacePolicy: $('gs-dispatchSurfacePolicy').value,
         },
       });
       render(res.snapshot);
@@ -1210,7 +1335,77 @@ const state = {
     }
   });
 
+  $('sentinel-sweep-btn').addEventListener('click', async () => {
+    if (!state.workspace) return;
+    try {
+      const res = await api('/api/sentinel/sweep', {
+        method: 'POST',
+        body: { workspace: state.workspace },
+      });
+      render(res.snapshot);
+      showToast(`哨兵巡检完成，新捕获 ${res.detectedCount || 0} 条事件`);
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  $('inbox-deliver-all-btn').addEventListener('click', async () => {
+    if (!state.workspace) return;
+    try {
+      const res = await api('/api/inbox/deliver', {
+        method: 'POST',
+        body: { workspace: state.workspace },
+      });
+      render(res.snapshot);
+      showToast(res.deliveredCount > 0 ? `已向总控投递 ${res.deliveredCount} 条信箱事件` : '暂无未读事件可投递');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
+  $('inbox-ack-all-btn').addEventListener('click', async () => {
+    if (!state.workspace) return;
+    try {
+      const res = await api('/api/inbox/ack', {
+        method: 'POST',
+        body: { workspace: state.workspace, ackAll: true },
+      });
+      render(res.snapshot);
+      showToast('已将全部后台信箱事件标为已读');
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  });
+
   document.body.addEventListener('click', async (e) => {
+    const inbDeliver = e.target.closest('.inbox-deliver-btn');
+    if (inbDeliver?.dataset.id && state.workspace) {
+      try {
+        const res = await api('/api/inbox/deliver', {
+          method: 'POST',
+          body: { workspace: state.workspace, id: inbDeliver.dataset.id },
+        });
+        render(res.snapshot);
+        showToast('已将事件投递给现役总控');
+      } catch (err) {
+        showToast(err.message, true);
+      }
+      return;
+    }
+
+    const inbAck = e.target.closest('.inbox-ack-btn');
+    if (inbAck?.dataset.id && state.workspace) {
+      try {
+        const res = await api('/api/inbox/ack', {
+          method: 'POST',
+          body: { workspace: state.workspace, id: inbAck.dataset.id },
+        });
+        render(res.snapshot);
+      } catch (err) {
+        showToast(err.message, true);
+      }
+      return;
+    }
     const gotoWs = e.target.closest('.goto-ws-settings-btn');
     if (gotoWs) {
       switchTab('settings');

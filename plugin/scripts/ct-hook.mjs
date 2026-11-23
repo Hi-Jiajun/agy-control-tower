@@ -13,6 +13,13 @@ import {
   SLOW_OP_THRESHOLD_MS,
 } from '../lib/logger.mjs';
 import {
+  buildInboxDigestLine,
+  evaluateFocusGate,
+  loadWorkspaceInbox,
+  recordControllerFocus,
+  upsertInboxItem,
+} from '../lib/inbox.mjs';
+import {
   findActiveWorkerSession,
   isActiveController,
   parseRegistry,
@@ -262,6 +269,21 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
   let stateDirty = false;
   const injectSteps = [];
   const lastInput = String(payload.lastUserInput || '');
+  const isAutomatedInbound =
+    lastInput.includes('[CT_AUTO_RECEIPT]') || lastInput.includes('[CT_REPORT:');
+
+  // Record foreground focus state on genuine user turns (never mark automated receipts as foreground chat)
+  if (!isAutomatedInbound && lastInput.trim()) {
+    try {
+      recordControllerFocus(dataDir, regFound.workspace, {
+        controllerId: convId,
+        inFlight: true,
+        lastUserInputAt: Date.now(),
+      });
+    } catch {
+      // ignore focus write errors
+    }
+  }
 
   // 1) Intake routing: Stage receipt vs Decision request vs Bare/Multi-ID lookup
   if (lastInput.includes('[CT_AUTO_RECEIPT]')) {
@@ -276,15 +298,36 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
         `[control-tower 代决策指引] 当前生效代决策档位: ${level} (${resolved.effective.autonomySource})。` +
         `autonomous 档可直接用 agentapi send-message 自动拍板回复专职会话；balanced 档在局部细节内自决，涉及接口/架构分叉、范围变更或连续失败请调用 ask_question 通知用户；strict 档一律通过 ask_question 交由用户决定。`;
       injectSteps.push({ systemMessage: { systemMessage: decisionNote } });
+      const cleanSummary = lastInput.replace(/\s+/g, ' ').trim().slice(0, 140);
       upsertAttention(state, {
         id: `decision-${Date.now().toString(36)}`,
         kind: 'decision',
         workspace: regFound.workspace,
         controllerId: convId,
-        summary: lastInput.replace(/\s+/g, ' ').trim().slice(0, 140),
+        summary: cleanSummary,
         updatedAt: Date.now(),
       });
+      try {
+        upsertInboxItem(dataDir, regFound.workspace, {
+          dedupKey: `decision:${cleanSummary.slice(0, 48)}`,
+          priority: 'P0',
+          kind: 'decision',
+          source: 'worker',
+          convId,
+          title: '专职会话请求分叉拍板',
+          summary: cleanSummary,
+        });
+      } catch {
+        // ignore inbox error
+      }
       stateDirty = true;
+    } else {
+      // Focus Gate passive 1-line inbox digest on user foreground turns
+      const inbox = loadWorkspaceInbox(dataDir, regFound.workspace);
+      const digestLine = buildInboxDigestLine(inbox);
+      if (digestLine) {
+        injectSteps.push({ systemMessage: { systemMessage: digestLine } });
+      }
     }
 
     const knownIds = (parsedReg.activeSessions || [])
@@ -440,7 +483,25 @@ function handleStop(payload, regFound, parsedReg, resolved, dataDir, hintPath, c
     return;
   }
 
-  if (isActiveController(convId, parsedReg) || !hasValidController(parsedReg)) {
+  // Controller turn finished -> release inFlight flag while keeping focus cooldown timestamp
+  if (isActiveController(convId, parsedReg)) {
+    try {
+      const curInbox = loadWorkspaceInbox(dataDir, regFound.workspace);
+      if (curInbox.focus.inFlight || curInbox.focus.lastUserInputAt > 0) {
+        recordControllerFocus(dataDir, regFound.workspace, {
+          controllerId: convId,
+          inFlight: false,
+          lastTurnEndAt: Date.now(),
+        });
+      }
+    } catch {
+      // ignore focus update errors
+    }
+    process.stdout.write('{}\n');
+    return;
+  }
+
+  if (!hasValidController(parsedReg)) {
     process.stdout.write('{}\n');
     return;
   }
@@ -528,41 +589,78 @@ function handleStop(payload, regFound, parsedReg, resolved, dataDir, hintPath, c
     resolved.effective.notifyOnSingleTaskDone || isLockedWorker || allOthersDone
   );
 
+  // Record worker stage completion in workspace priority inbox (P1 for milestone/lock, P2 for single routine)
+  try {
+    upsertInboxItem(dataDir, regFound.workspace, {
+      dedupKey: `stop:${convId.slice(0, 8)}:${currentStep}`,
+      priority: isLockedWorker || allOthersDone ? 'P1' : 'P2',
+      kind: allOthersDone ? 'batch_done' : 'worker_done',
+      source: 'hook',
+      convId,
+      title: allOthersDone
+        ? `阶段活跃任务已全部完成 (${summary})`
+        : `专职会话完成阶段运行 (${summary})`,
+      summary: `会话 ${convId.slice(0, 8)} 停稳于步数 ${currentStep}${isLockedWorker ? '（持独占锁，待核验交锁）' : ''}`,
+    });
+  } catch {
+    // ignore inbox persistence errors
+  }
+
   if (shouldWake) {
-    const completedIds = [convId];
-    const items = [`${convId.slice(0, 8)} (${summary}, 步数 ${currentStep})`];
-    for (const s of otherActive) {
-      if (state.workers[s.conversationId]?.pendingSilentDone) {
-        completedIds.push(s.conversationId);
-        items.push(`${s.conversationId.slice(0, 8)} (${s.topic || state.workers[s.conversationId]?.summary || '-'})`);
-      }
-    }
-    const receipt =
-      `[CT_AUTO_RECEIPT] 以下专职会话已完成当前阶段运行（Stop 自动补发回执）：` +
-      `${items.join('；')}。工作区: ${regFound.workspace}。请核查尾步结果、更新台账并按需向用户输出阶段汇总。`;
-    try {
-      sendAgentApiMessage(ctrlId, '[CT阶段回执]', receipt);
-      for (const id of completedIds) {
-        if (state.workers[id]) state.workers[id].pendingSilentDone = false;
-      }
+    const inboxForGate = loadWorkspaceInbox(dataDir, regFound.workspace);
+    const gate = evaluateFocusGate(inboxForGate.focus, {
+      focusCooldownSec: resolved.plugin.focusCooldownSec,
+    });
+    if (gate.isForegroundBusy) {
       appendFlightEvent(dataDir, {
         level: 'info',
         source: 'hook',
-        event: 'stop_receipt_sent',
+        event: 'stop_wake_deferred_focus_gate',
         conv: convId,
-        message: `Sent batched Stop receipt for ${completedIds.length} worker(s)`,
-        detail: { completedCount: completedIds.length, isLockedWorker, allOthersDone },
+        message: `Deferred Stop wakeup due to foreground Focus Gate (${gate.mode})`,
+        detail: {
+          mode: gate.mode,
+          remainingCooldownSec: gate.remainingCooldownSec,
+          isLockedWorker,
+          allOthersDone,
+        },
       });
-    } catch (err) {
-      appendFlightEvent(dataDir, {
-        level: 'error',
-        source: 'hook',
-        event: 'stop_agentapi_failed',
-        ok: false,
-        conv: convId,
-        message: err?.message || 'agentapi send-message failed in Stop hook',
-        detail: { completedCount: completedIds.length },
-      });
+    } else {
+      const completedIds = [convId];
+      const items = [`${convId.slice(0, 8)} (${summary}, 步数 ${currentStep})`];
+      for (const s of otherActive) {
+        if (state.workers[s.conversationId]?.pendingSilentDone) {
+          completedIds.push(s.conversationId);
+          items.push(`${s.conversationId.slice(0, 8)} (${s.topic || state.workers[s.conversationId]?.summary || '-'})`);
+        }
+      }
+      const receipt =
+        `[CT_AUTO_RECEIPT] 以下专职会话已完成当前阶段运行（Stop 自动补发回执）：` +
+        `${items.join('；')}。工作区: ${regFound.workspace}。请核查尾步结果、更新台账并按需向用户输出阶段汇总。`;
+      try {
+        sendAgentApiMessage(ctrlId, '[CT阶段回执]', receipt);
+        for (const id of completedIds) {
+          if (state.workers[id]) state.workers[id].pendingSilentDone = false;
+        }
+        appendFlightEvent(dataDir, {
+          level: 'info',
+          source: 'hook',
+          event: 'stop_receipt_sent',
+          conv: convId,
+          message: `Sent batched Stop receipt for ${completedIds.length} worker(s)`,
+          detail: { completedCount: completedIds.length, isLockedWorker, allOthersDone },
+        });
+      } catch (err) {
+        appendFlightEvent(dataDir, {
+          level: 'error',
+          source: 'hook',
+          event: 'stop_agentapi_failed',
+          ok: false,
+          conv: convId,
+          message: err?.message || 'agentapi send-message failed in Stop hook',
+          detail: { completedCount: completedIds.length },
+        });
+      }
     }
   } else {
     appendFlightEvent(dataDir, {
