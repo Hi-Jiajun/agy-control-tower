@@ -106,7 +106,7 @@ function readPluginMeta() {
   return {
     name: raw?.name || 'control-tower',
     displayName: raw?.displayName || 'Control Tower',
-    version: raw?.version || '1.2.2',
+    version: raw?.version || '1.2.3',
   };
 }
 

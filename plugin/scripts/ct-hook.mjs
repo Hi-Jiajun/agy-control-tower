@@ -27,6 +27,15 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(__dirname, '..');
 
+function readInstalledPluginVersion() {
+  try {
+    const raw = JSON.parse(readFileSync(join(PLUGIN_ROOT, 'plugin.json'), 'utf8'));
+    return typeof raw?.version === 'string' ? raw.version.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
 function readStdinSync() {
   try {
     return readFileSync(0, 'utf8');
@@ -298,30 +307,54 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
     }
   }
 
-  // 2) Flexible anti-aging handover warning (threshold configurable, default 5, ignorable per session)
+  // 2) One-shot plugin version upgrade notice & flexible anti-aging handover warning
   const selfTp = resolveSelfTranscript(payload, convId, hintPath);
+  let selfInfo = null;
   if (selfTp) {
     const prevSelfCache = state.transcriptCache[selfTp] || null;
-    const { info: selfInfo, nextCacheEntry } = inspectTranscript(selfTp, { cacheEntry: prevSelfCache });
-    if (nextCacheEntry && nextCacheEntry !== prevSelfCache) {
-      state.transcriptCache[selfTp] = nextCacheEntry;
+    const inspected = inspectTranscript(selfTp, { cacheEntry: prevSelfCache });
+    selfInfo = inspected.info;
+    if (inspected.nextCacheEntry && inspected.nextCacheEntry !== prevSelfCache) {
+      state.transcriptCache[selfTp] = inspected.nextCacheEntry;
       stateDirty = true;
     }
+  }
+
+  const currentVersion = readInstalledPluginVersion();
+  const prevCtrlEntry = state.controllers[convId] || {};
+  let nextCtrlEntry = { ...prevCtrlEntry };
+  let ctrlDirty = false;
+
+  if (currentVersion && prevCtrlEntry.lastSyncedVersion !== currentVersion) {
+    const hasPriorHistory =
+      Boolean(prevCtrlEntry.lastSyncedVersion) ||
+      Number(payload.invocationNum || 0) > 1 ||
+      (selfInfo && (selfInfo.lineCount >= 2 || selfInfo.maxStepIndex >= 1));
+    if (hasPriorHistory) {
+      const syncMsg =
+        `[control-tower 版本同步] 本机 control-tower 插件已更新至 v${currentVersion}。` +
+        `请在本轮处理前重读最新版 control-tower 技能规范（SKILL.md、references/model-routing.md 与 references/templates.md），` +
+        `同步最新模型路由、协同矩阵、缓存保护护栏、执行层精确读行纪律及账号无 Carbon 临时降档策略。`;
+      injectSteps.push({ systemMessage: { systemMessage: syncMsg } });
+    }
+    nextCtrlEntry.lastSyncedVersion = currentVersion;
+    nextCtrlEntry.updatedAt = Date.now();
+    ctrlDirty = true;
+  }
+
+  if (selfInfo) {
     const comps = selfInfo.compactions || 0;
     const threshold = resolved.effective.controllerCompactionThreshold || 5;
-    const entry = state.controllers[convId] || {};
-    const lastWarned = entry.lastWarnedCompactions || 0;
-    if (!entry.handoverIgnored && comps >= threshold && (typeof lastWarned !== 'number' || comps > lastWarned)) {
+    const lastWarned = nextCtrlEntry.lastWarnedCompactions || 0;
+    if (!nextCtrlEntry.handoverIgnored && comps >= threshold && (typeof lastWarned !== 'number' || comps > lastWarned)) {
       const warn =
         `[control-tower 换届提醒] 当前现役总控会话已累计 ${comps} 次上下文自动压缩（>= ${threshold} 次阈值，非强制）。` +
         `请通过 ask_question 询问用户：选择立即换届（同步 ${regFound.absPath}、输出交接卡并可用 agentapi new-conversation 一键拉起新总控接班），` +
         `或选择「本会话忽略不再提醒」（也可在总控看板顶部一键忽略）。`;
       injectSteps.push({ systemMessage: { systemMessage: warn } });
-      state.controllers[convId] = {
-        ...entry,
-        lastWarnedCompactions: comps,
-        updatedAt: Date.now(),
-      };
+      nextCtrlEntry.lastWarnedCompactions = comps;
+      nextCtrlEntry.updatedAt = Date.now();
+      ctrlDirty = true;
       upsertAttention(state, {
         id: `handover-${convId.slice(0, 8)}`,
         kind: 'handover',
@@ -334,6 +367,11 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
       });
       stateDirty = true;
     }
+  }
+
+  if (ctrlDirty) {
+    state.controllers[convId] = nextCtrlEntry;
+    stateDirty = true;
   }
 
   if (stateDirty) {

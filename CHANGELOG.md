@@ -5,6 +5,11 @@ All notable changes to `control-tower` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2026-11-23
+
+### Added
+- 在 `plugin/scripts/ct-hook.mjs` 的 `PreInvocation` 中新增一次性去重的「插件版本升级自动感知提醒」（比对 `plugin.json` 当前版本与 `state.json` 中各现役总控的 `lastSyncedVersion`）：当插件升级后，本机所有已有历史步数的在位老总控在下一轮被唤醒时均会自动收到一次重读最新版 `SKILL.md`、`model-routing.md` 与 `templates.md` 的提示（全新首轮总控静默记账不打扰）。
+
 ## [1.2.2] - 2026-11-23
 
 ### Changed

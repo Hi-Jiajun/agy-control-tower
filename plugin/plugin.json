@@ -1,7 +1,7 @@
 {
   "name": "control-tower",
   "displayName": "Control Tower",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "Universal Chief-of-Staff Control Tower plugin for Antigravity: adaptive dispatch (native swarm / agentapi spawn), two-way co-decision, 4-event scoped hooks, and Aux Pane board with 3-tier isolated settings.",
   "author": "Hi-Jiajun",
   "homepage": "https://github.com/Hi-Jiajun/agy-control-tower",

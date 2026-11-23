@@ -363,3 +363,77 @@ test('SessionStart emits gentle schema alignment hint when registry deviates fro
     sb.cleanup();
   }
 });
+
+test('PreInvocation emits one-shot plugin version sync notice for existing controllers and stays silent on fresh turn 1', () => {
+  const sb = makeSandbox();
+  try {
+    const ws = join(sb.dir, 'ws-ver');
+    mkdirSync(join(ws, '.agents'), { recursive: true });
+    const appDir = join(sb.dir, 'app_data');
+    const dataDir = join(sb.dir, 'plugin_data');
+    const oldCtrlId = makeConvId('f', '1', '4', '8', 'a');
+    const freshCtrlId = makeConvId('f', '2', '4', '8', 'b');
+    const env = { AGY_CONTROL_TOWER_DATA_DIR: dataDir, ANTIGRAVITY_APP_DATA_DIR: appDir };
+
+    const regPath = join(ws, '.agents', 'SESSION-REGISTRY.md');
+    const makeReg = (cid) => `# 台账
+## 一、当前独占资源租约
+| 字段 | 当前值 |
+| --- | --- |
+| **锁状态** | \`IDLE\` |
+
+## 二、常驻主交流总控会话
+- **当前现役总控会话**：\`${cid}\`（状态：\`ONLINE\`）
+`;
+
+    // 1) Existing controller with prior transcript steps gets one-shot upgrade notice, then dedupes
+    writeFileSync(regPath, makeReg(oldCtrlId), 'utf8');
+    const oldLog = makeTranscriptPath(appDir, oldCtrlId);
+    writeFileSync(
+      oldLog,
+      [
+        JSON.stringify({ step_index: 0, type: 'USER_INPUT', content: 'start' }),
+        JSON.stringify({ step_index: 1, type: 'PLANNER_RESPONSE', model: 'gemini-4-neon-high', status: 'DONE' }),
+      ].join('\n') + '\n',
+      'utf8'
+    );
+    const r1 = callHook(
+      'PreInvocation',
+      { conversationId: oldCtrlId, workspacePaths: [ws], lastUserInput: '继续', transcriptPath: oldLog },
+      env
+    );
+    assert.ok(r1.injectSteps.some((s) => s.systemMessage.systemMessage.includes('[control-tower 版本同步]')));
+
+    const r2 = callHook(
+      'PreInvocation',
+      { conversationId: oldCtrlId, workspacePaths: [ws], lastUserInput: '继续', transcriptPath: oldLog },
+      env
+    );
+    assert.deepEqual(r2, {});
+
+    // 2) Simulating an older synced version triggers notice again once
+    const st = loadPluginState(dataDir);
+    st.controllers[oldCtrlId].lastSyncedVersion = '1.2.0';
+    savePluginState(dataDir, st);
+    const r3 = callHook(
+      'PreInvocation',
+      { conversationId: oldCtrlId, workspacePaths: [ws], lastUserInput: '继续', transcriptPath: oldLog },
+      env
+    );
+    assert.ok(r3.injectSteps.some((s) => s.systemMessage.systemMessage.includes('[control-tower 版本同步]')));
+
+    // 3) Brand-new controller on invocation 1 with empty/single-line log does NOT get noisy upgrade notice
+    writeFileSync(regPath, makeReg(freshCtrlId), 'utf8');
+    const freshLog = makeTranscriptPath(appDir, freshCtrlId);
+    writeFileSync(freshLog, `${JSON.stringify({ step_index: 0, type: 'USER_INPUT', content: 'cold start' })}\n`, 'utf8');
+    const rFresh = callHook(
+      'PreInvocation',
+      { conversationId: freshCtrlId, workspacePaths: [ws], invocationNum: 1, lastUserInput: '冷启动', transcriptPath: freshLog },
+      env
+    );
+    assert.deepEqual(rFresh, {});
+    assert.ok(loadPluginState(dataDir).controllers[freshCtrlId]?.lastSyncedVersion);
+  } finally {
+    sb.cleanup();
+  }
+});
