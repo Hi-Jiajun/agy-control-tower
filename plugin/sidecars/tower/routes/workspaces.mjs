@@ -1,6 +1,10 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { loadWorkspaceInbox, summarizeInbox } from '../../../lib/inbox.mjs';
-import { findExistingRegistry, normalizeWorkspaceInput } from '../../../lib/paths.mjs';
+import {
+  findExistingRegistry,
+  loadKnownWorkspaces,
+  normalizeWorkspaceInput,
+} from '../../../lib/paths.mjs';
 import { parseRegistry } from '../../../lib/registry.mjs';
 import { loadWorkspaceRoadmap } from '../../../lib/roadmap.mjs';
 import { resolveEffectiveSettings } from '../../../lib/settings.mjs';
@@ -8,8 +12,8 @@ import { loadPluginState } from '../../../lib/transcript.mjs';
 import { isLeaseIdle } from '../ui-logic.mjs';
 
 /**
- * Strictly read-only cross-workspace global summary across active & recent workspaces.
- * Surfaces P0/P1 attention counts, active controller IDs, lease state, and roadmap progress.
+ * Strictly read-only cross-workspace global summary across all Control Tower workspaces.
+ * Focuses on workspaces that have an active SESSION-REGISTRY.md (or roadmap) plus the current workspace.
  */
 export function buildMultiWorkspaceOverview({
   currentWorkspace = '',
@@ -17,16 +21,13 @@ export function buildMultiWorkspaceOverview({
   dataDir = '',
   pluginRoot = '',
 } = {}) {
-  const candidates = [];
-  const seen = new Set();
-  for (const raw of [currentWorkspace, ...(Array.isArray(recentWorkspaces) ? recentWorkspaces : [])]) {
-    if (!raw || typeof raw !== 'string') continue;
-    const wsReal = normalizeWorkspaceInput(raw, { throwOnInvalid: false });
-    if (!wsReal || !existsSync(wsReal) || seen.has(wsReal)) continue;
-    seen.add(wsReal);
-    candidates.push(wsReal);
-    if (candidates.length >= 12) break;
-  }
+  const cleanCurrent = currentWorkspace
+    ? normalizeWorkspaceInput(currentWorkspace, { throwOnInvalid: false }) || ''
+    : '';
+  const candidates = loadKnownWorkspaces(dataDir, {
+    seedWorkspaces: [cleanCurrent, ...(Array.isArray(recentWorkspaces) ? recentWorkspaces : [])],
+    maxEntries: 24,
+  });
 
   const pluginState = dataDir && existsSync(dataDir) ? loadPluginState(dataDir) : { controllers: {} };
   const workspaces = [];
@@ -46,6 +47,31 @@ export function buildMultiWorkspaceOverview({
       dataDir,
       workspaceSettings: resolved.workspace,
     });
+
+    let roadmapDone = 0;
+    let roadmapTotal = 0;
+    let roadmapReady = 0;
+    let roadmapExists = false;
+    try {
+      const rm = loadWorkspaceRoadmap(wsReal, {
+        dataDir,
+        workspaceSettings: resolved.workspace,
+      });
+      if (rm.exists && rm.graph) {
+        roadmapExists = true;
+        roadmapDone = rm.graph.counts?.done || 0;
+        roadmapTotal = rm.graph.counts?.total || 0;
+        roadmapReady = rm.graph.counts?.ready || 0;
+      }
+    } catch {
+      roadmapExists = false;
+    }
+
+    const isCurrent = Boolean(cleanCurrent && wsReal === cleanCurrent);
+    // Focus global drawer on Control Tower workspaces (plus currently open workspace)
+    if (!found && !roadmapExists && !isCurrent) {
+      continue;
+    }
 
     let ctrlId = '';
     let ctrlStatus = '';
@@ -76,30 +102,10 @@ export function buildMultiWorkspaceOverview({
       handoverIgnored,
     });
 
-    let roadmapDone = 0;
-    let roadmapTotal = 0;
-    let roadmapReady = 0;
-    let roadmapExists = false;
-    try {
-      const rm = loadWorkspaceRoadmap(wsReal, {
-        dataDir,
-        workspaceSettings: resolved.workspace,
-      });
-      if (rm.exists && rm.graph) {
-        roadmapExists = true;
-        roadmapDone = rm.graph.counts?.done || 0;
-        roadmapTotal = rm.graph.counts?.total || 0;
-        roadmapReady = rm.graph.counts?.ready || 0;
-      }
-    } catch {
-      roadmapExists = false;
-    }
-
     const p0 = inboxSummary.unreadCounts?.P0 || 0;
     const p1 = inboxSummary.unreadCounts?.P1 || 0;
     const p2 = inboxSummary.unreadCounts?.P2 || 0;
     const unread = inboxSummary.unreadCounts?.total || 0;
-    const isCurrent = Boolean(currentWorkspace && wsReal === currentWorkspace);
 
     totalP0 += p0;
     totalP1 += p1;
@@ -129,6 +135,14 @@ export function buildMultiWorkspaceOverview({
       roadmapReady,
     });
   }
+
+  workspaces.sort((a, b) => {
+    if (a.isCurrent !== b.isCurrent) return a.isCurrent ? -1 : 1;
+    if (b.unreadCounts.P0 !== a.unreadCounts.P0) return b.unreadCounts.P0 - a.unreadCounts.P0;
+    if (b.unreadCounts.P1 !== a.unreadCounts.P1) return b.unreadCounts.P1 - a.unreadCounts.P1;
+    if (b.activeSessionCount !== a.activeSessionCount) return b.activeSessionCount - a.activeSessionCount;
+    return a.shortName.localeCompare(b.shortName);
+  });
 
   return {
     workspaceCount: workspaces.length,

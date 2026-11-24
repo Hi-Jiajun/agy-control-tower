@@ -183,6 +183,11 @@ export function runReplayFixture(fixture) {
         const content = rows.map((r) => (typeof r === 'string' ? r : JSON.stringify(r))).join('\n') + '\n';
         writeFileSync(tp, content, 'utf8');
       }
+      if (spec.setup?.swarmMembersJson) {
+        const swDir = join(appData, 'brain', vars.CTRL_ID, '.system_generated', 'swarm');
+        mkdirSync(swDir, { recursive: true });
+        writeFileSync(join(swDir, 'members.json'), JSON.stringify(spec.setup.swarmMembersJson, null, 2), 'utf8');
+      }
       if (spec.setup?.stateJson) {
         mkdirSync(dataDir, { recursive: true });
         writeFileSync(join(dataDir, 'state.json'), JSON.stringify(spec.setup.stateJson, null, 2), 'utf8');
@@ -227,6 +232,20 @@ export function runReplayFixture(fixture) {
             events.some((ev) => ev.event === exp.flightEvent),
             `Expected flight log event "${exp.flightEvent}"`
           );
+        }
+        if (exp.notFlightEvent) {
+          const events = readFlightEvents(dataDir, { limit: 20 });
+          assert.equal(
+            events.some((ev) => ev.event === exp.notFlightEvent),
+            false,
+            `Expected flight log NOT to contain "${exp.notFlightEvent}"`
+          );
+        }
+        if (exp.unreadP0Count !== undefined) {
+          const curSum = summarizeInbox(loadWorkspaceInbox(dataDir, ws), {
+            activeControllerId: vars.CTRL_ID,
+          });
+          assert.equal(curSum.unreadCounts.P0, exp.unreadP0Count);
         }
         if (exp.focusInFlight !== undefined) {
           const curInbox = loadWorkspaceInbox(dataDir, ws);

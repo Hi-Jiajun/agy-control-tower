@@ -8,6 +8,7 @@ import {
   findExistingRegistry,
   findRegistryInWorkspaces,
   normalizeWorkspaceInput,
+  recordKnownWorkspace,
   resolvePluginDataDir,
   sha256,
 } from '../lib/paths.mjs';
@@ -151,6 +152,13 @@ function upsertAttention(state, item) {
     list.push(item);
   }
   state.pendingAttention = list;
+}
+
+function canInvokeAgentApiInHook(env = process.env) {
+  return Boolean(
+    (env.ANTIGRAVITY_AGENTAPI_EXE && String(env.ANTIGRAVITY_AGENTAPI_EXE).trim()) ||
+      (env.ANTIGRAVITY_LS_ADDRESS && String(env.ANTIGRAVITY_LS_ADDRESS).trim())
+  );
 }
 
 function sendAgentApiMessage(recipientId, title, message) {
@@ -327,6 +335,7 @@ function runThrottledHookSentinel(regFound, parsedReg, resolved, dataDir, hintPa
     evaluateSentinelSweep({
       dataDir,
       wsReal: regFound.workspace,
+      activeControllerId: ctrlId,
       activeSessions: enrichedActive,
       nativeSwarm,
       subagents: hidden.subagents,
@@ -374,6 +383,7 @@ function handlePreToolUse(payload, regFound, parsedReg, resolved, dataDir, hintP
               updatedAt: Date.now(),
             };
           });
+          recordKnownWorkspace(dataDir, regFound.workspace);
         }
       } catch {
         // ignore
@@ -410,6 +420,7 @@ function handlePreToolUse(payload, regFound, parsedReg, resolved, dataDir, hintP
         }
       });
       cleanupWorkspaceInbox(dataDir, regFound.workspace, { activeControllerId: convId });
+      recordKnownWorkspace(dataDir, regFound.workspace);
     } catch {
       // ignore state sync error during takeover
     }
@@ -559,7 +570,7 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
 
   const state = loadPluginState(dataDir);
   const touchedCacheKeys = new Set();
-  const pendingAttentionItems = [];
+  const deferredCompletedIds = [];
   const injectSteps = [];
   const lastInput = String(payload.lastUserInput || '');
   const strippedInput = stripSystemMessageEnvelope(lastInput);
@@ -569,6 +580,36 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
     lastInput.includes('[CT_ROADMAP_DISPATCH]') ||
     lastInput.includes('[CT_SWARM_CLEANUP]') ||
     lastInput.includes('[CT_INBOX_DELIVER]');
+
+  // Capture any queued/deferred Stop receipt BEFORE recordControllerFocus clears it
+  const priorInbox = existsSync(dataDir) ? loadWorkspaceInbox(dataDir, regFound.workspace) : null;
+  if (
+    !isAutomatedInbound &&
+    priorInbox?.deferredReceipt &&
+    (!priorInbox.deferredReceipt.controllerId ||
+      sameControllerId(priorInbox.deferredReceipt.controllerId, convId))
+  ) {
+    injectSteps.push({
+      systemMessage: {
+        systemMessage: `[control-tower 待收阶段回执] ${priorInbox.deferredReceipt.message}`,
+      },
+    });
+    for (const cid of priorInbox.deferredReceipt.completedIds || []) {
+      if (cid) deferredCompletedIds.push(cid);
+    }
+    try {
+      clearDeferredReceipt(dataDir, regFound.workspace);
+      appendFlightEvent(dataDir, {
+        level: 'info',
+        source: 'hook',
+        event: 'deferred_receipt_injected',
+        conv: convId,
+        message: 'Injected queued Stop receipt into controller PreInvocation',
+      });
+    } catch {
+      // ignore clear error
+    }
+  }
 
   // Record foreground focus state on genuine user turns (never mark automated receipts as foreground chat)
   if (!isAutomatedInbound && lastInput.trim()) {
@@ -620,14 +661,6 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
         `autonomous 档可直接用 agentapi send-message 自动拍板回复专职会话；balanced 档在局部细节内自决，涉及接口/架构分叉、范围变更或连续失败请调用 ask_question 通知用户；strict 档一律通过 ask_question 交由用户决定。`;
       injectSteps.push({ systemMessage: { systemMessage: decisionNote } });
       const cleanSummary = (strippedInput || lastInput).replace(/\s+/g, ' ').trim().slice(0, 140);
-      pendingAttentionItems.push({
-        id: `decision-${Date.now().toString(36)}`,
-        kind: 'decision',
-        workspace: regFound.workspace,
-        controllerId: convId,
-        summary: cleanSummary,
-        updatedAt: Date.now(),
-      });
       try {
         upsertInboxItem(dataDir, regFound.workspace, {
           dedupKey: `decision:${cleanSummary.slice(0, 48)}`,
@@ -806,16 +839,6 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
       ctrlPatch.lastWarnedCompactions = comps;
       ctrlPatch.updatedAt = Date.now();
       ctrlDirty = true;
-      pendingAttentionItems.push({
-        id: `handover-${convId.slice(0, 8)}`,
-        kind: 'handover',
-        workspace: regFound.workspace,
-        controllerId: convId,
-        compactions: comps,
-        threshold,
-        summary: `总控已累计压缩 ${comps} 次（阈值 ${threshold} 次），待确认是否换届`,
-        updatedAt: Date.now(),
-      });
       try {
         upsertInboxItem(dataDir, regFound.workspace, {
           dedupKey: `handover:${convId.slice(0, 8)}`,
@@ -832,7 +855,8 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
     }
   }
 
-  if (ctrlDirty || pendingAttentionItems.length > 0 || touchedCacheKeys.size > 0) {
+  const hasLegacyAttention = Array.isArray(state.pendingAttention) && state.pendingAttention.length > 0;
+  if (ctrlDirty || deferredCompletedIds.length > 0 || touchedCacheKeys.size > 0 || hasLegacyAttention) {
     try {
       updatePluginState(dataDir, (latest) => {
         if (ctrlDirty) {
@@ -841,14 +865,17 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
             ...ctrlPatch,
           };
         }
-        for (const att of pendingAttentionItems) {
-          upsertAttention(latest, att);
+        for (const k of deferredCompletedIds) {
+          if (latest.workers?.[k]) {
+            latest.workers[k].pendingSilentDone = false;
+          }
         }
         for (const k of touchedCacheKeys) {
           if (state.transcriptCache[k]) {
             latest.transcriptCache[k] = state.transcriptCache[k];
           }
         }
+        latest.pendingAttention = [];
       });
     } catch (err) {
       appendFlightEvent(dataDir, {
@@ -859,6 +886,14 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
         conv: convId,
         message: err?.message || 'Failed to save state in PreInvocation',
       });
+    }
+  }
+
+  if (existsSync(dataDir)) {
+    try {
+      recordKnownWorkspace(dataDir, regFound.workspace);
+    } catch {
+      // ignore recent workspace tracking error
     }
   }
 
@@ -1055,6 +1090,7 @@ function handleStop(payload, regFound, parsedReg, resolved, dataDir, hintPath, c
         : `专职会话完成阶段运行 (${summary})`,
       summary: `会话 ${convId.slice(0, 8)} 停稳于步数 ${currentStep}${isLockedWorker ? '（持独占锁，待核验交锁）' : ''}`,
     });
+    recordKnownWorkspace(dataDir, regFound.workspace);
   } catch {
     // ignore inbox persistence errors
   }
@@ -1093,6 +1129,26 @@ function handleStop(payload, regFound, parsedReg, resolved, dataDir, hintPath, c
           allOthersDone,
         },
       });
+    } else if (!canInvokeAgentApiInHook()) {
+      // Zero-token dual-track: Hook subprocess lacks ANTIGRAVITY_LS_ADDRESS, queue cleanly for Sidecar/PreInvocation
+      try {
+        setDeferredReceipt(dataDir, regFound.workspace, {
+          controllerId: ctrlId,
+          message: receipt,
+          completedIds: completedStateKeys,
+          createdAt: Date.now(),
+        });
+      } catch {
+        // ignore deferred persistence error
+      }
+      appendFlightEvent(dataDir, {
+        level: 'info',
+        source: 'hook',
+        event: 'stop_receipt_queued_inbox',
+        conv: convId,
+        message: `Queued Stop receipt in inbox for Sidecar or PreInvocation delivery (${completedStateKeys.length} worker(s))`,
+        detail: { completedCount: completedStateKeys.length, isLockedWorker, allOthersDone },
+      });
     } else {
       try {
         sendAgentApiMessage(ctrlId, '[CT阶段回执]', receipt);
@@ -1114,6 +1170,16 @@ function handleStop(payload, regFound, parsedReg, resolved, dataDir, hintPath, c
           detail: { completedCount: completedStateKeys.length, isLockedWorker, allOthersDone },
         });
       } catch (err) {
+        try {
+          setDeferredReceipt(dataDir, regFound.workspace, {
+            controllerId: ctrlId,
+            message: receipt,
+            completedIds: completedStateKeys,
+            createdAt: Date.now(),
+          });
+        } catch {
+          // ignore fallback persistence error
+        }
         appendFlightEvent(dataDir, {
           level: 'error',
           source: 'hook',

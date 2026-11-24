@@ -1,7 +1,7 @@
 {
   "name": "control-tower",
   "displayName": "Control Tower",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "Universal Chief-of-Staff Control Tower plugin for Antigravity: hidden-surface-first dispatch, 4-surface navigator, zero-token sentinel + Focus Gate inbox, isolation & collaboration contracts, 3-tier project roadmap DAG, and real-time SSE multi-workspace Aux Pane board.",
   "author": "Hi-Jiajun",
   "homepage": "https://github.com/Hi-Jiajun/agy-control-tower",

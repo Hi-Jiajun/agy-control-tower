@@ -25,10 +25,12 @@ import {
 import {
   atomicWriteText,
   findExistingRegistry,
+  loadKnownWorkspaces,
   MANAGED_REGISTRY_VIRTUAL_REL,
   normalizeWorkspaceInput,
   PathError,
   readJsonSafe,
+  recordKnownWorkspace,
   resolveAppDataDirs,
   resolvePluginDataDir,
   resolveRegistryTarget,
@@ -151,25 +153,22 @@ function readPluginMeta() {
   return {
     name: raw?.name || 'control-tower',
     displayName: raw?.displayName || 'Control Tower',
-    version: raw?.version || '1.7.0',
+    version: raw?.version || '1.7.1',
   };
 }
 
-function loadRecentWorkspaces() {
-  const recentPath = getRecentPath();
-  const raw = readJsonSafe(recentPath, []);
-  if (!Array.isArray(raw)) return [];
-  return raw.filter((item) => typeof item === 'string' && existsSync(item));
+function loadRecentWorkspaces(seedWs = '') {
+  return loadKnownWorkspaces(getDataDir(), {
+    seedWorkspaces: seedWs ? [seedWs] : [],
+    maxEntries: 24,
+  });
 }
 
 function recordRecentWorkspace(wsReal) {
   try {
-    const existing = loadRecentWorkspaces().filter((p) => p !== wsReal);
-    const next = [wsReal, ...existing].slice(0, 12);
-    atomicWriteText(getRecentPath(), `${JSON.stringify(next, null, 2)}\n`);
-    return next;
+    return recordKnownWorkspace(getDataDir(), wsReal, { maxEntries: 24 });
   } catch {
-    return [wsReal];
+    return wsReal ? [wsReal] : [];
   }
 }
 
@@ -201,7 +200,14 @@ class ControlTowerServer {
     this.#sentinelRunning = false;
     this.#workspaceMutexes = new Map();
     this.#lastAuthRejectLogAt = 0;
-    this.#sseHub = new SseHub();
+    this.#sseHub = new SseHub({
+      onFsEvent: ({ workspace }) => {
+        const targetWs = workspace || this.#activeWorkspace;
+        if (targetWs) {
+          void this.#flushDeferredReceiptForWorkspace(targetWs);
+        }
+      },
+    });
     this.#staticAssets = new Map([
       ['/', { file: join(__dirname, 'index.html'), type: 'text/html; charset=utf-8' }],
       ['/index.html', { file: join(__dirname, 'index.html'), type: 'text/html; charset=utf-8' }],
@@ -504,6 +510,58 @@ class ControlTowerServer {
     };
   }
 
+  async #flushDeferredReceiptForWorkspace(wsReal) {
+    if (!wsReal) return false;
+    const dataDir = getDataDir();
+    if (!existsSync(dataDir)) return false;
+    try {
+      const rawInbox = loadWorkspaceInbox(dataDir, wsReal);
+      if (!rawInbox.deferredReceipt) return false;
+      const resolved = resolveEffectiveSettings({
+        dataDir,
+        wsReal,
+        pluginRoot: PLUGIN_ROOT,
+        env: process.env,
+      });
+      const gate = evaluateFocusGate(rawInbox.focus, {
+        focusCooldownSec: resolved.plugin?.focusCooldownSec || 180,
+      });
+      if (gate.isForegroundBusy) return false;
+      const found = findExistingRegistry(wsReal, {
+        dataDir,
+        workspaceSettings: resolved.workspace,
+      });
+      if (!found || !existsSync(found.absPath)) return false;
+      const parsed = parseRegistry(readFileSync(found.absPath, 'utf8'));
+      const ctrlId = String(parsed.controller?.currentControllerId || '').trim();
+      if (!ctrlId || !isValidConvIdOrPrefix(ctrlId)) return false;
+
+      await execAgentApiAsync([
+        'send-message',
+        '--title',
+        '[CT延迟阶段回执]',
+        ctrlId,
+        safePositionalMessage(rawInbox.deferredReceipt.message),
+      ]);
+      clearDeferredReceipt(dataDir, wsReal);
+      updatePluginState(dataDir, (st) => {
+        for (const k of rawInbox.deferredReceipt.completedIds || []) {
+          if (st.workers[k]) st.workers[k].pendingSilentDone = false;
+        }
+      });
+      this.#logFlightSafe({
+        level: 'info',
+        source: 'sidecar',
+        event: 'deferred_receipt_relayed',
+        conv: ctrlId,
+        message: 'Sidecar relayed queued Stop receipt to idle controller',
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async #runSentinelSweepForWorkspace(wsReal) {
     if (!wsReal) return { detectedCount: 0, detected: [] };
     const dataDir = getDataDir();
@@ -512,6 +570,7 @@ class ControlTowerServer {
     const sweep = evaluateSentinelSweep({
       dataDir,
       wsReal,
+      activeControllerId: String(snap.parsed?.controller?.currentControllerId || '').trim(),
       activeSessions: snap.parsed?.activeSessions || [],
       nativeSwarm: snap.nativeSwarm,
       subagents: snap.executionSurfaces?.subagents || [],
@@ -519,33 +578,7 @@ class ControlTowerServer {
       stuckThresholdMin: snap.settings?.plugin?.stuckThresholdMin || 15,
     });
 
-    // Deliver any deferred Stop receipt once Foreground Focus Gate cools down
-    try {
-      const rawInbox = loadWorkspaceInbox(dataDir, wsReal);
-      if (rawInbox.deferredReceipt) {
-        const gate = evaluateFocusGate(rawInbox.focus, {
-          focusCooldownSec: snap.settings?.plugin?.focusCooldownSec || 180,
-        });
-        const ctrlId = String(snap.parsed?.controller?.currentControllerId || '').trim();
-        if (!gate.isForegroundBusy && ctrlId && isValidConvIdOrPrefix(ctrlId)) {
-          await execAgentApiAsync([
-            'send-message',
-            '--title',
-            '[CT延迟阶段回执]',
-            ctrlId,
-            safePositionalMessage(rawInbox.deferredReceipt.message),
-          ]);
-          clearDeferredReceipt(dataDir, wsReal);
-          updatePluginState(dataDir, (st) => {
-            for (const k of rawInbox.deferredReceipt.completedIds || []) {
-              if (st.workers[k]) st.workers[k].pendingSilentDone = false;
-            }
-          });
-        }
-      }
-    } catch {
-      // ignore deferred delivery error
-    }
+    await this.#flushDeferredReceiptForWorkspace(wsReal);
 
     if (sweep.detectedCount > 0) {
       this.#sseHub.notify({ workspace: wsReal, reason: 'sentinel_sweep' });

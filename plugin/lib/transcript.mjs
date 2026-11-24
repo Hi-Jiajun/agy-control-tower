@@ -120,6 +120,23 @@ export function extractPromptSessionIds(
   return { isSingleBareId: false, ids };
 }
 
+const BRAIN_ENTRIES_TTL_MS = 2000;
+const brainEntriesCache = new Map();
+
+function listBrainDirEntriesCached(brainReal) {
+  const now = Date.now();
+  const hit = brainEntriesCache.get(brainReal);
+  if (hit && now < hit.expiresAt) {
+    return hit.entries;
+  }
+  const entries = readdirSync(brainReal, { withFileTypes: true });
+  if (brainEntriesCache.size > 16) {
+    brainEntriesCache.clear();
+  }
+  brainEntriesCache.set(brainReal, { expiresAt: now + BRAIN_ENTRIES_TTL_MS, entries });
+  return entries;
+}
+
 export function resolveBrainTranscript(idOrPrefix, { env = process.env, hintPath = '' } = {}) {
   const cand = typeof idOrPrefix === 'string' ? idOrPrefix.trim() : '';
   if (!isValidConvIdOrPrefix(cand)) {
@@ -159,7 +176,7 @@ export function resolveBrainTranscript(idOrPrefix, { env = process.env, hintPath
 
     let entries = [];
     try {
-      entries = readdirSync(brainReal, { withFileTypes: true });
+      entries = listBrainDirEntriesCached(brainReal);
     } catch {
       continue;
     }
@@ -242,6 +259,10 @@ function recordCompactionEvent(acc, kind) {
 
 function processStepForCompactions(step, acc) {
   acc.lineCount += 1;
+  const stype = String(step.type || '').toUpperCase();
+  if (stype) {
+    acc.lastStepType = stype;
+  }
   if (Number.isInteger(step.step_index) && step.step_index > acc.maxStepIndex) {
     acc.maxStepIndex = step.step_index;
   }
@@ -251,16 +272,19 @@ function processStepForCompactions(step, acc) {
   if (typeof step.created_at === 'string' && step.created_at.trim()) {
     acc.lastUpdatedAt = step.created_at.trim();
   }
-  if (typeof step.status === 'string' && step.status.trim()) {
-    acc.lastStatus = step.status.trim();
-    if (acc.lastStatus.toUpperCase() !== 'ERROR' && !step.error) {
-      acc.lastError = '';
-    }
+  const stepStatus = typeof step.status === 'string' ? step.status.trim() : '';
+  if (stepStatus) {
+    acc.lastStatus = stepStatus;
   }
-  if (typeof step.error === 'string' && step.error.trim()) {
+  const hasStepError = typeof step.error === 'string' && Boolean(step.error.trim());
+  if (!hasStepError && stepStatus.toUpperCase() !== 'ERROR') {
+    acc.lastError = '';
+    acc.lastErrorStep = 0;
+  }
+  if (hasStepError) {
     acc.lastError = step.error.trim().slice(0, 120);
+    acc.lastErrorStep = Number.isInteger(step.step_index) ? step.step_index : acc.lineCount;
   }
-  const stype = String(step.type || '').toUpperCase();
   if (
     stype.includes('CHECKPOINT') ||
     stype.includes('COMPACTION') ||
@@ -354,17 +378,19 @@ function scanCompactionsRange(fd, startOffset, endOffset, seedAcc) {
  * Inspect transcript.jsonl using head (32KB), tail (64KB), and byte-offset incremental compaction scan.
  */
 export function inspectTranscript(tp, { cacheEntry = null } = {}) {
-  const emptyInfo = {
-    exists: false,
-    lineCount: 0,
-    maxStepIndex: 0,
-    goal: '',
-    lastModel: '',
-    lastUpdatedAt: '',
-    lastStatus: '',
-    lastError: '',
-    compactions: 0,
-  };
+    const emptyInfo = {
+      exists: false,
+      lineCount: 0,
+      maxStepIndex: 0,
+      goal: '',
+      lastModel: '',
+      lastUpdatedAt: '',
+      lastStatus: '',
+      lastStepType: '',
+      lastError: '',
+      lastErrorStep: 0,
+      compactions: 0,
+    };
   if (!tp || !existsSync(tp)) {
     return { info: emptyInfo, nextCacheEntry: null };
   }
@@ -433,8 +459,11 @@ export function inspectTranscript(tp, { cacheEntry = null } = {}) {
     let lastModel = '';
     let lastUpdatedAt = '';
     let lastStatus = '';
+    let lastStepType = '';
     let lastError = '';
+    let lastErrorStep = 0;
     let maxStepIndex = 0;
+    let sawTailStep = false;
 
     for (const rawLine of tailLines) {
       const line = rawLine.trim();
@@ -442,6 +471,9 @@ export function inspectTranscript(tp, { cacheEntry = null } = {}) {
       try {
         const step = JSON.parse(line);
         if (!step || typeof step !== 'object') continue;
+        sawTailStep = true;
+        const stype = String(step.type || '').trim().toUpperCase();
+        if (stype) lastStepType = stype;
         if (Number.isInteger(step.step_index) && step.step_index > maxStepIndex) {
           maxStepIndex = step.step_index;
         }
@@ -451,11 +483,18 @@ export function inspectTranscript(tp, { cacheEntry = null } = {}) {
         if (typeof step.created_at === 'string' && step.created_at.trim()) {
           lastUpdatedAt = step.created_at.trim();
         }
-        if (typeof step.status === 'string' && step.status.trim()) {
-          lastStatus = step.status.trim();
+        const stepStatus = typeof step.status === 'string' ? step.status.trim() : '';
+        if (stepStatus) {
+          lastStatus = stepStatus;
         }
-        if (typeof step.error === 'string' && step.error.trim()) {
+        const hasStepError = typeof step.error === 'string' && Boolean(step.error.trim());
+        if (!hasStepError && stepStatus.toUpperCase() !== 'ERROR') {
+          lastError = '';
+          lastErrorStep = 0;
+        }
+        if (hasStepError) {
           lastError = step.error.trim().slice(0, 120);
+          lastErrorStep = Number.isInteger(step.step_index) ? step.step_index : maxStepIndex;
         }
       } catch {
         // skip partial tail line
@@ -481,7 +520,9 @@ export function inspectTranscript(tp, { cacheEntry = null } = {}) {
           lastModel: cacheEntry.acc.lastModel || cacheEntry.info?.lastModel || '',
           lastUpdatedAt: cacheEntry.acc.lastUpdatedAt || cacheEntry.info?.lastUpdatedAt || '',
           lastStatus: cacheEntry.acc.lastStatus || cacheEntry.info?.lastStatus || '',
+          lastStepType: cacheEntry.acc.lastStepType || cacheEntry.info?.lastStepType || '',
           lastError: cacheEntry.acc.lastError ?? cacheEntry.info?.lastError ?? '',
+          lastErrorStep: cacheEntry.acc.lastErrorStep || cacheEntry.info?.lastErrorStep || 0,
           prevUsedByModel: { ...(cacheEntry.acc.prevUsedByModel || {}) },
         }
       : {
@@ -493,12 +534,17 @@ export function inspectTranscript(tp, { cacheEntry = null } = {}) {
           lastModel: '',
           lastUpdatedAt: '',
           lastStatus: '',
+          lastStepType: '',
           lastError: '',
+          lastErrorStep: 0,
           prevUsedByModel: {},
         };
 
     const startOffset = canResume ? cacheEntry.offset : 0;
     const { lastCompleteOffset: nextOffset, viewAcc } = scanCompactionsRange(fd, startOffset, fileSize, acc);
+
+    const resolvedError = sawTailStep ? lastError : viewAcc.lastError || '';
+    const resolvedErrorStep = sawTailStep ? lastErrorStep : viewAcc.lastErrorStep || 0;
 
     const info = {
       exists: true,
@@ -508,7 +554,9 @@ export function inspectTranscript(tp, { cacheEntry = null } = {}) {
       lastModel: lastModel || viewAcc.lastModel || '',
       lastUpdatedAt: lastUpdatedAt || viewAcc.lastUpdatedAt || '',
       lastStatus: lastStatus || viewAcc.lastStatus || '',
-      lastError: lastError || viewAcc.lastError || '',
+      lastStepType: lastStepType || viewAcc.lastStepType || '',
+      lastError: resolvedError,
+      lastErrorStep: resolvedError ? resolvedErrorStep : 0,
       compactions: viewAcc.compactions,
     };
 
@@ -636,10 +684,11 @@ export function inspectNativeSwarm(
       break;
     }
     try {
-      for (const ent of readdirSync(brainDir, { withFileTypes: true })) {
+      const brainReal = realpathSync(brainDir);
+      for (const ent of listBrainDirEntriesCached(brainReal)) {
         if (!ent.isDirectory()) continue;
         if (!ent.name.toLowerCase().startsWith(targetLower)) continue;
-        const cand = join(brainDir, ent.name, '.system_generated', 'swarm');
+        const cand = join(brainReal, ent.name, '.system_generated', 'swarm');
         if (existsSync(join(cand, 'members.json'))) {
           swarmDir = cand;
           break;
@@ -659,15 +708,18 @@ export function inspectNativeSwarm(
   const members = Object.entries(rawMembers).map(([name, meta]) => {
     const m = meta && typeof meta === 'object' ? meta : {};
     const cid = String(m.conversation_id || m.conversationId || '').trim();
-    const tel = cid ? inspectById(cid, { env, hintPath, cacheMap }) : null;
+    const isKilled = Boolean(m.killed);
+    // Skip disk I/O on killed Swarm members to prevent O(N) PreInvocation slowness
+    const tel = !isKilled && cid ? inspectById(cid, { env, hintPath, cacheMap }) : null;
     let role = String(m.role || '').trim().toLowerCase();
     if (!role) {
       if (/^narrator(-\d+)?$/i.test(name)) role = 'narrator';
       else if (/^monitor(-\d+)?$/i.test(name)) role = 'monitor';
+      else if (/^coordinator$/i.test(name)) role = 'coordinator';
       else role = 'worker';
     }
     let state = 'waiting';
-    if (m.killed) state = 'killed';
+    if (isKilled) state = 'killed';
     else if (
       tel?.exists &&
       tel.lastStatus &&

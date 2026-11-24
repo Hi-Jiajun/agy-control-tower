@@ -1,0 +1,60 @@
+{
+  "id": "INC-013",
+  "title": "Hook subprocess without ANTIGRAVITY_LS_ADDRESS queues Stop receipt cleanly and PreInvocation delivers it without error",
+  "incidentDate": "2026-11-24",
+  "category": "hook",
+  "description": "Reproduces live stop_agentapi_failed error where Antigravity command hooks lack ANTIGRAVITY_LS_ADDRESS; Stop hook must queue deferredReceipt with zero error and inject it on next controller PreInvocation.",
+  "kind": "hook",
+  "setup": {
+    "registryRelPath": "research/SESSION-REGISTRY.md",
+    "registryMarkdown": "# 台账\n## 一、当前独占资源租约\n| 字段 | 当前值 |\n| --- | --- |\n| **锁状态** | `LOCKED` |\n| **持锁会话** | `${WORKER_A}` |\n## 二、常驻主交流总控会话\n- **当前现役总控会话**：`${CTRL_ID}`（状态：`ONLINE`）\n## 三、活跃 / 挂起专职会话台账\n| 会话链接与 ID | 任务编号 / 主题 | 模型与工具 | 资源锁状态 | 当前状态 | 工作目录与日志回查路径 |\n| --- | --- | --- | --- | --- | --- |\n| [`${WORKER_A}`](conversation://${WORKER_A}) | W38R2 真机定向复验 | Gemini 4 Carbon (High) | 持独占锁 | `ACTIVE` | - |\n",
+    "transcripts": {
+      "${CTRL_ID}": [
+        { "step_index": 0, "type": "USER_INPUT", "content": "就位" },
+        { "step_index": 2, "type": "PLANNER_RESPONSE", "status": "DONE" }
+      ],
+      "${WORKER_A}": [
+        { "step_index": 0, "type": "USER_INPUT", "content": "执行真机复验" },
+        { "step_index": 107, "type": "PLANNER_RESPONSE", "status": "DONE" }
+      ]
+    }
+  },
+  "action": {
+    "calls": [
+      {
+        "eventName": "Stop",
+        "env": {
+          "ANTIGRAVITY_LS_ADDRESS": "",
+          "ANTIGRAVITY_AGENTAPI_EXE": ""
+        },
+        "payload": {
+          "conversationId": "${WORKER_A}",
+          "workspacePaths": ["${WORKSPACE}"],
+          "terminationReason": "NO_TOOL_CALL",
+          "fullyIdle": true
+        },
+        "expect": {
+          "flightEvent": "stop_receipt_queued_inbox",
+          "notFlightEvent": "stop_agentapi_failed"
+        }
+      },
+      {
+        "eventName": "PreInvocation",
+        "env": {
+          "ANTIGRAVITY_LS_ADDRESS": "",
+          "ANTIGRAVITY_AGENTAPI_EXE": ""
+        },
+        "payload": {
+          "conversationId": "${CTRL_ID}",
+          "workspacePaths": ["${WORKSPACE}"],
+          "lastUserInput": "看看真机复验进展如何",
+          "invocationNum": 2
+        },
+        "expect": {
+          "contains": ["[control-tower 待收阶段回执]", "[CT_AUTO_RECEIPT]", "W38R2 真机定向复验"],
+          "flightEvent": "deferred_receipt_injected"
+        }
+      }
+    ]
+  }
+}

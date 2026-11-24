@@ -5,6 +5,19 @@ All notable changes to `control-tower` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.1] - 2026-11-24
+
+### Fixed
+- **完工回执纯零 Token 双轨投递（消除 `stop_agentapi_failed`）**：
+  - 针对 Antigravity `hooks.json` 子进程不注入 `ANTIGRAVITY_LS_ADDRESS` 的宿主契约，升级 `plugin/scripts/ct-hook.mjs`：无 `LS_ADDRESS` 时不再盲调 `agentapi`，改为零报错落盘 `inbox.json` 的 `deferredReceipt` 与阶段回执项（`stop_receipt_queued_inbox`）。
+  - 看板在线时由 `plugin/sidecars/tower/main.mjs` 结合 `SseHub` `fs.watch` 实时感知与后台哨兵，在主总控空闲期自动代发唤醒总控；看板未开时由主总控下次 `PreInvocation` 在清零焦点状态前自动捕获并注入 `[control-tower 待收阶段回执]`，固化为 L2 回放样本 `INC-013`。
+- **哨兵信箱 `P0` 严格终态判据、自愈消解与 `version=2` 迁移**：
+  - 修复 `plugin/lib/transcript.mjs` 末尾 `64KB` 扫描循环在后续无错步骤未清零历史 `lastError` 的缺陷；`plugin/lib/inbox.mjs` 排除原生 Swarm 中的主总控 `coordinator` 自身，仅当子会话尾步真正停在未恢复异常终态时才触发 `P0`，并在会话继续推进、完工、归档或销毁后自动将旧告警消解为已读（固化为 L2 回放样本 `INC-014`）。
+  - `inbox.json` 升级至 `version: 2` 并持久化 `workspace` 真实路径，首次读取自动无感清洗旧版遗留的假阳性 `P0` 并清空旧版 `state.pendingAttention` 残留。
+- **跨工作区双端自动纳管与慢钩子 I/O 剪枝**：
+  - `plugin/lib/paths.mjs` 新增 `loadKnownWorkspaces()` 与 `recordKnownWorkspace()`（支持有界父级目录哈希回填已有总控仓），Hook 与 Sidecar 双端自动登记，且 `routes/workspaces.mjs` 全局抽屉默认仅聚焦「有总控台账的工作区 + 当前打开仓」。
+  - `inspectNativeSwarm()` 在磁盘读取前直接跳过已 `killed` 成员并短期缓存单回合 `brain` 目录项列表；在看板与路线图派单锚点补入跨回合 `edit_file` 先 `read_file` 对齐缩进及连续 2 次失配止损提醒。
+
 ## [1.7.0] - 2026-11-24
 
 ### Added

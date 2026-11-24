@@ -142,13 +142,14 @@ class CdpClient {
   }
 }
 
-async function waitForCondition(fn, { timeoutMs = 6000, intervalMs = 100, label = 'condition' } = {}) {
+async function waitForCondition(fn, { timeoutMs = 6000, intervalMs = 100, label = 'condition', getDebugInfo = null } = {}) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await fn()) return true;
     await new Promise((r) => setTimeout(r, intervalMs));
   }
-  throw new Error(`Timed out waiting for ${label}`);
+  const extra = typeof getDebugInfo === 'function' ? ` | debug=${await getDebugInfo()}` : '';
+  throw new Error(`Timed out waiting for ${label}${extra}`);
 }
 
 async function launchChrome(chromeBin, profileDir) {
@@ -350,12 +351,19 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
 
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
       source: `
-        window.sidecar = {
-          conversationId: ${JSON.stringify(ctrlId)},
-          getWorkspaceUris: async () => [${JSON.stringify(ws)}],
-          onWorkspaceChange: (cb) => { setTimeout(() => cb([${JSON.stringify(ws)}]), 20); return () => {}; },
-          ui: { toggleConversation: () => {} },
-        };
+        (() => {
+          const mockSidecar = {
+            conversationId: ${JSON.stringify(ctrlId)},
+            getWorkspaceUris: async () => [${JSON.stringify(ws)}],
+            onWorkspaceChange: (cb) => { setTimeout(() => cb([${JSON.stringify(ws)}]), 20); return () => {}; },
+            ui: { toggleConversation: () => {} },
+          };
+          Object.defineProperty(window, 'sidecar', {
+            get: () => mockSidecar,
+            set: () => {},
+            configurable: true,
+          });
+        })();
       `,
     });
 
@@ -368,7 +376,17 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
             `document.getElementById('ctrl-view')?.textContent?.includes(${JSON.stringify(ctrlId.slice(0, 8))})`
           )
         ),
-      { label: 'Control Tower snapshot render' }
+      {
+        label: 'Control Tower snapshot render',
+        getDebugInfo: async () =>
+          JSON.stringify({
+            consoleErrors,
+            pageExceptions,
+            toast: await cdp.evaluate(`document.getElementById('toast')?.textContent || ''`),
+            wsSelect: await cdp.evaluate(`document.getElementById('ws-select')?.value || ''`),
+            ctrlView: await cdp.evaluate(`document.getElementById('ctrl-view')?.textContent || ''`),
+          }),
+      }
     );
 
     const versionBadge = await cdp.evaluate(`document.getElementById('version-badge')?.textContent?.trim()`);

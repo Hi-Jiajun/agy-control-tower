@@ -23,6 +23,11 @@ export class SseHub {
   #pendingReason = '';
   #watchedWorkspaces = new Set();
   #dataDir = '';
+  #onFsEvent = null;
+
+  constructor({ onFsEvent = null } = {}) {
+    this.#onFsEvent = typeof onFsEvent === 'function' ? onFsEvent : null;
+  }
 
   subscribe(req, res, { workspace = '', dataDir = '' } = {}) {
     if (res.headersSent || res.writableEnded) return;
@@ -118,6 +123,13 @@ export class SseHub {
       this.#pendingWorkspace = '';
       this.#pendingReason = '';
       this.notify({ workspace: ws, reason: rsn });
+      if (this.#onFsEvent) {
+        try {
+          this.#onFsEvent({ workspace: ws, reason: rsn });
+        } catch {
+          // ignore callback failure
+        }
+      }
     }, WATCH_DEBOUNCE_MS);
     if (typeof this.#debounceTimer.unref === 'function') {
       this.#debounceTimer.unref();

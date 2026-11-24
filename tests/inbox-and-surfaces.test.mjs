@@ -7,6 +7,7 @@ import {
   buildInboxDigestLine,
   evaluateFocusGate,
   evaluateSentinelSweep,
+  getWorkspaceInboxPath,
   loadWorkspaceInbox,
   recordControllerFocus,
   summarizeInbox,
@@ -131,6 +132,69 @@ test('Phase 2: Inbox Focus Gate, priority ordering, passive digest, and zero-tok
       reopenOnUpdate: false,
     });
     assert.equal(loadWorkspaceInbox(dataDir, ws).items.length, 3);
+
+    // v1.7.1: Lifecycle auto-resolve marks worker_error & worker_stuck acked once workers recover
+    const sweepRecovered = evaluateSentinelSweep({
+      dataDir,
+      wsReal: ws,
+      activeControllerId: makeConvId('c', '1', '4', '8', 'a'),
+      nowMs: now + 45 * 60 * 1000,
+      activeSessions: [
+        {
+          conversationId: wErr,
+          topic: '编译模块A',
+          status: 'ACTIVE',
+          telemetry: {
+            exists: true,
+            maxStepIndex: 15,
+            compactions: 2,
+            lastStatus: 'DONE',
+            lastStepType: 'PLANNER_RESPONSE',
+            lastError: '',
+            lastUpdatedAt: new Date(now + 44.5 * 60 * 1000).toISOString(),
+          },
+        },
+      ],
+      nativeSwarm: {
+        active: true,
+        members: [
+          {
+            name: 'coordinator',
+            role: 'coordinator',
+            conversationId: makeConvId('c', '1', '4', '8', 'a'),
+            state: 'waiting',
+            steps: 50,
+            compactions: 4,
+            lastError: 'coordinator transient tool error',
+          },
+        ],
+      },
+    });
+    const sumRecovered = summarizeInbox(sweepRecovered.inbox, { nowMs: now + 45 * 60 * 1000 });
+    assert.equal(sumRecovered.unreadCounts.P0, 0, 'Recovered worker P0 must auto-resolve');
+    assert.equal(sumRecovered.unreadCounts.P1, 0, 'Archived stuck worker P1 must auto-resolve');
+
+    // v1.7.1: Schema v1 -> v2 migration drops pre-v2 false-positive sentinel worker_error & coordinator relics
+    const wsLegacy = join(sb.dir, 'ws-legacy');
+    mkdirSync(wsLegacy, { recursive: true });
+    const legacyInboxPath = getWorkspaceInboxPath(dataDir, wsLegacy);
+    mkdirSync(join(legacyInboxPath, '..'), { recursive: true });
+    writeFileSync(
+      legacyInboxPath,
+      JSON.stringify({
+        version: 1,
+        items: [
+          { id: 'fp-1', priority: 'P0', kind: 'worker_error', source: 'sentinel', title: '[swarm] coordinator 检测到异常报错', summary: 'file does not exist', acked: false },
+          { id: 'fp-2', priority: 'P0', kind: 'worker_error', source: 'sentinel', title: '[swarm] w1 检测到异常报错', summary: 'target content not found', acked: false },
+          { id: 'real-dec', priority: 'P0', kind: 'decision', source: 'worker', title: '真实待拍板项', summary: '接口变更确认', acked: false },
+        ],
+      }),
+      'utf8'
+    );
+    const migrated = loadWorkspaceInbox(dataDir, wsLegacy);
+    assert.equal(migrated.version, 2);
+    assert.equal(migrated.items.length, 1);
+    assert.equal(migrated.items[0].id, 'real-dec');
   } finally {
     sb.cleanup();
   }

@@ -35,6 +35,123 @@ export function getManagedRegistryPath(dataDir, wsReal) {
   return join(getWorkspaceSettingsDir(dataDir, wsReal), 'SESSION-REGISTRY.md');
 }
 
+export function getRecentWorkspacesPath(dataDir) {
+  return join(resolve(dataDir), 'recent-workspaces.json');
+}
+
+/**
+ * Strictly read-only discovery of known workspaces across recent-workspaces.json,
+ * persisted inbox metadata, and bounded sibling-directory hash matching.
+ */
+export function loadKnownWorkspaces(dataDir, { seedWorkspaces = [], maxEntries = 24 } = {}) {
+  const result = [];
+  const seen = new Set();
+  const matchedHashes = new Set();
+
+  const addCandidate = (raw) => {
+    if (!raw || typeof raw !== 'string') return;
+    const wsReal = normalizeWorkspaceInput(raw, { throwOnInvalid: false });
+    if (!wsReal || seen.has(wsReal)) return;
+    seen.add(wsReal);
+    matchedHashes.add(sha256(wsReal).slice(0, 16));
+    result.push(wsReal);
+  };
+
+  for (const s of Array.isArray(seedWorkspaces) ? seedWorkspaces : []) {
+    addCandidate(s);
+  }
+
+  if (!dataDir || !existsSync(dataDir)) {
+    return result.slice(0, maxEntries);
+  }
+
+  const recentRaw = readJsonSafe(getRecentWorkspacesPath(dataDir), []);
+  if (Array.isArray(recentRaw)) {
+    for (const item of recentRaw) addCandidate(item);
+  }
+
+  const wsRoot = join(resolve(dataDir), 'workspaces');
+  const unknownHashes = new Set();
+  if (existsSync(wsRoot)) {
+    try {
+      for (const ent of readdirSync(wsRoot, { withFileTypes: true })) {
+        if (!ent.isDirectory()) continue;
+        const inboxRaw = readJsonSafe(join(wsRoot, ent.name, 'inbox.json'), null);
+        if (inboxRaw && typeof inboxRaw.workspace === 'string' && inboxRaw.workspace.trim()) {
+          addCandidate(inboxRaw.workspace);
+        }
+        if (!matchedHashes.has(ent.name)) {
+          unknownHashes.add(ent.name);
+        }
+      }
+    } catch {
+      // ignore unreadable workspaces dir
+    }
+  }
+
+  // Bounded read-only parent/sibling hash backfill for pre-v1.7.1 workspace directories
+  if (unknownHashes.size > 0 && result.length > 0) {
+    const parentDirs = new Set();
+    const homeReal = getHomeDir();
+    for (const known of [...result]) {
+      const p1 = dirname(known);
+      if (p1 && p1 !== '/' && p1 !== known) {
+        parentDirs.add(p1);
+        const p2 = dirname(p1);
+        if (p2 && p2 !== '/' && p2 !== p1 && p2 !== dirname(homeReal)) {
+          parentDirs.add(p2);
+        }
+      }
+    }
+    for (const pDir of parentDirs) {
+      if (unknownHashes.size === 0) break;
+      try {
+        const pReal = realpathSync(pDir);
+        const pHash = sha256(pReal).slice(0, 16);
+        if (unknownHashes.has(pHash)) {
+          addCandidate(pReal);
+          unknownHashes.delete(pHash);
+        }
+        const entries = readdirSync(pReal, { withFileTypes: true }).slice(0, 80);
+        for (const ent of entries) {
+          if (!ent.isDirectory() || ent.name.startsWith('.') || ent.name === 'node_modules') continue;
+          const childAbs = join(pReal, ent.name);
+          try {
+            const childReal = realpathSync(childAbs);
+            const h = sha256(childReal).slice(0, 16);
+            if (unknownHashes.has(h)) {
+              addCandidate(childReal);
+              unknownHashes.delete(h);
+            }
+          } catch {
+            // ignore broken symlink
+          }
+        }
+      } catch {
+        // ignore unreadable parent dir
+      }
+    }
+  }
+
+  return result.slice(0, maxEntries);
+}
+
+export function recordKnownWorkspace(dataDir, wsReal, { maxEntries = 24 } = {}) {
+  const cleanWs = normalizeWorkspaceInput(wsReal, { throwOnInvalid: false });
+  if (!dataDir || !cleanWs) return [];
+  const lockPath = join(resolve(dataDir), '.recent.lock');
+  return withFileLockSync(lockPath, () => {
+    const recentPath = getRecentWorkspacesPath(dataDir);
+    const raw = readJsonSafe(recentPath, []);
+    const existing = Array.isArray(raw)
+      ? raw.filter((item) => typeof item === 'string' && item !== cleanWs && existsSync(item))
+      : [];
+    const next = [cleanWs, ...existing].slice(0, maxEntries);
+    atomicWriteText(recentPath, `${JSON.stringify(next, null, 2)}\n`);
+    return next;
+  });
+}
+
 export function validateCustomRegistryRelPath(relPath) {
   if (typeof relPath !== 'string') {
     throw new PathError(403, 'Custom registry path must be a string');

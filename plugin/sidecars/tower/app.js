@@ -875,7 +875,10 @@ async function bootstrapSidecar() {
   let bootstrappedWs = null;
   if (typeof window.sidecar?.getWorkspaceUris === 'function') {
     try {
-      const uris = await window.sidecar.getWorkspaceUris();
+      const uris = await Promise.race([
+        window.sidecar.getWorkspaceUris(),
+        new Promise((r) => setTimeout(() => r(null), 1500)),
+      ]);
       if (Array.isArray(uris) && uris.length > 0 && uris[0]) {
         bootstrappedWs = uris[0];
       }

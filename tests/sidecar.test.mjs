@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
+import { loadWorkspaceInbox, recordControllerFocus, setDeferredReceipt } from '../plugin/lib/inbox.mjs';
 import { MANAGED_REGISTRY_VIRTUAL_REL } from '../plugin/lib/paths.mjs';
 import { ControlTowerServer } from '../plugin/sidecars/tower/main.mjs';
 import { makeConvId, makeSandbox, makeTranscriptPath } from './helpers.mjs';
@@ -498,6 +499,29 @@ if (args.includes('new-conversation')) {
     const currentItem = mw.workspaces.find((it) => it.workspace === ws);
     assert.equal(currentItem.isCurrent, true);
     assert.equal(currentItem.roadmapExists, true);
+
+    // 18) v1.7.1: Global drawer hides switched-away plain non-registry workspaces & Sidecar relays deferred Stop receipts
+    const wsPlain = join(sb.dir, 'ws_plain');
+    mkdirSync(wsPlain, { recursive: true });
+    await req('POST', '/api/workspace/select', { workspace: wsPlain });
+    await req('POST', '/api/workspace/select', { workspace: ws });
+    const mwFiltered = await req('GET', `/api/workspaces/overview?workspace=${encodeURIComponent(ws)}`);
+    assert.equal(
+      mwFiltered.data.multiWorkspace.workspaces.some((it) => it.workspace === wsPlain),
+      false,
+      'Non-registry plain workspace should be filtered out once switched away'
+    );
+
+    recordControllerFocus(dataDir, ws, { inFlight: false, lastUserInputAt: 0, lastTurnEndAt: 0 });
+    setDeferredReceipt(dataDir, ws, {
+      controllerId: ctrlId,
+      message: '[CT_AUTO_RECEIPT] Sidecar代发测试回执',
+      completedIds: [workerId],
+    });
+    assert.ok(loadWorkspaceInbox(dataDir, ws).deferredReceipt);
+    const relaySweep = await req('POST', '/api/sentinel/sweep', { workspace: ws });
+    assert.equal(relaySweep.status, 200);
+    assert.equal(loadWorkspaceInbox(dataDir, ws).deferredReceipt, null, 'Sidecar sweep must relay and clear deferredReceipt');
   } finally {
     if (server) await server.close();
     process.env = prevEnv;

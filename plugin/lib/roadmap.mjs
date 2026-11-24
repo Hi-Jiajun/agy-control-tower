@@ -780,6 +780,6 @@ export function buildWorkstreamContractPrompt(
     `【客观验收判据（Acceptance Gate）】：${node.acceptance || '请执行对应模块测试并给出实测退出码与输出'}\n` +
     `【前置依赖】：${(node.dependsOn || []).length > 0 ? node.dependsOn.join(', ') : '无（已就绪）'}\n` +
     `【合流与台账红线】：${leaseLine}严禁直接修改 ${registryRelPath}；并行分支不得擅自强推主干，须待验收通过后统一合流。${ctrlPart}\n` +
-    `【执行与缓存纪律】：先批量只读再动笔；edit_file 前先 read_file 核对精确文本，连续 2 次不匹配立即重读或改用 write_file。`
+    `【执行与缓存纪律】：先批量只读再动笔；跨回合 edit_file 前必须先 read_file 对齐目标区域最新缩进，同一文件连续 2 次不匹配立即重读目标行段或改用 write_file，严禁循环盲试。`
   );
 }

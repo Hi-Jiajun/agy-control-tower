@@ -7,6 +7,7 @@ import {
   withFileLockSync,
 } from './paths.mjs';
 
+export const INBOX_SCHEMA_VERSION = 2;
 export const INBOX_MAX_ITEMS = 50;
 export const DEFAULT_FOCUS_COOLDOWN_SEC = 180;
 export const DEFAULT_STUCK_THRESHOLD_MIN = 15;
@@ -17,9 +18,10 @@ export function getWorkspaceInboxPath(dataDir, wsReal) {
   return join(getWorkspaceSettingsDir(dataDir, wsReal), 'inbox.json');
 }
 
-function defaultInbox() {
+function defaultInbox(wsReal = '') {
   return {
-    version: 1,
+    version: INBOX_SCHEMA_VERSION,
+    workspace: wsReal ? String(wsReal) : '',
     focus: {
       controllerId: '',
       inFlight: false,
@@ -44,13 +46,25 @@ function normalizePriority(p) {
   return VALID_PRIORITIES.has(up) ? up : 'P2';
 }
 
-function normalizeInbox(raw) {
-  const base = defaultInbox();
+function isLegacyV1FalsePositive(x) {
+  if (!x || typeof x !== 'object') return false;
+  const src = String(x.source || 'sentinel');
+  const kind = String(x.kind || '');
+  const title = String(x.title || '');
+  if (src === 'sentinel' && kind === 'worker_error') return true;
+  if (src === 'sentinel' && title.includes('[swarm] coordinator')) return true;
+  return false;
+}
+
+function normalizeInbox(raw, wsHint = '') {
+  const base = defaultInbox(wsHint);
   if (!raw || typeof raw !== 'object') return base;
+  const rawVersion = Number(raw.version || 1);
   const f = raw.focus && typeof raw.focus === 'object' ? raw.focus : {};
   const items = Array.isArray(raw.items)
     ? raw.items
         .filter((x) => x && typeof x === 'object' && x.id)
+        .filter((x) => !(rawVersion < INBOX_SCHEMA_VERSION && isLegacyV1FalsePositive(x)))
         .map((x) => ({
           id: String(x.id),
           dedupKey: String(x.dedupKey || x.id),
@@ -83,7 +97,8 @@ function normalizeInbox(raw) {
       : null;
 
   return {
-    version: 1,
+    version: INBOX_SCHEMA_VERSION,
+    workspace: String(raw.workspace || wsHint || ''),
     focus: {
       controllerId: String(f.controllerId || ''),
       inFlight: Boolean(f.inFlight),
@@ -98,14 +113,15 @@ function normalizeInbox(raw) {
 }
 
 export function loadWorkspaceInbox(dataDir, wsReal) {
-  if (!dataDir || !wsReal) return defaultInbox();
+  if (!dataDir || !wsReal) return defaultInbox(wsReal);
   const raw = readJsonSafe(getWorkspaceInboxPath(dataDir, wsReal), null);
-  return normalizeInbox(raw);
+  return normalizeInbox(raw, wsReal);
 }
 
 export function saveWorkspaceInbox(dataDir, wsReal, inbox) {
-  if (!dataDir || !wsReal) return normalizeInbox(inbox);
-  const norm = normalizeInbox(inbox);
+  if (!dataDir || !wsReal) return normalizeInbox(inbox, wsReal);
+  const norm = normalizeInbox(inbox, wsReal);
+  norm.workspace = String(wsReal || norm.workspace || '');
   atomicWriteText(getWorkspaceInboxPath(dataDir, wsReal), `${JSON.stringify(norm, null, 2)}\n`);
   return norm;
 }
@@ -301,13 +317,18 @@ export function pruneInboxItems(
 }
 
 export function cleanupWorkspaceInbox(dataDir, wsReal, opts = {}) {
-  if (!dataDir || !wsReal) return defaultInbox();
+  if (!dataDir || !wsReal) return defaultInbox(wsReal);
   const inboxPath = getWorkspaceInboxPath(dataDir, wsReal);
-  if (!existsSync(inboxPath)) return defaultInbox();
+  if (!existsSync(inboxPath)) return defaultInbox(wsReal);
   return withInboxLock(dataDir, wsReal, () => {
-    const inbox = loadWorkspaceInbox(dataDir, wsReal);
+    const rawOnDisk = readJsonSafe(inboxPath, null);
+    const needsSchemaUpgrade =
+      !rawOnDisk ||
+      Number(rawOnDisk.version || 1) < INBOX_SCHEMA_VERSION ||
+      rawOnDisk.workspace !== wsReal;
+    const inbox = normalizeInbox(rawOnDisk, wsReal);
     const nextItems = pruneInboxItems(inbox.items, opts);
-    if (nextItems.length !== inbox.items.length) {
+    if (needsSchemaUpgrade || nextItems.length !== inbox.items.length) {
       inbox.items = nextItems;
       return saveWorkspaceInbox(dataDir, wsReal, inbox);
     }
@@ -453,6 +474,7 @@ export function buildInboxDigestLine(inbox) {
 export function evaluateSentinelSweep({
   dataDir,
   wsReal,
+  activeControllerId = '',
   activeSessions = [],
   nativeSwarm = null,
   subagents = [],
@@ -463,17 +485,31 @@ export function evaluateSentinelSweep({
   const detected = [];
   const stuckMs = Math.max(5, Number(stuckThresholdMin) || DEFAULT_STUCK_THRESHOLD_MIN) * 60 * 1000;
   const compThresh = Math.max(1, Number(workerCompactionThreshold) || 2);
+  const ctrlId = String(activeControllerId || '').trim();
+
+  const erroredConvIds = [];
+  const stuckConvIds = [];
+  const topLevelActiveConvIds = [];
 
   const inspectTarget = ({ surface, id, label, status, telemetry }) => {
     if (!telemetry || !telemetry.exists) return;
+    if (ctrlId && id && sameConvIdPrefix(id, ctrlId)) return;
     const shortId = id ? id.slice(0, 8) : label;
     const upperSt = String(status || '').toUpperCase();
     const lastUpdMs = telemetry.lastUpdatedAt ? Date.parse(telemetry.lastUpdatedAt) : 0;
     const idleMs = lastUpdMs > 0 ? Math.max(0, nowMs - lastUpdMs) : 0;
+    const isExplicitErrorStatus = String(telemetry.lastStatus || '').toUpperCase() === 'ERROR';
+    const isTerminalToolError =
+      Boolean(telemetry.lastError) &&
+      (String(telemetry.lastStepType || '').toUpperCase() === 'PLANNER_RESPONSE' ||
+        lastUpdMs === 0 ||
+        idleMs >= 45 * 1000);
 
-    if (telemetry.lastError || String(telemetry.lastStatus || '').toUpperCase() === 'ERROR') {
+    if (isExplicitErrorStatus || isTerminalToolError) {
+      if (id) erroredConvIds.push(id);
+      const errStep = telemetry.lastErrorStep || telemetry.maxStepIndex || telemetry.lineCount || 0;
       detected.push({
-        dedupKey: `sentinel:err:${shortId}:${telemetry.maxStepIndex || telemetry.lineCount}`,
+        dedupKey: `sentinel:err:${shortId}:${errStep}`,
         priority: 'P0',
         kind: 'worker_error',
         source: 'sentinel',
@@ -489,6 +525,7 @@ export function evaluateSentinelSweep({
       lastUpdMs > 0 &&
       idleMs >= stuckMs
     ) {
+      if (id) stuckConvIds.push(id);
       const mins = Math.round(idleMs / 60000);
       detected.push({
         dedupKey: `sentinel:stuck:${shortId}:${telemetry.maxStepIndex || telemetry.lineCount}`,
@@ -533,6 +570,9 @@ export function evaluateSentinelSweep({
   };
 
   for (const s of activeSessions || []) {
+    if (s.conversationId && String(s.status || 'ACTIVE').toUpperCase() === 'ACTIVE') {
+      topLevelActiveConvIds.push(s.conversationId);
+    }
     inspectTarget({
       surface: 'topLevel',
       id: s.conversationId || '',
@@ -545,6 +585,13 @@ export function evaluateSentinelSweep({
   if (nativeSwarm?.active && Array.isArray(nativeSwarm.members)) {
     for (const m of nativeSwarm.members) {
       if (m.state === 'killed') continue;
+      if (
+        String(m.role || '').toLowerCase() === 'coordinator' ||
+        String(m.name || '').toLowerCase() === 'coordinator' ||
+        (ctrlId && m.conversationId && sameConvIdPrefix(m.conversationId, ctrlId))
+      ) {
+        continue;
+      }
       inspectTarget({
         surface: 'swarm',
         id: m.conversationId || '',
@@ -555,8 +602,10 @@ export function evaluateSentinelSweep({
           maxStepIndex: m.steps || 0,
           lineCount: m.steps || 0,
           compactions: m.compactions || 0,
-          lastStatus: m.state === 'working' ? 'RUNNING' : 'DONE',
+          lastStatus: m.state === 'working' ? 'RUNNING' : m.lastError ? 'ERROR' : 'DONE',
+          lastStepType: m.lastStepType || 'PLANNER_RESPONSE',
           lastError: m.lastError || '',
+          lastErrorStep: m.lastErrorStep || m.steps || 0,
           lastUpdatedAt: m.lastUpdatedAt || '',
         },
       });
@@ -582,6 +631,41 @@ export function evaluateSentinelSweep({
   if (dataDir && wsReal && (hadChanges || inbox.items.length > 0 || existsSync(inboxPath))) {
     inbox = withInboxLock(dataDir, wsReal, () => {
       const latest = loadWorkspaceInbox(dataDir, wsReal);
+      for (const it of latest.items) {
+        if (!it || it.acked || it.source !== 'sentinel') continue;
+        if (String(it.title || '').startsWith('[swarm] coordinator ')) {
+          it.acked = true;
+          it.updatedAt = nowMs;
+          continue;
+        }
+        if (ctrlId && it.convId && sameConvIdPrefix(it.convId, ctrlId)) {
+          it.acked = true;
+          it.updatedAt = nowMs;
+          continue;
+        }
+        if (it.kind === 'worker_error') {
+          const stillErrored =
+            it.convId && erroredConvIds.some((cid) => sameConvIdPrefix(cid, it.convId));
+          if (!stillErrored) {
+            it.acked = true;
+            it.updatedAt = nowMs;
+          }
+        } else if (it.kind === 'worker_stuck') {
+          const stillStuck =
+            it.convId && stuckConvIds.some((cid) => sameConvIdPrefix(cid, it.convId));
+          if (!stillStuck) {
+            it.acked = true;
+            it.updatedAt = nowMs;
+          }
+        } else if (it.kind === 'worker_done_unarchived') {
+          const stillActiveTop =
+            it.convId && topLevelActiveConvIds.some((cid) => sameConvIdPrefix(cid, it.convId));
+          if (!stillActiveTop) {
+            it.acked = true;
+            it.updatedAt = nowMs;
+          }
+        }
+      }
       latest.lastSweepAt = nowMs;
       return saveWorkspaceInbox(dataDir, wsReal, latest);
     });
