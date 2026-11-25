@@ -768,7 +768,7 @@ export function buildWorkstreamContractPrompt(
     : '当前工作区处于无独占资源模式。';
 
   const ctrlPart = controllerId
-    ? `现役总控: ${controllerId}。遇接口/范围分叉或连续 2 轮失败请发送 [CT_REPORT:DECISION] [${node.id}] ...，收口发送 [CT_REPORT:DONE] [${node.id}] <交付摘要与验证结果>。`
+    ? `现役总控: ${controllerId}。遇接口/范围分叉或连续 2 轮失败请发送 [CT_REPORT:DECISION] [${node.id}] ...，收口发送 [CT_REPORT:DONE] [${node.id}] <交付摘要与验证结果> | 【可沉淀经验候选】：<1~3行或无>。`
     : '收口后请输出结构化交付清单与验证命令输出。';
 
   return (
@@ -779,7 +779,7 @@ export function buildWorkstreamContractPrompt(
     `【文件所有权边界（Ownership Map）】：${ownershipText}${overlapWarn}\n` +
     `【客观验收判据（Acceptance Gate）】：${node.acceptance || '请执行对应模块测试并给出实测退出码与输出'}\n` +
     `【前置依赖】：${(node.dependsOn || []).length > 0 ? node.dependsOn.join(', ') : '无（已就绪）'}\n` +
-    `【合流与台账红线】：${leaseLine}严禁直接修改 ${registryRelPath}；并行分支不得擅自强推主干，须待验收通过后统一合流。${ctrlPart}\n` +
+    `【合流与台账红线】：${leaseLine}严禁直接修改 ${registryRelPath}，亦严禁私改 AGENTS.md / .agents/rules/ / 技能文件（经验候选随 DONE 上报由总控呈批）；并行分支不得擅自强推主干，须待验收通过后统一合流。${ctrlPart}\n` +
     `【执行与缓存纪律】：先批量只读再动笔；跨回合 edit_file 前必须先 read_file 对齐目标区域最新缩进，同一文件连续 2 次不匹配立即重读目标行段或改用 write_file，严禁循环盲试。`
   );
 }

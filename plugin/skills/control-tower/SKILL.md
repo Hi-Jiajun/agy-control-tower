@@ -36,7 +36,7 @@ description: >-
 - **总控可直接办理（轻量动作）**：需求受理与拆分、调用 `ask_question` 澄清派遣方案或拍板分叉、只读子代理（`research`）检索资料、只读抽查会话尾步、通过 `agentapi` 派遣或跨会话投递指令、以及维护 `SESSION-REGISTRY.md`。
 - **总控必须派单给专职会话执行**：一切重度编码重构、大型构建与编译、耗时测试套件与独占资源实操。
 - **抗污染三条红线**：
-  1. **不亲自啃大源码与大日志**：数百行以上代码深读或大体积日志筛查一律交给只读子代理（`Hydrogen Low/Medium`）或专职会话提炼，总控只消化结论。
+  1. **不亲自啃大源码与大日志**：数百行以上代码深读或大体积日志筛查一律交给只读子代理（`Hydrogen (XHigh)`）或专职会话提炼，总控只消化结论。
   2. **不亲自跑重编译与长测试**：重型构建、打包与全量验证均在专职会话执行。
   3. **不默认触碰独占资源**：保持低权重调度视角，仅在用户明确授权且无锁冲突时破例。
 
@@ -66,7 +66,7 @@ description: >-
 Antigravity 中 `agentapi new-conversation` 一定会生成左侧顶层会话且无法折叠；而 **`swarm`、`invoke_subagent` 与 `run_workflow` 均为零左侧栏污染的隐藏执行面**。因此默认遵循**「隐藏面优先 + 顶层会话白名单 + 看板四执行面统一导航」**（可在设置中心切为 `slot_reuse` 或 `allow_toplevel`）。当设置 `askBeforeDispatch` 为开启（默认）且并非显而易见的单步追问时，**默认调用 `ask_question` 向用户推荐最优执行面与模型**：
 
 1. **默认主力隐藏面（零左侧栏污染，覆盖 80%+ 开发与验证任务）**：
-   - **原生 `swarm`（单 worker 或多 worker 首选）**：即便只需 **1 个**专职 worker，只要需要精确指定与总控不同的 Gemini 4 / Orchestrator 模型、需要 `workspace: "share"` / `"branch"` 隔离、或需要多轮休眠续接，优先通过原生 `swarm` 创建命名 worker（做完后 `waiting` 零成本休眠，结项 `kill` 连带回收工作树）；
+   - **原生 `swarm`（单 worker 或多 worker 首选，且必须显式传 `model`）**：即便只需 **1 个**专职 worker，只要需要精确指定舒适区模型、需要 `workspace: "share"` / `"branch"` 隔离、或需要多轮休眠续接，优先通过原生 `swarm` 创建命名 worker，并**显式传入 `model` 参数**（常规编码/复合验证指定 `gemini-pro-orchestrator-neon`，疑难攻坚指定 `gemini-pro-orchestrator`，纯只读调研/轻验指定 `gemini-4-hydrogen-xhigh`；做完后 `waiting` 零成本休眠，结项 `kill` 连带回收工作树）；
    - **`invoke_subagent`（同模型轻量单任务 / 只读深潜）**：不需异构模型时，使用 `research` 或 `self` / 自定义写盘子代理完成单路任务；
    - **`run_workflow`（多文件扇出与确定性流水线）**：批量代码审计、固定「实现 -> 复审 -> 复验」流水线直接用动态工作流脚本，结果按 JSON `schema` 强契约返回。
 2. **顶层会话（`agentapi new-conversation`）白名单准入与固定槽位复用**：仅在以下 3 类刚需时新开左侧顶层会话，且同类任务优先复用固定角色槽位（避免按 Wave 无限新开）：
@@ -86,9 +86,9 @@ Antigravity 中 `agentapi new-conversation` 一定会生成左侧顶层会话且
 
 1. **会话决策与通道**：`【原生 Swarm】` / `【直派新建：<conversationId>】` / `【续接：<conversationId>】` / `【手动新建兜底】`；
 2. **唯一目标与可证伪判据**：只改/只验什么，过线与止损命令；
-3. **模型与思考档位**：按生效设置（[references/model-routing.md](./references/model-routing.md) 或设置中心覆盖配置）指定纯 Gemini 4 / 新版可自定义 Orchestrator 模型——L0 总控与 L2 局部明确改动优先单模型 `Neon (High)` / `Hydrogen (High)` 吃满连续缓存；原生 `swarm` 与 `/teamwork` 子线优先单模型控缓存；中大型跨文件复合改动与 L3/L4 疑难攻坚优先新版 `Orchestrator`（推荐规划层 `Carbon (High)` 或 `Neon (High / Extra High)` + 执行层 `Hydrogen (High / Extra High)`，账号无 `Carbon` 时平滑降档至 `Neon (XHigh)` / `Orchestrator (Neon)`），长会话严禁中途随意切模型，严禁使用默认 `flash`、`Argon` 或 `3.8` 及更早系列；
+3. **模型与思考档位**：按生效设置（[references/model-routing.md](./references/model-routing.md) 或设置中心覆盖配置）遵循**「全最高思考档位 + 舒适区协同 + 新版 `Orchestrator` 主力」**——`L0` 总控、`L2` 常规开发与 `L4` 集成发布首选 **`Orchestrator (Neon Extra High)`**（显式 ID `gemini-pro-orchestrator-neon`），`L3` 跨层疑难攻坚首选 **`Orchestrator (Carbon)`**（`gemini-pro-orchestrator`），`L1` 纯只读扫描/提取/归档首选单模型 **`Gemini 4 Hydrogen (XHigh)`**（`gemini-4-hydrogen-xhigh`）；原生 `swarm` 必须显式传入对应 `model`，含写盘 `self` 的 `run_workflow` 必须用单模型 `Neon (XHigh)` / `Hydrogen (XHigh)`；账号无 `Carbon` 时平滑替补 `Orchestrator (Neon Extra High)` / `Neon (XHigh)`，长会话严禁中途随意切模型，严禁使用默认 `flash`、`Argon` 或 `3.8` 及更早系列；
 4. **工具与资源约束**：按 `model-routing.md` 协同矩阵标明工具与斜杠指令（`swarm` / `/plan` / `/boost` / `/teamwork` / `/goal` / `run_workflow`）及资源边界（仅开启独占锁的工作区标注持锁或纯离线）；
-5. **双向汇报锚点、执行纪律与必读事实**：直派载荷默认内嵌现役总控 ID 与 `[CT_REPORT:DECISION]` / `[CT_REPORT:DONE]` 上报指令、精确读行再 `edit_file`（连续 2 次不匹配立即重读或改用 `write_file`）及批量只读纪律，并列出工作区规范与关键路径；
+5. **双向汇报锚点、执行纪律与经验候选边界**：直派载荷默认内嵌现役总控 ID 与 `[CT_REPORT:DECISION]` / `[CT_REPORT:DONE]` 上报指令、精确读行再 `edit_file`（连续 2 次不匹配立即重读或改用 `write_file`）、批量只读纪律，以及**严禁专职会话私改 `AGENTS.md` / `.agents/rules/` / 全局技能**（仅在完工 `[CT_REPORT:DONE]` 末尾附 1~3 行可选「可沉淀经验候选」）；
 6. **状态或可复制开场词**：直派通道直接汇报「已拉起并自动入账，看板实时监测中」；手动/斜杠兜底通道附可复制中文开场提示词。
 
 ---
@@ -156,3 +156,20 @@ Antigravity 中 `agentapi new-conversation` 一定会生成左侧顶层会话且
 1. **L1 战略北极星（`ROADMAP.md`，低频 1~2 页）**：只写长期愿景、阶段里程碑验收定义（DoD）、核心架构不变量、反目标（Non-Goals）与关键 ADR 索引，防止总控多轮换届后战略漂移。
 2. **L2 结构化分支依赖图（`roadmap.json`，中频渐进细化 Rolling Wave）**：远期里程碑只列粗目标，只对当前里程碑和下一波次细化分支工作包（含 `dependsOn` 前置依赖、`isolation`、`collaboration`、`ownership` 与 `acceptance`）。看板自动校验循环依赖、计算就绪可并行分支（`READY`）、预警所有权冲突，并在某分支标记 `done` 后自动提示新解锁可并行的下游分支。
 3. **L3 实时执行台账（瘦身后的 `SESSION-REGISTRY.md`，高频）**：专注维护此刻活着的执行面、独占锁与关联的 `workstreamId`；主总控 `SessionStart` 会自动注入 1 行路线图进度与就绪分支速览。
+
+---
+
+## 9. 智能双触发 `/learn` 自动学习闭环（零擅改 + 审批落盘）
+
+为避免跨轮次与跨专职会话踩过的坑、用户的纠偏约定与关键配置经验随会话压缩或换届流失，插件内置可配置的三层 `autoLearnMode`（默认 `smart_proposal`，可在看板设置中心切为 `milestone_only` 或 `off`），并严格对齐 Antigravity 原生 `/learn` 的审批安全边界：
+
+1. **专职会话只提炼候选、严禁私改规则与技能**：
+   - 任何专职会话（Swarm worker / Subagent / 顶层专职窗口）**严禁直接修改 `AGENTS.md`、`.agents/rules/`、`.agents/skills/` 或全局配置目录规则与技能**；
+   - 完工发送 `[CT_REPORT:DONE]`（或写入 `.agents/handoffs/<id>.md`）时，末尾附带 1~3 行可选 `【可沉淀经验候选】`（记录本轮真实纠偏、排障根因或不可遗漏的构建/验收约束；无新可复用经验直接写「无」）。
+2. **现役主总控智能双触发检查点**：
+   - **阶段里程碑与换届必检**：收到 `[CT_REPORT:DONE]` / `[CT_AUTO_RECEIPT]`、执行里程碑归档，或触发总控换届提醒时，`PreInvocation` 自动注入 `[control-tower 自学习检查点]`，总控须筛查本阶段是否出现值得沉淀的新经验；
+   - **用户纠偏实时捕获（仅 `smart_proposal` 模式，带 15 分钟节流）**：当用户发出明确纠偏、长期规矩或排坑总结信号时，`PreInvocation` 自动注入轻量 `[control-tower 纠偏自学习提醒]`，总控先 100% 完成当前问题处理，再顺手评估是否需要沉淀该约束。
+3. **强制审批落盘契约（镜像原生 `/learn`）**：
+   - 若无新可复用行为或约束，静默跳过（或 1 句话说明无需新增规则），绝不硬凑废话；
+   - 若确有值得沉淀的经验：**绝不擅自直接改写规则/技能文件**，必须先按原生 `/learn` 流程核查现有规则与 `agy-customizations` 规范（优先精炼更新已有规则/技能而非无限追加新文件），生成精简 `learning_proposal.md` 提案（设置 `request_feedback = true`）或清晰 diff 供用户审批；**优先写入当前工作区 `.agents/rules/` 或 `.agents/skills/`**，仅当经验确属跨项目通用规范时才提议升格至全局配置或 `control-tower` 覆盖文档；
+   - 用户亦可在 Control Tower 看板总控卡或活跃会话卡点击「发送 `/learn`」按钮，一键向目标会话投递 Antigravity 原生 `/learn` 指令。

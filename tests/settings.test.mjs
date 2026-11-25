@@ -157,9 +157,21 @@ test('Host permission policy maps to autonomy tiers and dispatch model validator
       true
     );
 
-    assert.equal(DEFAULT_GLOBAL_SETTINGS.l0ControllerModel, 'Gemini 4 Neon (High)');
-    assert.equal(DEFAULT_GLOBAL_SETTINGS.l2StandardModel, 'Gemini 4 Neon (High)');
+    assert.equal(DEFAULT_GLOBAL_SETTINGS.l0ControllerModel, 'Orchestrator (Neon Extra High)');
+    assert.equal(DEFAULT_GLOBAL_SETTINGS.l1LightModel, 'Gemini 4 Hydrogen (XHigh)');
+    assert.equal(DEFAULT_GLOBAL_SETTINGS.l2StandardModel, 'Orchestrator (Neon Extra High)');
+    assert.equal(DEFAULT_GLOBAL_SETTINGS.l3DeepModel, 'Orchestrator (Carbon)');
+    assert.equal(DEFAULT_GLOBAL_SETTINGS.l4IntegrationModel, 'Orchestrator (Neon Extra High)');
+    assert.equal(DEFAULT_GLOBAL_SETTINGS.autoLearnMode, 'smart_proposal');
+    assert.equal(validateDispatchModel('gemini-4-hydrogen-tiered-high').ok, true);
     assert.equal(validateDispatchModel('Gemini 4 Neon (XHigh)').ok, true);
+    const dataDir = join(sb.dir, 'plugin_data');
+    const wsA = join(sb.dir, 'wsA');
+    const pluginRoot = join(process.cwd(), 'plugin');
+    mkdirSync(wsA, { recursive: true });
+    saveWorkspaceSettings(dataDir, wsA, { overrides: { autoLearnMode: 'off' } });
+    assert.equal(resolveEffectiveSettings({ dataDir, wsReal: wsA, pluginRoot }).effective.autoLearnMode, 'off');
+    resetWorkspaceSettings(dataDir, wsA);
     assert.equal(normalizeModelForAgentApi('Gemini 4 Neon (XHigh)'), 'gemini-4-neon-xhigh');
     assert.equal(normalizeModelForAgentApi('Orchestrator (Carbon)'), 'gemini-pro-orchestrator');
     assert.equal(normalizeModelForAgentApi('Orchestrator (Neon)'), 'gemini-pro-orchestrator-neon');

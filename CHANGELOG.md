@@ -5,6 +5,20 @@ All notable changes to `control-tower` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-11-25
+
+### Added
+- **全最高思考档位 + 新版 `Orchestrator` 舒适区主力路由与 `Swarm` 显式配模**：
+  - `plugin/lib/settings.mjs`、`plugin/skills/control-tower/references/model-routing.md` 与 `SKILL.md` 将全模型思考默认拉至各自最高档（`Carbon High`、`Neon XHigh`、`Hydrogen XHigh`），并把新版可自定义 `Orchestrator` 设为 `L0` 总控 / `L2` 常规开发 / `L4` 集成发布（`Orchestrator (Neon Extra High)` -> `gemini-pro-orchestrator-neon`）与 `L3` 疑难攻坚（`Orchestrator (Carbon)` -> `gemini-pro-orchestrator`）首选；`L1` 纯只读扫描与归档使用单模型 `Gemini 4 Hydrogen (XHigh)`。
+  - 原生 `swarm` 派单规范明确要求调用 `swarm{action:"add"}` 时必须显式传入 `model` 参数按舒适区分配；`validateDispatchModel` 同步兼容宿主 `gemini-4-hydrogen-tiered-*` 标识。
+- **`ct-miner` 新版 `Orchestrator` vs 纯单模型横向实测对比**：
+  - `scripts/ct-miner.mjs` 新增对含 `exit_plan_mode` 切层的新版自定义 `Orchestrator` 会话归类统计，在复盘报告输出「新版 Orchestrator vs 纯单模型实测对比」表，直观对比切层次数、平均缓存命中、冷输入与 `edit_file` 失配率。
+- **智能双触发 `/learn` 自动学习闭环（`autoLearnMode` + 看板一键发送 `/learn`）**：
+  - 新增三层配置 `autoLearnMode`（默认 `smart_proposal`，支持 `milestone_only` 与 `off`）；`SessionStart` 与派单/路线图模板禁止专职会话私改规则或技能，仅允许在 `[CT_REPORT:DONE]` 末尾附 1~3 行可选经验候选。
+  - `PreInvocation` 实现双触发检查点：在 `[CT_REPORT:DONE]` / `[CT_AUTO_RECEIPT]` / 换届提醒时注入 `[control-tower 自学习检查点]`，并在 `smart_proposal` 模式下捕捉明确纠偏信号（15 分钟节流）注入 `[control-tower 纠偏自学习提醒]`，严格镜像原生 `/learn` 生成 `learning_proposal.md` 经审批后再落盘（优先当前工作区）。
+  - Aux Pane 看板总控卡与活跃会话卡新增一键「发送 `/learn`」按钮，设置中心接入全局与单工作区 `autoLearnMode` 覆写。
+- **扩展 L2 / L4 质量门禁**：新增 L2 回放样本 `INC-015`（双触发 `/learn` 与节流）及 L4 契约评测 `EVAL-17`（全最高思考路由、`Swarm` 显式配模与 `/learn` 审批边界）。
+
 ## [1.7.1] - 2026-11-24
 
 ### Fixed

@@ -10,7 +10,7 @@ export function renderSessions(ctx, snap) {
   const leaseEnabled = eff.exclusiveLeaseEnabled !== false;
   $('df-lock-wrap').classList.toggle('hidden', !leaseEnabled);
   if (!$('df-model').dataset.userEdited) {
-    $('df-model').value = eff.l2StandardModel || 'Gemini 4 Neon (High)';
+    $('df-model').value = eff.l2StandardModel || 'Orchestrator (Neon Extra High)';
   }
 
   // 4-Surface Unified Task Navigator
@@ -159,6 +159,7 @@ export function renderSessions(ctx, snap) {
               <button class="btn btn-ghost btn-sm jump-conv-btn" data-id="${esc(s.conversationId)}">跳转会话</button>
               <button class="btn btn-ghost btn-sm copy-conv-btn" data-id="${esc(s.conversationId)}">复制 ID</button>
               <button class="btn btn-ghost btn-sm notify-ctrl-btn" data-id="${esc(s.conversationId)}">通知总控</button>
+              <button class="btn btn-ghost btn-sm send-learn-btn" data-id="${esc(s.conversationId)}">发送 /learn</button>
               <button class="btn btn-warn btn-sm archive-conv-btn" data-id="${esc(s.conversationId)}" data-topic="${esc(s.topic)}">归档里程碑</button>
             </div>
           </div>

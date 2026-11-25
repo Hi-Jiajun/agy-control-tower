@@ -809,6 +809,27 @@ document.body.addEventListener('click', async (e) => {
     return;
   }
 
+  const learnBtn = e.target.closest('.send-learn-btn');
+  if (learnBtn?.dataset.id) {
+    await withBusyButton(learnBtn, async () => {
+      try {
+        await api('/_sidecar/send-message', {
+          method: 'POST',
+          body: {
+            conversationId: learnBtn.dataset.id,
+            title: '[CT学习沉淀]',
+            message:
+              '/learn 请结合本会话近期用户纠偏、排障根因与阶段经验候选，按原生 /learn 规范产出精简 learning_proposal.md 提案供我审批；如无新可复用经验请直接说明无需变更。',
+          },
+        });
+        showToast(`已向会话 ${learnBtn.dataset.id.slice(0, 8)} 发送 /learn`);
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    });
+    return;
+  }
+
   const archiveBtn = e.target.closest('.archive-conv-btn');
   if (archiveBtn?.dataset.id) {
     openInlineArchiveForm(ctx, archiveBtn.dataset.id, archiveBtn.dataset.topic || '');

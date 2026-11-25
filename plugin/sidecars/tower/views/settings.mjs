@@ -71,11 +71,11 @@ export function renderSettings(ctx, snap) {
     : `未检测到宿主权限文件，跟随模式下默认采用 balanced 均衡档`;
   $('host-perm-summary').textContent = hostDesc;
   if (!state.settingsDirty.global) {
-    $('gs-l0ControllerModel').value = g.l0ControllerModel || 'Gemini 4 Neon (High)';
-    $('gs-l1LightModel').value = g.l1LightModel || 'Gemini 4 Hydrogen (Low)';
-    $('gs-l2StandardModel').value = g.l2StandardModel || 'Gemini 4 Neon (High)';
+    $('gs-l0ControllerModel').value = g.l0ControllerModel || 'Orchestrator (Neon Extra High)';
+    $('gs-l1LightModel').value = g.l1LightModel || 'Gemini 4 Hydrogen (XHigh)';
+    $('gs-l2StandardModel').value = g.l2StandardModel || 'Orchestrator (Neon Extra High)';
     $('gs-l3DeepModel').value = g.l3DeepModel || 'Orchestrator (Carbon)';
-    $('gs-l4IntegrationModel').value = g.l4IntegrationModel || 'Orchestrator (Neon)';
+    $('gs-l4IntegrationModel').value = g.l4IntegrationModel || 'Orchestrator (Neon Extra High)';
     $('gs-modelGuardPolicy').value = g.modelGuardPolicy || 'strict_gemini4';
     $('gs-customAllowedModels').value = Array.isArray(g.customAllowedModels)
       ? g.customAllowedModels.join(', ')
@@ -86,6 +86,7 @@ export function renderSettings(ctx, snap) {
     $('gs-controllerCompactionThreshold').value = String(g.controllerCompactionThreshold ?? 5);
     $('gs-workerCompactionThreshold').value = String(g.workerCompactionThreshold ?? 2);
     $('gs-dispatchSurfacePolicy').value = g.dispatchSurfacePolicy || 'hidden_first';
+    $('gs-autoLearnMode').value = g.autoLearnMode || 'smart_proposal';
   }
   syncGlobalDocEditor(ctx, snap);
 
@@ -126,6 +127,10 @@ export function renderSettings(ctx, snap) {
         : '';
       $('ws-ov-controllerCompactionThreshold').placeholder = `继承全局 (${g.controllerCompactionThreshold ?? 5})`;
       setOvTag($, 'controllerCompactionThreshold', hasThreshOv);
+
+      const hasLearnOv = Object.prototype.hasOwnProperty.call(ov, 'autoLearnMode');
+      $('ws-ov-autoLearnMode').value = hasLearnOv ? ov.autoLearnMode : '';
+      setOvTag($, 'autoLearnMode', hasLearnOv);
     }
 
     syncWsDocEditor(ctx, snap);
@@ -309,6 +314,7 @@ export function bindSettingsEvents(ctx) {
           controllerCompactionThreshold: Number($('gs-controllerCompactionThreshold').value),
           workerCompactionThreshold: Number($('gs-workerCompactionThreshold').value),
           dispatchSurfacePolicy: $('gs-dispatchSurfacePolicy').value,
+          autoLearnMode: $('gs-autoLearnMode').value,
         },
       });
       state.settingsDirty.global = false;
@@ -411,6 +417,7 @@ export function bindSettingsEvents(ctx) {
     overrides.notifyOnSingleTaskDone = notifyVal === '' ? null : notifyVal === 'true';
     const threshVal = $('ws-ov-controllerCompactionThreshold').value.trim();
     overrides.controllerCompactionThreshold = threshVal ? Number(threshVal) : null;
+    overrides.autoLearnMode = $('ws-ov-autoLearnMode').value || null;
 
     try {
       const res = await api('/api/settings/workspace', {

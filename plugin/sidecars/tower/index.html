@@ -14,7 +14,7 @@
         <div class="brand-title">
           <span id="live-dot" class="brand-dot" title="监测指示"></span>
           <strong>Control Tower</strong>
-          <span id="version-badge" class="badge">v1.7.1</span>
+          <span id="version-badge" class="badge">v1.8.0</span>
         </div>
         <div class="actions">
           <button id="poll-toggle-btn" class="pill-btn" title="切换实时自动监测">实时监测</button>
@@ -135,6 +135,7 @@
             <button id="copy-ctrl-id-btn" class="btn btn-ghost btn-sm">复制总控 ID</button>
             <button id="edit-ctrl-btn" class="btn btn-ghost btn-sm">登记 / 换届总控</button>
             <button id="copy-handover-btn" class="btn btn-primary btn-sm">复制预填交接卡</button>
+            <button id="ctrl-learn-btn" class="btn btn-ghost btn-sm" title="向现役总控发送原生 /learn 指令">发送 /learn</button>
           </div>
           <form id="ctrl-form" class="subform hidden">
             <label>现役总控 conversationId <input id="cf-controllerId" class="input" placeholder="输入总控会话 ID" required /></label>
@@ -145,7 +146,7 @@
                 <option value="HANDOVER">HANDOVER</option>
               </select>
             </label>
-            <label>常驻模型配置 <input id="cf-defaultModel" class="input" list="ct-model-presets" placeholder="Gemini 4 Neon (High)" /></label>
+            <label>常驻模型配置 <input id="cf-defaultModel" class="input" list="ct-model-presets" placeholder="Orchestrator (Neon Extra High)" /></label>
             <label class="inline-check"><input type="checkbox" id="cf-appendHistory" /> 同步追加至第 2 节换届历史表</label>
             <label>换届原因与产出摘要（勾选追加时生效） <input id="cf-summary" class="input" placeholder="例如：首任入驻 / 第 2 任接班" /></label>
             <div class="actions">
@@ -196,7 +197,7 @@
             <label>任务主题 / 标题 <input id="df-topic" class="input" placeholder="例如：M2 协议解析修复" required /></label>
             <div class="two-col">
               <label>选定模型（受路由护栏校验）
-                <input id="df-model" class="input" list="ct-model-presets" value="Gemini 4 Neon (High)" required />
+                <input id="df-model" class="input" list="ct-model-presets" value="Orchestrator (Neon Extra High)" required />
               </label>
               <label>斜杠工作流前缀
                 <select id="df-slash" class="select">
@@ -664,6 +665,13 @@
                   <option value="allow_toplevel">允许常规顶层会话</option>
                 </select>
               </label>
+              <label>自动学习提醒模式（autoLearnMode）
+                <select id="gs-autoLearnMode" class="select">
+                  <option value="smart_proposal">智能双触发提案（收口/换届 + 纠偏提醒，推荐）</option>
+                  <option value="milestone_only">仅阶段收口与换届提醒</option>
+                  <option value="off">关闭自动学习提醒</option>
+                </select>
+              </label>
               <div class="actions">
                 <button type="submit" class="btn btn-primary btn-sm">保存全局设置</button>
                 <button type="button" id="gs-reset-btn" class="btn btn-ghost btn-sm">重置全局默认</button>
@@ -785,6 +793,16 @@
                   </label>
                 </div>
 
+                <div class="override-row">
+                  <label class="ov-label"><span>自动学习模式</span><span id="ov-tag-autoLearnMode" class="badge badge-muted">继承全局</span></label>
+                  <select id="ws-ov-autoLearnMode" class="select">
+                    <option value="">继承全局设置</option>
+                    <option value="smart_proposal">智能双触发提案（推荐）</option>
+                    <option value="milestone_only">仅阶段收口与换届提醒</option>
+                    <option value="off">关闭自动学习提醒</option>
+                  </select>
+                </div>
+
                 <div class="actions">
                   <button type="submit" class="btn btn-primary btn-sm">保存工作区设置</button>
                   <button type="button" id="ws-reset-btn" class="btn btn-ghost btn-sm">重置当前工作区</button>
@@ -817,18 +835,18 @@
   </div>
 
   <datalist id="ct-model-presets">
-    <option value="Gemini 4 Neon (High)"></option>
-    <option value="Gemini 4 Neon (Medium)"></option>
-    <option value="Gemini 4 Neon (XHigh)"></option>
-    <option value="Gemini 4 Hydrogen (High)"></option>
-    <option value="Gemini 4 Hydrogen (Medium)"></option>
-    <option value="Gemini 4 Hydrogen (Low)"></option>
-    <option value="Gemini 4 Hydrogen (XHigh)"></option>
-    <option value="Gemini 4 Carbon (High)"></option>
-    <option value="Gemini 4 Carbon (Medium)"></option>
+    <option value="Orchestrator (Neon Extra High)"></option>
     <option value="Orchestrator (Carbon)"></option>
     <option value="Orchestrator (Neon)"></option>
-    <option value="Orchestrator (Neon Extra High)"></option>
+    <option value="Gemini 4 Neon (XHigh)"></option>
+    <option value="Gemini 4 Hydrogen (XHigh)"></option>
+    <option value="Gemini 4 Carbon (High)"></option>
+    <option value="Gemini 4 Neon (High)"></option>
+    <option value="Gemini 4 Hydrogen (High)"></option>
+    <option value="Gemini 4 Carbon (Medium)"></option>
+    <option value="Gemini 4 Neon (Medium)"></option>
+    <option value="Gemini 4 Hydrogen (Medium)"></option>
+    <option value="Gemini 4 Hydrogen (Low)"></option>
   </datalist>
 
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>

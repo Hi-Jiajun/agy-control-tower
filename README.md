@@ -9,8 +9,8 @@
 - **隐藏执行面优先、实时 SSE 推送与跨工作区全局导航**：默认通过原生 `swarm` / `invoke_subagent` / `run_workflow` 零左侧栏污染执行，`agentapi` 顶层会话实行白名单与固定槽位复用；看板基于零依赖 `fs.watch` + `/api/events` SSE 实时推送状态变更，内置跨工作区全局概览抽屉（顶栏汇总全部工作区 `P0/P1` 告警并支持一键切仓）与 WebView 安全内联二次确认微交互。
 - **冷热解耦双擎零 Token 哨兵与焦点防打扰门禁（Focus Gate）**：Sidecar 后台定时 + Hook 节流双引擎 0 Token 巡检报错、卡死与高压缩并写入单真源 `P0/P1/P2` 优先级信箱 `inbox.json`（自动裁剪卸任总控僵尸条目）；用户前台对话期间自动暂缓抢占式唤醒，总控任意 `Stop` 无条件释放焦点锁；超大型并发项目可按需拉起临时域分总控（单真源不裂脑）。
 - **四象限隔离协作与三层长期项目路线图**：支持 `inherit` / `share` / `branch` 隔离档位、Swarm 频道直聊 / Workflow 契约流水线 / `.agents/handoffs/` 契约文件自动发现与折叠预览、文件所有权冲突检测；大型长期项目可按需一键启用 L1 `ROADMAP.md` + L2 结构化依赖图 `roadmap.json` + L3 瘦身 `SESSION-REGISTRY.md`，支持路线图分支一键「交总控隐藏面派单」与 `[CT_REPORT:DONE]` 完成回执联动。
-- **五环自演化研发门禁体系（仓根 `scripts/` & `tests/`）**：涵盖黑匣子日志（区分本地接口与外部 RPC 慢调用阈值）、只读遥测复盘提案（`npm run mine`）、12 份脱敏事故轨迹回放库（`npm run replay`）、四维自动化门禁（L1 单测与前端纯逻辑 / L2 事故回放 / L3 零依赖 Chrome CDP 交互式窄栏 UI 冒烟 `npm run test:ui` / L4 16 项 Skill 与 Sidecar 契约评测 `npm run test:eval`），以及实装健康体检 `npm run doctor` 与发布快照一键回滚。
-- **四事件定向感知 Hooks（`plugin/hooks.json` + `plugin/scripts/ct-hook.mjs`）**：覆盖 `SessionStart`（现役总控与已入账专职会话双角色注入）、`PreInvocation`（裸/多 ID 及汇报速查、节流兜底哨兵、`[CT_REPORT:DONE]` 路线图联动与弹性换届提醒）、`PreToolUse`（双证换届接班自动放行与非总控台账写保护）、与 `Stop`（总控焦点锁无条件释放与专职会话防漏报收口兜底）；无关会话静音直通。
+- **五环自演化研发门禁体系（仓根 `scripts/` & `tests/`）**：涵盖黑匣子日志（区分本地接口与外部 RPC 慢调用阈值）、只读遥测复盘提案（`npm run mine`，含新版 `Orchestrator` vs 纯单模型横向实测对比）、15 份脱敏事故轨迹回放库（`npm run replay`）、四维自动化门禁（L1 单测与前端纯逻辑 / L2 事故回放 / L3 零依赖 Chrome CDP 交互式窄栏 UI 冒烟 `npm run test:ui` / L4 17 项 Skill 与 Sidecar 契约评测 `npm run test:eval`），以及实装健康体检 `npm run doctor` 与发布快照一键回滚。
+- **四事件定向感知 Hooks（`plugin/hooks.json` + `plugin/scripts/ct-hook.mjs`）**：覆盖 `SessionStart`（现役总控与已入账专职会话双角色注入）、`PreInvocation`（裸/多 ID 及汇报速查、节流兜底哨兵、`[CT_REPORT:DONE]` 路线图联动、智能双触发 `/learn` 自动学习检查点与弹性换届提醒）、`PreToolUse`（双证换届接班自动放行与非总控台账写保护）、与 `Stop`（总控焦点锁无条件释放与纯零 Token 双轨回执）；无关会话静音直通。
 - **官方数据目录隔离**：刻意不包含 `rules/AGENTS.md`（不向无关会话注入 always-on 全局规则）；运行状态与三层设置统一存于官方 `<appData>/plugin_data/control-tower/`（支持 `AGY_CONTROL_TOWER_DATA_DIR` / `PLUGIN_DATA` 覆盖）。
 
 ## 目录结构

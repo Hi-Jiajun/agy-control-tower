@@ -30,11 +30,11 @@ export const DEFAULT_PLUGIN_SETTINGS = Object.freeze({
 });
 
 export const DEFAULT_GLOBAL_SETTINGS = Object.freeze({
-  l0ControllerModel: 'Gemini 4 Neon (High)',
-  l1LightModel: 'Gemini 4 Hydrogen (Low)',
-  l2StandardModel: 'Gemini 4 Neon (High)',
+  l0ControllerModel: 'Orchestrator (Neon Extra High)',
+  l1LightModel: 'Gemini 4 Hydrogen (XHigh)',
+  l2StandardModel: 'Orchestrator (Neon Extra High)',
   l3DeepModel: 'Orchestrator (Carbon)',
-  l4IntegrationModel: 'Orchestrator (Neon)',
+  l4IntegrationModel: 'Orchestrator (Neon Extra High)',
   modelGuardPolicy: 'strict_gemini4',
   customAllowedModels: [],
   askBeforeDispatch: true,
@@ -43,6 +43,7 @@ export const DEFAULT_GLOBAL_SETTINGS = Object.freeze({
   controllerCompactionThreshold: 5,
   workerCompactionThreshold: 2,
   dispatchSurfacePolicy: 'hidden_first',
+  autoLearnMode: 'smart_proposal',
 });
 
 export const DEFAULT_WORKSPACE_SETTINGS = Object.freeze({
@@ -57,18 +58,18 @@ export const OVERRIDABLE_GLOBAL_KEYS = Object.freeze(Object.keys(DEFAULT_GLOBAL_
 const OVERRIDABLE_GLOBAL_SET = new Set(OVERRIDABLE_GLOBAL_KEYS);
 
 export const MODEL_PRESETS = Object.freeze([
-  'Gemini 4 Neon (High)',
-  'Gemini 4 Neon (Medium)',
-  'Gemini 4 Neon (XHigh)',
-  'Gemini 4 Hydrogen (High)',
-  'Gemini 4 Hydrogen (Medium)',
-  'Gemini 4 Hydrogen (Low)',
-  'Gemini 4 Hydrogen (XHigh)',
-  'Gemini 4 Carbon (High)',
-  'Gemini 4 Carbon (Medium)',
+  'Orchestrator (Neon Extra High)',
   'Orchestrator (Carbon)',
   'Orchestrator (Neon)',
-  'Orchestrator (Neon Extra High)',
+  'Gemini 4 Neon (XHigh)',
+  'Gemini 4 Hydrogen (XHigh)',
+  'Gemini 4 Carbon (High)',
+  'Gemini 4 Neon (High)',
+  'Gemini 4 Hydrogen (High)',
+  'Gemini 4 Carbon (Medium)',
+  'Gemini 4 Neon (Medium)',
+  'Gemini 4 Hydrogen (Medium)',
+  'Gemini 4 Hydrogen (Low)',
 ]);
 
 const MODEL_ALIAS_TO_AGENTAPI = new Map([
@@ -243,6 +244,8 @@ function sanitizeGlobalField(key, val, fallback) {
       return val !== undefined ? clampInt(val, 1, 20, fallback) : fallback;
     case 'dispatchSurfacePolicy':
       return ['hidden_first', 'slot_reuse', 'allow_toplevel'].includes(val) ? val : fallback;
+    case 'autoLearnMode':
+      return ['smart_proposal', 'milestone_only', 'off'].includes(val) ? val : fallback;
     default:
       return fallback;
   }
@@ -579,7 +582,7 @@ export function validateDispatchModel(modelInput, effective = DEFAULT_GLOBAL_SET
   }
 
   const isStrictGemini4 =
-    /^(?:gemini[\s_-]*4[\s_-]*)?(?:carbon|neon|hydrogen)(?:[\s_-]*\(?(?:low|medium|high|xhigh|extra[\s_-]*high)\)?|)?$/i.test(
+    /^(?:gemini[\s_-]*4[\s_-]*)?(?:carbon|neon|hydrogen)(?:[\s_-]*tiered)?(?:[\s_-]*\(?(?:low|medium|high|xhigh|extra[\s_-]*high)\)?|)?$/i.test(
       trimmed
     ) ||
     /^(?:gemini[\s_-]*pro[\s_-]*)?orchestrator(?:[\s_-]*\(?(?:(?:gemini[\s_-]*4[\s_-]*)?(?:carbon|neon|hydrogen))?(?:[\s_-]*(?:low|medium|high|xhigh|extra[\s_-]*high))?\)?|)?$/i.test(

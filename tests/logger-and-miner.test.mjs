@@ -93,6 +93,32 @@ test('Ring 2 telemetry miner clusters sandbox cache drops, edit mismatches, and 
     ];
     writeFileSync(tp, `${rows.map((r) => JSON.stringify(r)).join('\n')}\n`, 'utf8');
 
+    const convOrch = makeConvId('b', '2', '4', '8', '2');
+    const tpOrch = makeTranscriptPath(appData, convOrch);
+    writeFileSync(
+      tpOrch,
+      [
+        JSON.stringify({
+          step_index: 1,
+          type: 'PLANNER_RESPONSE',
+          model: 'gemini-4-neon-xhigh',
+          input_tokens: 15000,
+          cache_read_tokens: 120000,
+          output_tokens: 400,
+          tool_calls: [{ name: 'exit_plan_mode' }],
+        }),
+        JSON.stringify({
+          step_index: 2,
+          type: 'PLANNER_RESPONSE',
+          model: 'gemini-4-hydrogen-xhigh',
+          input_tokens: 80000,
+          cache_read_tokens: 40000,
+          output_tokens: 500,
+        }),
+      ].join('\n') + '\n',
+      'utf8'
+    );
+
     appendFlightEvent(dataDir, {
       level: 'error',
       source: 'sidecar',
@@ -101,9 +127,10 @@ test('Ring 2 telemetry miner clusters sandbox cache drops, edit mismatches, and 
     });
 
     const report = mineTelemetryAndLogs({ days: 7, appDataDir: appData, dataDir });
-    assert.equal(report.scannedConversations, 1);
-    assert.equal(report.totalPlannerSteps, 5);
+    assert.equal(report.scannedConversations, 2);
+    assert.equal(report.totalPlannerSteps, 7);
     assert.equal(report.editMismatchCount, 3);
+    assert.equal(report.orchestratorComparison.customOrchestrator.sessions, 1);
     const ids = report.proposals.map((p) => p.id);
     assert.ok(ids.includes('PROP-CACHE-SWITCH'), `Expected PROP-CACHE-SWITCH in ${ids.join(',')}`);
     assert.ok(ids.includes('PROP-EDIT-MISMATCH'), `Expected PROP-EDIT-MISMATCH in ${ids.join(',')}`);
@@ -111,6 +138,7 @@ test('Ring 2 telemetry miner clusters sandbox cache drops, edit mismatches, and 
 
     const md = formatMinerMarkdown(report);
     assert.ok(md.includes('Control Tower 遥测复盘与改进提案报告'));
+    assert.ok(md.includes('新版 Orchestrator vs 纯单模型实测对比'));
     assert.ok(md.includes('PROP-CACHE-SWITCH'));
   } finally {
     sb.cleanup();

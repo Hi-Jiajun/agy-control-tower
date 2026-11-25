@@ -401,7 +401,11 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
     );
     checks.push('sse-realtime-connected');
 
-    // 0b) Verify cross-workspace global overview drawer opens cleanly with zero overflow in 390px
+    // 0b) Verify cross-workspace global overview drawer & 1-click /learn trigger exist cleanly in 390px
+    const hasLearnControls = await cdp.evaluate(`Boolean(document.getElementById('ctrl-learn-btn')) && Boolean(document.querySelector('.send-learn-btn')) && Boolean(document.getElementById('gs-autoLearnMode'))`);
+    assert.equal(hasLearnControls, true, 'v1.8.0 /learn buttons and autoLearnMode selector should render');
+    checks.push('v180-learn-controls');
+
     await cdp.evaluate(`document.getElementById('global-ws-btn')?.click()`);
     await waitForCondition(
       async () =>

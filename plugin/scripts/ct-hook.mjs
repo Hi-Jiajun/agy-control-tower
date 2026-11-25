@@ -51,6 +51,22 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(__dirname, '..');
+const LEARN_CORRECTION_THROTTLE_MS = 15 * 60 * 1000;
+
+function detectUserCorrectionSignal(rawText) {
+  if (!rawText || typeof rawText !== 'string') return false;
+  const trimmed = rawText.trim();
+  if (!trimmed || trimmed.startsWith('/learn')) return false;
+  const clean = trimmed
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`[^`\n]+`/g, ' ')
+    .replace(/https?:\/\/\S+/gi, ' ')
+    .trim();
+  if (!clean || clean.length > 1500) return false;
+  return /(?:^|[\s，。！？,.;:：])(?:不对|错了|不要再|别再用|以后(?:必须|都|不要|别|统一)|记住(?:以后|这个|这条)?|踩坑|立个?规矩|改为|改成(?:这样|用)|不要擅自|下次(?:不要|别|记得)|always\s+remember|never\s+do\s+that|don'?t\s+do\s+that|stop\s+doing)/i.test(
+    clean
+  );
+}
 
 function readInstalledPluginVersion() {
   try {
@@ -512,10 +528,12 @@ function handleSessionStart(regFound, parsedReg, resolved, dataDir, convId) {
         : '';
     const surfacePolicy = resolved.effective.dispatchSurfacePolicy || 'hidden_first';
     const askDispatchFlag = resolved.effective.askBeforeDispatch !== false ? '开' : '关';
+    const learnMode = resolved.effective.autoLearnMode || 'smart_proposal';
     const msg =
       `[control-tower 总控就位] 已核验当前会话为工作区现役总控。` +
       `台账: ${regTag} | ${lockText} | 活跃专职会话: ${activeCount} 个 | ` +
       `派遣策略: ${surfacePolicy} (派前确认: ${askDispatchFlag}) | ` +
+      `自动学习: ${learnMode} | ` +
       `代决策档位: ${resolved.effective.effectiveAutonomy} (${resolved.effective.autonomySource}) | ` +
       `换届阈值: ${resolved.effective.controllerCompactionThreshold} 次压缩` +
       `${roadmapSuffix}${overrideSuffix}${schemaHint}。`;
@@ -542,11 +560,11 @@ function handleSessionStart(regFound, parsedReg, resolved, dataDir, convId) {
       ? '无独占资源模式'
       : workerRow.lockStatus || '纯离线无锁';
   const reportHint = hasValidController(parsedReg)
-    ? `遇到需拍板分叉或完成收口时，请通过 agentapi send-message "${ctrlId}" "[CT_REPORT:DECISION] ..." 或 "[CT_REPORT:DONE] [<任务或分支ID>] <交付摘要>" 向总控汇报。`
+    ? `遇到需拍板分叉或完成收口时，请通过 agentapi send-message "${ctrlId}" "[CT_REPORT:DECISION] ..." 或 "[CT_REPORT:DONE] [<任务或分支ID>] <交付摘要> | 【可沉淀经验候选】：<1~3行或无>" 向总控汇报。`
     : '完成收口后请输出清晰交付清单与验证输出供总控入账。';
   const workerMsg =
     `[control-tower 专职会话约束] 任务: ${workerRow.topic || '-'} | 资源边界: ${lockDesc} | ` +
-    `严禁直接修改 ${regFound.relPath}（由总控或看板独占写入）。${reportHint}`;
+    `严禁直接修改 ${regFound.relPath}（由总控或看板独占写入），严禁私改 AGENTS.md / .agents/rules/ 与技能文件；完工可附 1~3 行经验候选（无则写无）。${reportHint}`;
   process.stdout.write(
     `${JSON.stringify({ injectSteps: [{ systemMessage: { systemMessage: workerMsg } }] })}\n`
   );
@@ -574,6 +592,9 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
   const injectSteps = [];
   const lastInput = String(payload.lastUserInput || '');
   const strippedInput = stripSystemMessageEnvelope(lastInput);
+  const autoLearnMode = resolved.effective.autoLearnMode || 'smart_proposal';
+  let hasDeferredReceiptInjected = false;
+  let learnCheckpointInjected = false;
   const isAutomatedInbound =
     lastInput.includes('[CT_AUTO_RECEIPT]') ||
     lastInput.includes('[CT_REPORT:') ||
@@ -594,6 +615,7 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
         systemMessage: `[control-tower 待收阶段回执] ${priorInbox.deferredReceipt.message}`,
       },
     });
+    hasDeferredReceiptInjected = true;
     for (const cid of priorInbox.deferredReceipt.completedIds || []) {
       if (cid) deferredCompletedIds.push(cid);
     }
@@ -823,10 +845,14 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
     const threshold = resolved.effective.controllerCompactionThreshold || 5;
     const lastWarned = prevCtrlEntry.lastWarnedCompactions || 0;
     if (!prevCtrlEntry.handoverIgnored && comps >= threshold && (typeof lastWarned !== 'number' || comps > lastWarned)) {
+      const handoverLearnSuffix =
+        autoLearnMode !== 'off'
+          ? '换届前请一并自检本任期是否有值得按 /learn 沉淀的可复用经验提案（无则跳过）。'
+          : '';
       const warn =
         `[control-tower 换届提醒] 当前现役总控会话已累计 ${comps} 次上下文自动压缩（>= ${threshold} 次阈值，非强制）。` +
         `请通过 ask_question 询问用户：选择立即换届（同步 ${regFound.absPath}、输出交接卡并可用 agentapi new-conversation 一键拉起新总控接班），` +
-        `或选择「本会话忽略不再提醒」（也可在总控看板顶部一键忽略）。`;
+        `或选择「本会话忽略不再提醒」（也可在总控看板顶部一键忽略）。${handoverLearnSuffix}`;
       injectSteps.push({ systemMessage: { systemMessage: warn } });
       appendFlightEvent(dataDir, {
         level: 'warn',
@@ -851,6 +877,51 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
         });
       } catch {
         // ignore inbox error
+      }
+    }
+  }
+
+  // 3) Smart Dual-Trigger Auto-/learn Checkpoints (zero-force proposal workflow)
+  if (autoLearnMode !== 'off') {
+    const isMilestoneReport =
+      hasDeferredReceiptInjected ||
+      lastInput.includes('[CT_REPORT:DONE]') ||
+      lastInput.includes('[CT_AUTO_RECEIPT]');
+    if (isMilestoneReport) {
+      injectSteps.push({
+        systemMessage: {
+          systemMessage:
+            `[control-tower 自学习检查点] 本阶段任务收口或回执已到达，请核查专职回报中的「可沉淀经验候选」与本轮排障根因；` +
+            `若存在可复用约束或技巧，请按原生 /learn 规范产出精简 learning_proposal.md 提案供用户审批后再落盘（优先写当前工作区 .agents/，严禁擅改规则；无新经验请静默跳过）。`,
+        },
+      });
+      learnCheckpointInjected = true;
+    } else if (
+      autoLearnMode === 'smart_proposal' &&
+      !isAutomatedInbound &&
+      !learnCheckpointInjected &&
+      detectUserCorrectionSignal(strippedInput || lastInput)
+    ) {
+      const nowMs = Date.now();
+      const lastHintAt = Number(prevCtrlEntry.lastLearnHintAt || 0);
+      if (nowMs - lastHintAt >= LEARN_CORRECTION_THROTTLE_MS) {
+        injectSteps.push({
+          systemMessage: {
+            systemMessage:
+              `[control-tower 纠偏自学习提醒] 检测到本轮包含明确纠偏或长期约束，请先完整解决用户当前问题，` +
+              `并在末尾评估是否需要按原生 /learn 流程产出精简 learning_proposal.md 提案供审批持久化（优先落当前工作区，绝不擅改规则/全局配置）。`,
+          },
+        });
+        ctrlPatch.lastLearnHintAt = nowMs;
+        ctrlPatch.updatedAt = nowMs;
+        ctrlDirty = true;
+        appendFlightEvent(dataDir, {
+          level: 'info',
+          source: 'hook',
+          event: 'learn_hint_injected',
+          conv: convId,
+          message: 'Injected throttled user-correction auto-/learn proposal reminder',
+        });
       }
     }
   }

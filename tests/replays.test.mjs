@@ -5,7 +5,7 @@ import { runSkillEval } from '../scripts/ct-skill-eval.mjs';
 
 test('Ring 3 + Ring 4 (L2): all sanitized incident replay fixtures pass', () => {
   const summary = runAllReplays();
-  assert.ok(summary.total >= 12, `Expected at least 12 replay fixtures, found ${summary.total}`);
+  assert.ok(summary.total >= 15, `Expected at least 15 replay fixtures, found ${summary.total}`);
   assert.equal(
     summary.failed,
     0,
@@ -28,9 +28,9 @@ test('Ring 3 + Ring 4 (L2): all sanitized incident replay fixtures pass', () => 
   assert.ok(skeleton.description.includes('${OTHER_ID}'));
 });
 
-test('Ring 4 (L4): all 16 Skill & Prompt behavioral contract eval scenarios pass', () => {
+test('Ring 4 (L4): all 17 Skill & Prompt behavioral contract eval scenarios pass', () => {
   const summary = runSkillEval();
-  assert.equal(summary.total, 16);
+  assert.equal(summary.total, 17);
   assert.equal(
     summary.failed,
     0,

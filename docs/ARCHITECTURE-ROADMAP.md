@@ -77,8 +77,13 @@
   - Sidecar 前后端拆分为 `lib/agentapi.mjs`、`routes/{roadmap,inbox}.mjs` 与 `views/{overview,sessions,roadmap,settings}.mjs`；引入恒定时间 Token 校验、工作区串行互斥锁、持锁直派原子授锁、全局 409 冲突横幅、`rawBaseHash`/L1/L2 乐观锁、脏表单防轮询覆盖与请求序号防竞态。
   - 核心库引入零依赖跨进程文件锁 `withFileLockSync`、多级父目录软链逃逸拦截、纯 `Buffer` 字节换行增量扫描与超 64KB 尾行遥测回退；沉淀 12 条 L2 事故回放样本与 16 项 L4 契约评测，加固 `pre-commit` Git 暂存区校验与 `ct-release` 原子快照。
 
-### 第五阶段（`v1.7.0` — 当前版本）：零依赖 SSE 实时流、内联二次确认与跨工作区全局指挥抽屉
+### 第五阶段（`v1.7.0 ~ v1.7.1` — 已完成交付）：零依赖 SSE 实时流、双轨无错回执、哨兵自愈与全局抽屉
 
 - **零依赖 `fs.watch` + SSE 实时推送引擎（`lib/sse-hub.mjs`）**：通过 `/api/events` 建立单连接实时事件通道，文件或 API 写变更 `120ms` 去抖即时推送前端，SSE 在线期间将后台轮询自动降频至 `24s+` 低功耗兜底态，零订阅时自动回收目录监听器。
 - **WebView 安全内联二次确认微交互**：所有破坏性删除与配置重置按钮统一接入 `confirmInline()` 两段式内联确认状态机（3 秒超时自动解除，挂起期间锁定列表重绘），100% 杜绝 `window.confirm` 阻塞风险。
-- **跨工作区全局概览抽屉（`routes/workspaces.mjs`）**：顶栏实时汇总多工作区未读 `P0/P1` 告警角标，展开抽屉即可一览全部工作区的总控在线态、独占锁、活跃会话、路线图进度并一键切换工作区。
+- **跨工作区全局概览抽屉（`routes/workspaces.mjs`）与双轨零错投递**：顶栏自动发现并汇总全部已建总控工作区状态与未读 `P0/P1` 告警；Hook 与 Sidecar 建立纯零 Token 双轨回执投递并升级 `version=2` 信箱自愈消解。
+
+### 第六阶段（`v1.8.0` — 当前版本）：全最高思考 `Orchestrator` 舒适区路由与智能双触发 `/learn` 闭环
+
+- **全最高思考舒适区路由与 `Swarm` 显式配模**：默认全面采用各自最高思考档位，由新版可自定义 `Orchestrator` 承担 `L0 / L2 / L3 / L4` 主力与 `Swarm` 编码/复合验证 worker，单模型专注 `L1` 纯只读扫描与含写盘 `run_workflow`；`ct-miner` 同步输出「新版 Orchestrator vs 纯单模型」实测对比表。
+- **智能双触发 `/learn` 审批闭环**：新增三层 `autoLearnMode` 开关（`smart_proposal` / `milestone_only` / `off`），专职会话只提炼候选且禁改规则/技能，总控在阶段收口、换届与纠偏信号（15 分钟节流）时按原生 `/learn` 契约产出 `learning_proposal.md` 供审批后落盘，并在看板提供一键「发送 `/learn`」按钮。

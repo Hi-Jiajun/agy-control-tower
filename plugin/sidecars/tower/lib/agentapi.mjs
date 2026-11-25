@@ -159,11 +159,11 @@ export function buildDispatchPayload({
   return (
     `${body}\n\n` +
     `【Control Tower 跨会话汇报锚点（现役总控: ${controllerId}）】\n` +
-    `1. ${lockLine}严禁直接改写 ${registryRelPath}。\n` +
+    `1. ${lockLine}严禁直接改写 ${registryRelPath}，亦严禁私改 AGENTS.md / .agents/rules/ / .agents/skills/。\n` +
     `2. 遇需要拍板的架构/接口/范围分叉或连续两轮假设失败时，执行：\n` +
     `   agentapi send-message "${controllerId}" "[CT_REPORT:DECISION] <分叉简述与备选方案>"\n` +
-    `3. 完成收口时汇报交付摘要与验证结果：\n` +
-    `   agentapi send-message "${controllerId}" "[CT_REPORT:DONE] [<任务或分支ID>] <交付摘要与验证结论>"\n` +
+    `3. 完成收口时汇报交付摘要、验证结果及可选经验候选（无则写无）：\n` +
+    `   agentapi send-message "${controllerId}" "[CT_REPORT:DONE] [<任务或分支ID>] <交付摘要与验证结论> | 【可沉淀经验候选】：<1~3行或无>"\n` +
     `4. 跨回合 edit_file 前必须先 read_file 对齐最新缩进，同一文件连续 2 次不匹配立即重读目标行段，严禁循环盲试。`
   );
 }

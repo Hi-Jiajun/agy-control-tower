@@ -88,6 +88,29 @@ function pct(num, den) {
   return Math.round((num / den) * 1000) / 10;
 }
 
+function makeModeBucket() {
+  return {
+    sessions: 0,
+    steps: 0,
+    switches: 0,
+    uncachedTokens: 0,
+    cacheReadTokens: 0,
+    editMismatches: 0,
+  };
+}
+
+function finalizeModeBucket(mb) {
+  const totIn = mb.uncachedTokens + mb.cacheReadTokens;
+  return {
+    sessions: mb.sessions,
+    steps: mb.steps,
+    switches: mb.switches,
+    cacheHitPct: pct(mb.cacheReadTokens, totIn),
+    avgUncached: mb.steps > 0 ? Math.round(mb.uncachedTokens / mb.steps) : 0,
+    editMismatches: mb.editMismatches,
+  };
+}
+
 export function mineTelemetryAndLogs({
   days = 7,
   appDataDir = '',
@@ -143,6 +166,11 @@ export function mineTelemetryAndLogs({
   let editMismatchCount = 0;
   const editMismatchByModel = new Map();
   const highCompactionSessions = [];
+  const modeBuckets = {
+    customOrchestrator: makeModeBucket(),
+    legacyOrchestrator: makeModeBucket(),
+    singleModel: makeModeBucket(),
+  };
 
   const readonlyCache = existsSync(resolvedDataDir)
     ? loadPluginState(resolvedDataDir).transcriptCache || {}
@@ -168,6 +196,13 @@ export function mineTelemetryAndLogs({
 
     let prevModel = '';
     let lastPlannerModel = 'unknown';
+    const convModels = new Set();
+    let convHasExitPlanMode = false;
+    let convSteps = 0;
+    let convSwitches = 0;
+    let convUncached = 0;
+    let convCacheRead = 0;
+    let convEditMismatch = 0;
 
     for (const line of lines) {
       let obj;
@@ -181,12 +216,16 @@ export function mineTelemetryAndLogs({
       if (obj.type === 'PLANNER_RESPONSE' && obj.model) {
         const m = String(obj.model);
         lastPlannerModel = m;
+        convModels.add(m);
+        convSteps += 1;
         totalPlannerSteps += 1;
 
         const uncached = Math.max(0, Number(obj.input_tokens || 0));
         const cacheRead = Math.max(0, Number(obj.cache_read_tokens || 0));
         const outTok = Math.max(0, Number(obj.output_tokens || 0));
         const totIn = uncached + cacheRead;
+        convUncached += uncached;
+        convCacheRead += cacheRead;
 
         if (!byModel.has(m)) {
           byModel.set(m, {
@@ -209,6 +248,7 @@ export function mineTelemetryAndLogs({
           switchCache += cacheRead;
           switchTotalIn += totIn;
           bucket.switchesInto += 1;
+          convSwitches += 1;
         } else if (prevModel && prevModel === m) {
           sameModelSteps += 1;
           sameModelCache += cacheRead;
@@ -219,14 +259,36 @@ export function mineTelemetryAndLogs({
 
       if (Array.isArray(obj.tool_calls)) {
         totalToolCalls += obj.tool_calls.length;
+        if (obj.tool_calls.some((tc) => tc?.name === 'exit_plan_mode')) {
+          convHasExitPlanMode = true;
+        }
       }
       if (obj.status === 'ERROR') {
         errorSteps += 1;
       }
       if (typeof obj.content === 'string' && obj.content.includes('target content not found')) {
         editMismatchCount += 1;
+        convEditMismatch += 1;
         editMismatchByModel.set(lastPlannerModel, (editMismatchByModel.get(lastPlannerModel) || 0) + 1);
       }
+    }
+
+    if (convSteps > 0) {
+      let modeKey = 'singleModel';
+      if (convModels.has('gemini-flash-worker-agy')) {
+        modeKey = 'legacyOrchestrator';
+      } else if (convHasExitPlanMode && convModels.size >= 2) {
+        modeKey = 'customOrchestrator';
+      } else if (convModels.has('gemini-pro-orchestrator') || convModels.has('gemini-pro-orchestrator-neon')) {
+        modeKey = convHasExitPlanMode ? 'customOrchestrator' : 'legacyOrchestrator';
+      }
+      const mb = modeBuckets[modeKey];
+      mb.sessions += 1;
+      mb.steps += convSteps;
+      mb.switches += convSwitches;
+      mb.uncachedTokens += convUncached;
+      mb.cacheReadTokens += convCacheRead;
+      mb.editMismatches += convEditMismatch;
     }
   }
 
@@ -354,6 +416,11 @@ export function mineTelemetryAndLogs({
       switchCachePct,
     },
     models,
+    orchestratorComparison: {
+      customOrchestrator: finalizeModeBucket(modeBuckets.customOrchestrator),
+      legacyOrchestrator: finalizeModeBucket(modeBuckets.legacyOrchestrator),
+      singleModel: finalizeModeBucket(modeBuckets.singleModel),
+    },
     highCompactionSessions: highCompactionSessions.slice(0, 10),
     flightSummary: {
       total: flight.total,
@@ -391,6 +458,25 @@ export function formatMinerMarkdown(report) {
         `| \`${safeModel}\` | ${m.steps} | ${m.cacheHitPct ?? 'N/A'}% | ${m.avgUncached} | ${m.switchesInto} |`
       );
     }
+  }
+
+  const oc = report.orchestratorComparison || {};
+  lines.push(
+    ``,
+    `## 新版 Orchestrator vs 纯单模型实测对比`,
+    ``,
+    `| 运行模式 | 会话数 | 规划步数 | 切层次数 | 平均缓存命中 | 平均冷输入 | edit_file 失配 |`,
+    `| --- | --- | --- | --- | --- | --- | --- |`
+  );
+  for (const [label, key] of [
+    ['新版自定义 Orchestrator', 'customOrchestrator'],
+    ['旧版 Orchestrator', 'legacyOrchestrator'],
+    ['纯单模型会话', 'singleModel'],
+  ]) {
+    const b = oc[key] || { sessions: 0, steps: 0, switches: 0, cacheHitPct: null, avgUncached: 0, editMismatches: 0 };
+    lines.push(
+      `| ${label} | ${b.sessions} | ${b.steps} | ${b.switches} | ${b.cacheHitPct ?? 'N/A'}% | ${b.avgUncached} | ${b.editMismatches} |`
+    );
   }
 
   lines.push(``, `## 自动聚类改进提案 (${report.proposals.length} 条)`, ``);

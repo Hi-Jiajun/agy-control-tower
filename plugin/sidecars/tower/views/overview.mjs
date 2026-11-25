@@ -161,7 +161,7 @@ export function renderOverview(ctx, snap) {
   if ($('ctrl-form').classList.contains('hidden')) {
     $('cf-controllerId').value = ctrl.currentControllerId || window.sidecar?.conversationId || '';
     $('cf-status').value = ctrl.currentControllerStatus || 'ONLINE';
-    $('cf-defaultModel').value = ctrl.defaultModel || eff.l0ControllerModel || 'Gemini 4 Neon (High)';
+    $('cf-defaultModel').value = ctrl.defaultModel || eff.l0ControllerModel || 'Orchestrator (Neon Extra High)';
   }
 
   // Zero-token Sentinel & Priority Inbox
@@ -215,7 +215,7 @@ export function renderOverview(ctx, snap) {
 export async function spawnHandoverController(ctx, oldCtrlId) {
   const { state, api, showToast, copyText } = ctx;
   const eff = state.snap?.settings?.effective || {};
-  const model = eff.l0ControllerModel || 'Gemini 4 Neon (High)';
+  const model = eff.l0ControllerModel || 'Orchestrator (Neon Extra High)';
   const handoverPrompt = buildPrefilledHandoverText(state.snap);
   try {
     const res = await api('/_sidecar/new-conversation', {
@@ -313,9 +313,31 @@ export function bindOverviewEvents(ctx) {
       const eff = state.snap.settings?.effective || {};
       $('cf-controllerId').value = ctrl.currentControllerId || window.sidecar?.conversationId || '';
       $('cf-status').value = ctrl.currentControllerStatus || 'ONLINE';
-      $('cf-defaultModel').value = ctrl.defaultModel || eff.l0ControllerModel || 'Gemini 4 Neon (High)';
+      $('cf-defaultModel').value = ctrl.defaultModel || eff.l0ControllerModel || 'Orchestrator (Neon Extra High)';
     }
     $('ctrl-form').classList.toggle('hidden');
+  });
+
+  $('ctrl-learn-btn')?.addEventListener('click', async () => {
+    const btn = $('ctrl-learn-btn');
+    const id = state.snap?.parsed?.controller?.currentControllerId;
+    if (!id) return showToast('未登记现役总控 ID', true);
+    await withBusyButton(btn, async () => {
+      try {
+        await api('/_sidecar/send-message', {
+          method: 'POST',
+          body: {
+            conversationId: id,
+            title: '[CT学习沉淀]',
+            message:
+              '/learn 请结合本会话近期用户纠偏、排障根因与阶段经验候选，按原生 /learn 规范产出精简 learning_proposal.md 提案供我审批；如无新可复用经验请直接说明无需变更。',
+          },
+        });
+        showToast('已向现役总控发送 /learn 学习指令');
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    });
   });
   $('cancel-ctrl-btn').addEventListener('click', () => {
     $('cf-appendHistory').checked = false;
