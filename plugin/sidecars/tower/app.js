@@ -44,6 +44,7 @@ const state = {
   sse: null,
   sseConnected: false,
   sseWorkspace: '',
+  sseFailCount: 0,
   sseRefreshTimer: null,
   rawDirty: false,
   rawBaseHash: '',
@@ -319,7 +320,11 @@ function connectSseStream(wsTarget = state.workspace) {
     }
     return;
   }
+  if (state.sseWorkspace !== wsTarget) {
+    state.sseFailCount = 0;
+  }
   if (state.sse && state.sseWorkspace === wsTarget) return;
+  if (state.sseFailCount >= 3) return;
 
   if (state.sse) {
     state.sse.close();
@@ -331,11 +336,24 @@ function connectSseStream(wsTarget = state.workspace) {
   if (uiToken) sp.set('token', uiToken);
   if (wsTarget) sp.set('workspace', wsTarget);
   const qs = sp.toString();
-  const es = new EventSource(`/api/events${qs ? `?${qs}` : ''}`);
+  let es;
+  try {
+    es = new EventSource(`/api/events${qs ? `?${qs}` : ''}`);
+  } catch {
+    return;
+  }
+  let opened = false;
   state.sse = es;
   state.sseWorkspace = wsTarget;
 
+  es.onopen = () => {
+    opened = true;
+    state.sseFailCount = 0;
+  };
+
   es.addEventListener('connected', () => {
+    opened = true;
+    state.sseFailCount = 0;
     state.sseConnected = true;
     if (state.snap) updateLivePollControls(state.snap);
   });
@@ -351,6 +369,16 @@ function connectSseStream(wsTarget = state.workspace) {
   });
 
   es.onerror = () => {
+    if (!opened) {
+      state.sseFailCount += 1;
+      if (state.sseFailCount >= 3) {
+        es.close();
+        if (state.sse === es) state.sse = null;
+        state.sseConnected = false;
+        if (state.snap) updateLivePollControls(state.snap);
+        return;
+      }
+    }
     if (state.sseConnected) {
       state.sseConnected = false;
       if (state.snap) updateLivePollControls(state.snap);
@@ -400,7 +428,7 @@ function render(snap) {
     state.workspace = snap.workspace;
   }
   state.snap = snap;
-  $('version-badge').textContent = `v${snap.plugin?.version || '1.7.0'}`;
+  $('version-badge').textContent = `v${snap.plugin?.version || '1.8.1'}`;
   applyMotionSetting(snap);
   renderWorkspaces(snap);
   renderGlobalWorkspacesDrawer(ctx, snap);
@@ -502,6 +530,7 @@ bindArrowTabNav('.tabs', (btn) => switchTab(btn.dataset.tab));
 bindArrowTabNav('.segmented', (btn) => switchSettingsScope(btn.dataset.scope));
 $('poll-toggle-btn').addEventListener('click', () => {
   state.pollPausedByUser = !state.pollPausedByUser;
+  if (!state.pollPausedByUser) state.sseFailCount = 0;
   if (state.snap) updateLivePollControls(state.snap);
 });
 $('refresh-btn').addEventListener('click', () => refresh());
@@ -891,6 +920,9 @@ document.body.addEventListener('click', async (e) => {
     showToast(ok ? '已复制模板到剪贴板' : '复制失败', !ok);
   }
 });
+
+window.__CT_BOOTED__ = true;
+$('boot-fallback')?.classList.add('hidden');
 
 async function bootstrapSidecar() {
   let bootstrappedWs = null;

@@ -87,6 +87,7 @@ import {
 import { handleInboxAndSwarmRoute } from './routes/inbox.mjs';
 import { handleRoadmapRoute } from './routes/roadmap.mjs';
 import { buildMultiWorkspaceOverview, handleWorkspacesRoute } from './routes/workspaces.mjs';
+import { buildClassicAppBundle, computeAssetStamp, computeBundleSignature } from './lib/bundle.mjs';
 import { SseHub } from './lib/sse-hub.mjs';
 import { isLeaseIdle } from './ui-logic.mjs';
 
@@ -96,6 +97,7 @@ const PLUGIN_ROOT = resolve(__dirname, '..', '..');
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_CACHE_ENTRIES = 200;
+const NO_STORE_HEADERS = Object.freeze({ 'Cache-Control': 'no-store, no-cache, must-revalidate' });
 
 const RPC_API_ROUTES = new Set([
   '/api/dispatch/create',
@@ -153,7 +155,7 @@ function readPluginMeta() {
   return {
     name: raw?.name || 'control-tower',
     displayName: raw?.displayName || 'Control Tower',
-    version: raw?.version || '1.8.0',
+    version: raw?.version || '1.8.1',
   };
 }
 
@@ -184,6 +186,7 @@ class ControlTowerServer {
   #workspaceMutexes;
   #lastAuthRejectLogAt;
   #sseHub;
+  #bundleCache;
 
   constructor({
     port = Number.parseInt(process.env.ANTIGRAVITY_SIDECAR_WEB_PORT || '0', 10),
@@ -200,6 +203,7 @@ class ControlTowerServer {
     this.#sentinelRunning = false;
     this.#workspaceMutexes = new Map();
     this.#lastAuthRejectLogAt = 0;
+    this.#bundleCache = null;
     this.#sseHub = new SseHub({
       onFsEvent: ({ workspace }) => {
         const targetWs = workspace || this.#activeWorkspace;
@@ -212,6 +216,7 @@ class ControlTowerServer {
       ['/', { file: join(__dirname, 'index.html'), type: 'text/html; charset=utf-8' }],
       ['/index.html', { file: join(__dirname, 'index.html'), type: 'text/html; charset=utf-8' }],
       ['/styles.css', { file: join(__dirname, 'styles.css'), type: 'text/css; charset=utf-8' }],
+      ['/boot-guard.js', { file: join(__dirname, 'boot-guard.js'), type: 'application/javascript; charset=utf-8' }],
       ['/app.js', { file: join(__dirname, 'app.js'), type: 'application/javascript; charset=utf-8' }],
       ['/ui-logic.mjs', { file: join(__dirname, 'ui-logic.mjs'), type: 'application/javascript; charset=utf-8' }],
       ['/views/overview.mjs', { file: join(__dirname, 'views', 'overview.mjs'), type: 'application/javascript; charset=utf-8' }],
@@ -245,12 +250,25 @@ class ControlTowerServer {
     return timingSafeEqual(a, b);
   }
 
+  #getClassicBundle() {
+    const sig = computeBundleSignature(__dirname);
+    if (this.#bundleCache && this.#bundleCache.sig === sig) {
+      return this.#bundleCache;
+    }
+    this.#bundleCache = buildClassicAppBundle(__dirname);
+    return this.#bundleCache;
+  }
+
   #validOrigin(req) {
     const origin = req.headers.origin;
     if (!origin || typeof origin !== 'string') return true;
     return (
       origin.startsWith('http://127.0.0.1') ||
+      origin.startsWith('https://127.0.0.1') ||
       origin.startsWith('http://localhost') ||
+      origin.startsWith('https://localhost') ||
+      origin.startsWith('http://[::1]') ||
+      origin.startsWith('https://[::1]') ||
       origin.startsWith('vscode-webview://') ||
       origin === 'null' ||
       origin.startsWith('file://')
@@ -1289,18 +1307,53 @@ class ControlTowerServer {
           return this.#sendJson(res, 401, { error: 'unauthorized' });
         }
 
-        if (req.method === 'GET' && url.pathname === '/preload.js') {
-          res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8' });
-          res.end(preloadJs);
+        const isReadMethod = req.method === 'GET' || req.method === 'HEAD';
+
+        if (isReadMethod && url.pathname === '/preload.js') {
+          res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8', ...NO_STORE_HEADERS });
+          res.end(req.method === 'HEAD' ? undefined : preloadJs);
           return;
         }
 
-        if (req.method === 'GET' && this.#staticAssets.has(url.pathname)) {
+        if (isReadMethod && url.pathname === '/app.bundle.js') {
+          try {
+            const bundle = this.#getClassicBundle();
+            res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8', ...NO_STORE_HEADERS });
+            res.end(req.method === 'HEAD' ? undefined : bundle.code);
+          } catch (err) {
+            this.#logFlightSafe(
+              {
+                level: 'error',
+                source: 'sidecar',
+                event: 'static_asset_error',
+                ok: false,
+                message: err?.message || 'Failed building /app.bundle.js',
+              },
+              { allowCreate: false }
+            );
+            this.#sendJson(res, 500, { error: err?.message || 'bundle_error' });
+          }
+          return;
+        }
+
+        if (isReadMethod && this.#staticAssets.has(url.pathname)) {
           const asset = this.#staticAssets.get(url.pathname);
           try {
+            if (url.pathname === '/' || url.pathname === '/index.html') {
+              const cssStamp = computeAssetStamp(join(__dirname, 'styles.css'));
+              const guardStamp = computeAssetStamp(join(__dirname, 'boot-guard.js'));
+              const bundle = this.#getClassicBundle();
+              const html = readFileSync(asset.file, 'utf8')
+                .replace('/styles.css', `/styles.css?v=${cssStamp}`)
+                .replace('/boot-guard.js', `/boot-guard.js?v=${guardStamp}`)
+                .replace('/app.bundle.js', `/app.bundle.js?v=${bundle.stamp}`);
+              res.writeHead(200, { 'Content-Type': asset.type, ...NO_STORE_HEADERS });
+              res.end(req.method === 'HEAD' ? undefined : html);
+              return;
+            }
             const buf = readFileSync(asset.file);
-            res.writeHead(200, { 'Content-Type': asset.type });
-            res.end(buf);
+            res.writeHead(200, { 'Content-Type': asset.type, ...NO_STORE_HEADERS });
+            res.end(req.method === 'HEAD' ? undefined : buf);
           } catch (err) {
             this.#logFlightSafe(
               {

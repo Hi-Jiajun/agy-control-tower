@@ -326,9 +326,15 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
 
     const consoleErrors = [];
     const pageExceptions = [];
+    const requestedUrls = [];
 
     await cdp.send('Page.enable');
+    await cdp.send('Network.enable');
     await cdp.send('Runtime.enable');
+    cdp.on('Network.requestWillBeSent', (p) => {
+      const reqUrl = p?.request?.url;
+      if (reqUrl) requestedUrls.push(reqUrl);
+    });
     await cdp.send('Emulation.setDeviceMetricsOverride', {
       width: 390,
       height: 844,
@@ -393,6 +399,34 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
     assert.equal(versionBadge, `v${pluginMeta.version}`);
 
     const checks = [];
+
+    // 0) Verify classic non-module boot guard, zero <script type="module">, and zero .mjs/views/ network requests
+    const bootMeta = await cdp.evaluate(`({
+      booted: window.__CT_BOOTED__ === true,
+      fallbackHidden: document.getElementById('boot-fallback')?.classList.contains('hidden') === true,
+      moduleScriptCount: document.querySelectorAll('script[type="module"]').length,
+    })`);
+    assert.equal(bootMeta.booted, true, 'window.__CT_BOOTED__ should be true');
+    assert.equal(bootMeta.fallbackHidden, true, '#boot-fallback banner should stay hidden');
+    assert.equal(bootMeta.moduleScriptCount, 0, 'Zero <script type="module"> elements should exist');
+    const esmRequests = requestedUrls.filter((u) => {
+      try {
+        const p = new URL(u).pathname;
+        return p.endsWith('.mjs') || p.startsWith('/views/');
+      } catch {
+        return false;
+      }
+    });
+    assert.deepEqual(esmRequests, [], `Unexpected .mjs or /views/ network requests: ${esmRequests.join(', ')}`);
+    assert.ok(
+      requestedUrls.some((u) => u.includes('/app.bundle.js')),
+      'Expected browser to fetch classic /app.bundle.js'
+    );
+    assert.ok(
+      requestedUrls.some((u) => u.includes('/boot-guard.js')),
+      'Expected browser to fetch classic /boot-guard.js'
+    );
+    checks.push('classic-bundle-boot');
 
     // 0a) Verify SSE real-time stream connects and updates topbar poll indicator
     await waitForCondition(

@@ -5,6 +5,15 @@ All notable changes to `control-tower` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.1] - 2026-11-26
+
+### Fixed
+- **Antigravity 2.35.1 鉴权网关下看板零响应彻底兼容加固（经典单脚本内联打包 + 零缓存 + 启动守卫）**：
+  - 新增零依赖内存经典脚本打包器 `plugin/sidecars/tower/lib/bundle.mjs`：继续保留 `ui-logic.mjs`、`views/*.mjs` 与 `app.js` 磁盘模块化单一真源，在 `plugin/sidecars/tower/main.mjs` 服务端按需编译并缓存经典 IIFE 包 `/app.bundle.js`；`index.html` 改为通过经典 `<script src="/boot-guard.js">` 与 `<script src="/app.bundle.js">` 加载，彻底规避宿主 `gateway.go` 对 `<script type="module">`（CORS 模式与子目录 `.mjs` 依赖图）的拦截。
+  - 新增外部经典启动守卫 `plugin/sidecars/tower/boot-guard.js` 与 `#boot-fallback` 异常横幅（无内联脚本，兼容严格 CSP），在 4 秒未完成初始化或捕捉启动期异常时给出清晰诊断提示；`app.js` 同步为 `connectSseStream` 增加连续 3 次握手失败静默降级为自适应轮询的护栏。
+  - 所有静态资源（`/`、`/index.html`、`/preload.js`、`/styles.css`、`/boot-guard.js`、`/app.bundle.js`）均附加 `Cache-Control: no-store, no-cache, must-revalidate`、`?v=` 内容/时间戳防缓存戳以及 `HEAD` 请求支持，并扩展 `#validOrigin` 本地环回白名单。
+  - 补充 L1（`tests/sidecar.test.mjs`）与 L3（`scripts/ct-ui-smoke.mjs`）回归门禁：校验零 `type="module"` 标签、零 `.mjs` / `/views/` 网络请求与 `vm.Script` 经典脚本解析通过。
+
 ## [1.8.0] - 2026-11-25
 
 ### Added

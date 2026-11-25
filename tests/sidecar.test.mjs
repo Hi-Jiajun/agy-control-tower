@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
+import vm from 'node:vm';
 import { loadWorkspaceInbox, recordControllerFocus, setDeferredReceipt } from '../plugin/lib/inbox.mjs';
 import { MANAGED_REGISTRY_VIRTUAL_REL } from '../plugin/lib/paths.mjs';
 import { ControlTowerServer } from '../plugin/sidecars/tower/main.mjs';
@@ -522,6 +523,35 @@ if (args.includes('new-conversation')) {
     const relaySweep = await req('POST', '/api/sentinel/sweep', { workspace: ws });
     assert.equal(relaySweep.status, 200);
     assert.equal(loadWorkspaceInbox(dataDir, ws).deferredReceipt, null, 'Sidecar sweep must relay and clear deferredReceipt');
+
+    // 19) v1.8.1: Classic non-module bundle, no-store cache headers, cache-busting HTML stamps, and HEAD support
+    const homeRes = await fetch(`${base}/`);
+    assert.equal(homeRes.status, 200);
+    assert.ok((homeRes.headers.get('cache-control') || '').includes('no-store'));
+    const homeHtml = await homeRes.text();
+    assert.ok(homeHtml.includes('/app.bundle.js?v='));
+    assert.ok(homeHtml.includes('/boot-guard.js?v='));
+    assert.ok(homeHtml.includes('/styles.css?v='));
+    assert.equal(homeHtml.includes('type="module"'), false);
+
+    const guardRes = await fetch(`${base}/boot-guard.js`);
+    assert.equal(guardRes.status, 200);
+    assert.ok((guardRes.headers.get('cache-control') || '').includes('no-store'));
+
+    const bundleRes = await fetch(`${base}/app.bundle.js`);
+    assert.equal(bundleRes.status, 200);
+    assert.ok((bundleRes.headers.get('cache-control') || '').includes('no-store'));
+    const bundleText = await bundleRes.text();
+    new vm.Script(bundleText);
+    assert.ok(bundleText.includes('__CT_BOOTED__'));
+    assert.equal(/^[ \t]*(?:import|export)(?:\s+|\s*[{*])/m.test(bundleText), false);
+
+    const headHome = await fetch(`${base}/`, { method: 'HEAD' });
+    assert.equal(headHome.status, 200);
+    assert.equal(await headHome.text(), '');
+    const headBundle = await fetch(`${base}/app.bundle.js`, { method: 'HEAD' });
+    assert.equal(headBundle.status, 200);
+    assert.equal(await headBundle.text(), '');
   } finally {
     if (server) await server.close();
     process.env = prevEnv;
