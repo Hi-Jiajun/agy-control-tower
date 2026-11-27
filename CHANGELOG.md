@@ -5,6 +5,14 @@ All notable changes to `control-tower` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.1] - 2026-11-27
+
+### Changed
+- **基于 45 小时实测遥测回调 `L0` 常驻主总控默认模型为纯单模型 `Gemini 4 Neon (XHigh)`，保留 `Swarm` 与 `L2` / `L4` 为 `Orchestrator (Neon Extra High)`**：
+  - `plugin/lib/settings.mjs` 将 `DEFAULT_GLOBAL_SETTINGS.l0ControllerModel` 调整为 `'Gemini 4 Neon (XHigh)'`（`gemini-4-neon-xhigh`），消除短对话多轮互动中的双层模型切层冷输入损耗与 `[plan review]` 往返；`L1` 轻扫与含写盘 `self` 的 `run_workflow` 保持单模型。
+  - 保留原生 `Swarm` 编码/验证 worker 及 `L2` 常规开发、`L4` 集成发布为 `Orchestrator (Neon Extra High)`（`gemini-pro-orchestrator-neon`），`L3` 跨层疑难攻坚保持 `Orchestrator (Carbon)`（`gemini-pro-orchestrator`）。
+  - 同步更新 `plugin/skills/control-tower/SKILL.md`、`references/model-routing.md`、`references/templates.md`、看板总控默认回退项（`index.html`、`views/overview.mjs`、`views/settings.mjs`）、`tests/settings.test.mjs` 与 `scripts/ct-skill-eval.mjs` 契约校验。
+
 ## [1.9.0] - 2026-11-27
 
 ### Added

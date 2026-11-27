@@ -161,7 +161,7 @@ export function renderOverview(ctx, snap) {
   if ($('ctrl-form').classList.contains('hidden')) {
     $('cf-controllerId').value = ctrl.currentControllerId || window.sidecar?.conversationId || '';
     $('cf-status').value = ctrl.currentControllerStatus || 'ONLINE';
-    $('cf-defaultModel').value = ctrl.defaultModel || eff.l0ControllerModel || 'Orchestrator (Neon Extra High)';
+    $('cf-defaultModel').value = ctrl.defaultModel || eff.l0ControllerModel || 'Gemini 4 Neon (XHigh)';
   }
 
   // Zero-token Sentinel & Priority Inbox
@@ -215,7 +215,7 @@ export function renderOverview(ctx, snap) {
 export async function spawnHandoverController(ctx, oldCtrlId) {
   const { state, api, showToast, copyText } = ctx;
   const eff = state.snap?.settings?.effective || {};
-  const model = eff.l0ControllerModel || 'Orchestrator (Neon Extra High)';
+  const model = eff.l0ControllerModel || 'Gemini 4 Neon (XHigh)';
   const handoverPrompt = buildPrefilledHandoverText(state.snap);
   try {
     const res = await api('/_sidecar/new-conversation', {
@@ -313,7 +313,7 @@ export function bindOverviewEvents(ctx) {
       const eff = state.snap.settings?.effective || {};
       $('cf-controllerId').value = ctrl.currentControllerId || window.sidecar?.conversationId || '';
       $('cf-status').value = ctrl.currentControllerStatus || 'ONLINE';
-      $('cf-defaultModel').value = ctrl.defaultModel || eff.l0ControllerModel || 'Orchestrator (Neon Extra High)';
+      $('cf-defaultModel').value = ctrl.defaultModel || eff.l0ControllerModel || 'Gemini 4 Neon (XHigh)';
     }
     $('ctrl-form').classList.toggle('hidden');
   });

@@ -21,7 +21,7 @@
 | 模型代号 | 最高思考档位 | 舒适区与官方定位 | API 参考定价（输入 / 输出 per 1M） |
 | --- | --- | --- | --- |
 | **`Gemini 4 Carbon`** | **`High`**（无 `XHigh`） | 顶级旗舰深推：跨层架构设计、疑难死坑根因攻坚、作为 `Orchestrator (Carbon)` 规划脑 | `$4.00 / $20.00` |
-| **`Gemini 4 Neon`** | **`XHigh`**（客户端显示 `Extra High`） | 旗舰工程均衡：复杂多文件重构、长会话高压缩稳健性、作为 `Orchestrator (Neon Extra High)` 主力规划脑 | `$3.00 / $15.00` |
+| **`Gemini 4 Neon`** | **`XHigh`**（客户端显示 `Extra High`） | 旗舰工程均衡：L0 常驻总控主力单模型、复杂多文件重构、长会话高压缩稳健性、作为 `Orchestrator (Neon Extra High)` 主力规划脑 | `$3.00 / $15.00` |
 | **`Gemini 4 Hydrogen`** | **`XHigh`**（客户端显示 `Extra High`） | 极速高精度执行主力：新版 `Orchestrator` 执行引擎、L1 轻量只读扫描/归档、Swarm 只读与轻验 worker | `$1.50 / $7.50` |
 
 ---
@@ -39,14 +39,14 @@ Antigravity 客户端在「设置 -> 模型与用量 -> **Orchestrator 设置**�
   - 单模型满思考 ID：`gemini-4-carbon-high`、`gemini-4-neon-xhigh`、`gemini-4-hydrogen-xhigh`（自动兼容宿主 `gemini-4-hydrogen-tiered-high/xhigh` 子代理标识）。
 
 ### 3.2 舒适区边界（何时用 `Orchestrator`，何时留单模型）
-- **主力使用新版 `Orchestrator` 的核心舒适区（默认覆盖 `L0 / L2 / L3 / L4` 及编码/验证 Swarm worker）**：
-  1. **`L0` 常驻主总控**：纯问答/评审/方案讨论留在规划层直接回复（零切层）；一旦需要改台账、派单或跑速查，以 1~2 句精简计划瞬切高速执行层加速落地。
-  2. **`L2` 常规功能开发、`L3` 跨层疑难攻坚、`L4` 多路合流与发布**：规划层一次写透目标文件路径、符号与验收命令，由 `Hydrogen (Extra High)` 一气呵成完成多步编辑与测试验证。
-  3. **原生 `swarm` 编码与复合验证 worker**：经实测原生 `swarm` 已完整支持 `gemini-pro-orchestrator-neon` 与 `gemini-pro-orchestrator`，总控派单时显式指定对应模型即可兼顾深度与并发速度。
-- **坚持单模型更舒适的 3 类明确边界**：
-  1. **`L1` 纯只读扫描 / 日志检索 / 批量归档**：直接用单模型 **`Gemini 4 Hydrogen (XHigh)`**，一步直出免双层握手开销。
-  2. **含写盘 `self` 的 `run_workflow` 动态流水线**：双模型 `plan_execute` 可能触发 `[plan review due]` 阻塞无交互写盘 worker，必须选用单模型 **`Gemini 4 Neon (XHigh)`** 或 **`Gemini 4 Hydrogen (XHigh)`**。
-  3. **极少数不宜中途切段的连续超深推死坑**：可按需切单模型 **`Gemini 4 Carbon (High)`**（或 `Neon (XHigh)`）一镜到底。
+- **主力使用新版 `Orchestrator` 的核心舒适区（默认覆盖 `L2 / L3 / L4` 及编码/验证 Swarm worker）**：
+  1. **`L2` 常规功能开发、`L3` 跨层疑难攻坚、`L4` 多路合流与发布**：规划层一次写透目标文件路径、符号与验收命令，由 `Hydrogen (Extra High)` 一气呵成完成多步编辑与测试验证；单轮含 15+ 步自主编码/验证的独立长链开发会话同样适用。
+  2. **原生 `swarm` 编码与复合验证 worker**：经实测原生 `swarm` 在 `gemini-pro-orchestrator-neon` 下稳定零切层直跑（缓存命中 94%+、单工具冷输入最低且编辑失配率 < 1%），总控派单时显式指定对应模型即可兼顾深度与并发速度；疑难攻坚/架构审查 worker 选用 `gemini-pro-orchestrator`。
+- **坚持单模型更舒适的 4 类明确边界**：
+  1. **`L0` 常驻主交流总控**：短对话多轮互动（问答、拍板、轻量查态、改台账、派单）使用双层 `Orchestrator` 易在规划与执行切层间额外消耗 40%~63% 冷输入并引入 `[plan review]` 往返；默认回用纯单模型 **`Gemini 4 Neon (XHigh)`**（`gemini-4-neon-xhigh`），稳健、零切层损耗且缓存命中最高。
+  2. **`L1` 纯只读扫描 / 日志检索 / 批量归档**：直接用单模型 **`Gemini 4 Hydrogen (XHigh)`**，一步直出免双层握手开销。
+  3. **含写盘 `self` 的 `run_workflow` 动态流水线**：双模型 `plan_execute` 可能触发 `[plan review due]` 阻塞无交互写盘 worker，必须选用单模型 **`Gemini 4 Neon (XHigh)`** 或 **`Gemini 4 Hydrogen (XHigh)`**。
+  4. **极少数不宜中途切段的连续超深推死坑**：可按需切单模型 **`Gemini 4 Carbon (High)`**（或 `Neon (XHigh)`）一镜到底。
 
 ---
 
@@ -61,7 +61,7 @@ Antigravity 客户端在「设置 -> 模型与用量 -> **Orchestrator 设置**�
 
 | 层级 | 典型任务场景 | 首选模型（默认最高思考） | 显式 CLI / Swarm ID | 备选 / 例外条件 | 工具与斜杠策略 |
 | --- | --- | --- | --- | --- | --- |
-| **L0 常驻总控** | 需求受理、新建/续接裁决、资源锁调度、台账维护、裸 ID 速查与换届 | **`Orchestrator (Neon Extra High)`** | `gemini-pro-orchestrator-neon` | 需极低冷输入单层长对话时可选单模型 **`Neon (XHigh)`** | 隐藏面优先派遣（原生 `swarm` / `invoke_subagent` / `run_workflow`） |
+| **L0 常驻总控** | 需求受理、新建/续接裁决、资源锁调度、台账维护、裸 ID 速查与换届 | 单模型 **`Gemini 4 Neon (XHigh)`** | `gemini-4-neon-xhigh` | 顶层单窗口长链大开发（单轮 15+ 步）可选 **`Orchestrator (Neon Extra High)`** | 隐藏面优先派遣（原生 `swarm` / `invoke_subagent` / `run_workflow`） |
 | **L1 轻量扫描与归档** | 多源资料检索扇出、大日志筛查、静态/合规审计、收尾归档 | 单模型 **`Gemini 4 Hydrogen (XHigh)`** | `gemini-4-hydrogen-xhigh` | 纯机械筛选限流时可降 `Hydrogen (High)` | 只读子代理（`research`）或只读 `run_workflow` |
 | **L2 常规功能开发** | 常规多文件功能实现、子系统 Bug 排查、单测补齐与局部重构 | **`Orchestrator (Neon Extra High)`** | `gemini-pro-orchestrator-neon` | 含写盘 `run_workflow` 必须用单模型 **`Neon (XHigh)`** / **`Hydrogen (XHigh)`** | 优先原生 `swarm`；默认不开 `/boost` |
 | **L3 跨层疑难硬骨头** | 跨驱动/跨进程崩溃、深层并发竞态、复杂内存/图形错误、长期架构死坑 | **`Orchestrator (Carbon)`** | `gemini-pro-orchestrator` | 极难一镜到底深推用单模型 **`Carbon (High)`**；账号无 `Carbon` 临时替补 **`Orchestrator (Neon Extra High)`** / **`Neon (XHigh)`** | 优先 **`/plan`**；孤立疑难死坑叠加 **`/boost`** |

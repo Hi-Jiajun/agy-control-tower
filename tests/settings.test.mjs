@@ -157,7 +157,7 @@ test('Host permission policy maps to autonomy tiers and dispatch model validator
       true
     );
 
-    assert.equal(DEFAULT_GLOBAL_SETTINGS.l0ControllerModel, 'Orchestrator (Neon Extra High)');
+    assert.equal(DEFAULT_GLOBAL_SETTINGS.l0ControllerModel, 'Gemini 4 Neon (XHigh)');
     assert.equal(DEFAULT_GLOBAL_SETTINGS.l1LightModel, 'Gemini 4 Hydrogen (XHigh)');
     assert.equal(DEFAULT_GLOBAL_SETTINGS.l2StandardModel, 'Orchestrator (Neon Extra High)');
     assert.equal(DEFAULT_GLOBAL_SETTINGS.l3DeepModel, 'Orchestrator (Carbon)');

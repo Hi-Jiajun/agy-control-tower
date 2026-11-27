@@ -30,7 +30,7 @@ export const DEFAULT_PLUGIN_SETTINGS = Object.freeze({
 });
 
 export const DEFAULT_GLOBAL_SETTINGS = Object.freeze({
-  l0ControllerModel: 'Orchestrator (Neon Extra High)',
+  l0ControllerModel: 'Gemini 4 Neon (XHigh)',
   l1LightModel: 'Gemini 4 Hydrogen (XHigh)',
   l2StandardModel: 'Orchestrator (Neon Extra High)',
   l3DeepModel: 'Orchestrator (Carbon)',

@@ -88,7 +88,7 @@ export function runSkillEval() {
         assert.ok(templatesMd.includes('target content not found'));
         assert.ok(templatesMd.includes('read_file') && templatesMd.includes('edit_file'));
         assert.ok(skillMd.includes('edit_file'));
-        assert.equal(DEFAULT_GLOBAL_SETTINGS.l0ControllerModel, 'Orchestrator (Neon Extra High)');
+        assert.equal(DEFAULT_GLOBAL_SETTINGS.l0ControllerModel, 'Gemini 4 Neon (XHigh)');
       },
     },
     {
@@ -437,7 +437,7 @@ export function runSkillEval() {
       id: 'EVAL-17',
       title: '全最高思考 Orchestrator 舒适区路由、Swarm 显式配模与智能双触发 /learn 审批边界',
       run() {
-        assert.equal(DEFAULT_GLOBAL_SETTINGS.l0ControllerModel, 'Orchestrator (Neon Extra High)');
+        assert.equal(DEFAULT_GLOBAL_SETTINGS.l0ControllerModel, 'Gemini 4 Neon (XHigh)');
         assert.equal(DEFAULT_GLOBAL_SETTINGS.l1LightModel, 'Gemini 4 Hydrogen (XHigh)');
         assert.equal(DEFAULT_GLOBAL_SETTINGS.l2StandardModel, 'Orchestrator (Neon Extra High)');
         assert.equal(DEFAULT_GLOBAL_SETTINGS.l3DeepModel, 'Orchestrator (Carbon)');

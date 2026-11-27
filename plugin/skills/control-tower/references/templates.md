@@ -34,7 +34,7 @@
 ## 二、常驻主交流总控会话（Control Tower）
 
 - **当前现役总控会话**：`[待首开会话入驻回填]`（状态：`ONLINE`）
-- **常驻模型配置**：`Orchestrator (Neon Extra High)`
+- **常驻模型配置**：`Gemini 4 Neon (XHigh)`
 
 ### 总控换届历史
 
@@ -71,7 +71,7 @@
 
 ## 2. 任意新工作区首次开启总控的一键引导提示词
 
-新建会话时工作区选中目标项目，模型推荐按当前总控设置选用新版满思考 **`Orchestrator (Neon Extra High)`**（或备选单模型 **`Gemini 4 Neon (XHigh)`**），粘贴如下提示词：
+新建会话时工作区选中目标项目，模型推荐按当前总控设置选用单模型满思考 **`Gemini 4 Neon (XHigh)`**（若单窗口连续长链开发 15+ 步也可选 **`Orchestrator (Neon Extra High)`**），粘贴如下提示词：
 
 ```text
 从现在起，你作为当前工作区的「常驻主交流总控（Chief-of-Staff）」，与我保持长期单一主线沟通，并启用 control-tower 技能规范。
