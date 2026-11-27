@@ -81,13 +81,15 @@ export function runReplayFixture(fixture) {
       const hintPath = spec.action?.hintPath || '';
       const resolved = resolvePluginDataDir({ env, hintPath });
       if (spec.expect?.equals) {
-        assert.equal(resolved, spec.expect.equals);
+        assert.equal(resolved, resolve(spec.expect.equals));
       }
       if (spec.expect?.notEquals) {
-        assert.notEqual(resolved, spec.expect.notEquals);
+        assert.notEqual(resolved, resolve(spec.expect.notEquals));
       }
       if (spec.expect?.endsWith) {
-        assert.ok(resolved.endsWith(spec.expect.endsWith), `Expected ${resolved} to end with ${spec.expect.endsWith}`);
+        const normRes = resolved.replace(/\\/g, '/');
+        const normEnd = spec.expect.endsWith.replace(/\\/g, '/');
+        assert.ok(normRes.endsWith(normEnd), `Expected ${resolved} to end with ${spec.expect.endsWith}`);
       }
       return { id: spec.id, ok: true };
     }
