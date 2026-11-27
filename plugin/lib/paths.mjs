@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import {
+  accessSync,
   closeSync,
+  constants,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -14,7 +16,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const REGISTRY_CANDIDATES = [
@@ -27,8 +29,23 @@ export const MANAGED_REGISTRY_VIRTUAL_REL = '@plugin_data/SESSION-REGISTRY.md';
 
 const ALLOWED_REGISTRY_SET = new Set(REGISTRY_CANDIDATES);
 
+function normalizeDriveLetter(p) {
+  return process.platform === 'win32' && typeof p === 'string' && /^[a-z]:/i.test(p)
+    ? p[0].toUpperCase() + p.slice(1)
+    : p;
+}
+
 export function getWorkspaceSettingsDir(dataDir, wsReal) {
-  return join(resolve(dataDir), 'workspaces', sha256(wsReal).slice(0, 16));
+  let canon = String(wsReal || '');
+  if (canon && existsSync(canon)) {
+    try {
+      canon = realpathSync(canon);
+    } catch {
+      // keep provided path
+    }
+  }
+  canon = normalizeDriveLetter(canon);
+  return join(resolve(dataDir), 'workspaces', sha256(canon).slice(0, 16));
 }
 
 export function getManagedRegistryPath(dataDir, wsReal) {
@@ -282,10 +299,58 @@ export function resolvePluginDataDir({ env = process.env, hintPath = '' } = {}) 
 }
 
 export class PathError extends Error {
-  constructor(status, message) {
+  constructor(status, message, extra = null) {
     super(message);
     this.status = status;
+    if (extra && typeof extra === 'object') {
+      this.extra = extra;
+    }
   }
+}
+
+export function resolveCommandExecutable(cmd, { env = process.env, extraDirs = [] } = {}) {
+  if (!cmd || typeof cmd !== 'string') return '';
+  const pathRaw = env.PATH || env.Path || env.path || '';
+  const dirs = [...pathRaw.split(delimiter).filter(Boolean), ...extraDirs.filter(Boolean)];
+  const exts =
+    process.platform === 'win32'
+      ? (env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
+      : [''];
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const cand = join(
+        dir,
+        process.platform === 'win32' && !cmd.toLowerCase().endsWith(ext.toLowerCase())
+          ? `${cmd}${ext}`
+          : cmd
+      );
+      try {
+        accessSync(cand, process.platform === 'win32' ? constants.F_OK : constants.X_OK);
+        if (statSync(cand).isFile()) return cand;
+      } catch {
+        // continue
+      }
+    }
+  }
+  return '';
+}
+
+export function resolveAgentApiSpec({ env = process.env, hintPath = '' } = {}) {
+  const exe = env.ANTIGRAVITY_AGENTAPI_EXE && String(env.ANTIGRAVITY_AGENTAPI_EXE).trim();
+  if (exe) {
+    const isNodeScript = /\.m?js$/i.test(exe);
+    return {
+      file: isNodeScript ? process.execPath : exe,
+      prefixArgs: isNodeScript ? [exe, 'agentapi'] : ['agentapi'],
+    };
+  }
+  const home = env.HOME || env.USERPROFILE || homedir();
+  const extraDirs = [
+    ...resolveAppDataDirs({ env, hintPath }).map((d) => join(d, 'bin')),
+    home ? join(resolve(home), '.local', 'bin') : '',
+  ];
+  const found = resolveCommandExecutable('agentapi', { env, extraDirs });
+  return { file: found || 'agentapi', prefixArgs: [] };
 }
 
 export function normalizeWorkspaceInput(raw, { throwOnInvalid = false } = {}) {
@@ -313,7 +378,7 @@ export function normalizeWorkspaceInput(raw, { throwOnInvalid = false } = {}) {
       if (throwOnInvalid) throw new PathError(400, 'Workspace path is not a directory');
       return null;
     }
-    return real;
+    return normalizeDriveLetter(real);
   } catch {
     if (throwOnInvalid) throw new PathError(400, 'Failed to resolve workspace directory');
     return null;
@@ -321,9 +386,7 @@ export function normalizeWorkspaceInput(raw, { throwOnInvalid = false } = {}) {
 }
 
 export function isInsideDir(rootReal, targetReal) {
-  const normDrive = (p) =>
-    process.platform === 'win32' && /^[a-z]:/i.test(p) ? p[0].toUpperCase() + p.slice(1) : p;
-  const rel = relative(normDrive(rootReal), normDrive(targetReal));
+  const rel = relative(normalizeDriveLetter(rootReal), normalizeDriveLetter(targetReal));
   return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel));
 }
 
@@ -510,6 +573,27 @@ export function findExistingRegistry(wsReal, { dataDir = '', workspaceSettings =
   return null;
 }
 
+export function getProtectedRegistryPaths(wsReal, { dataDir = '' } = {}) {
+  if (!wsReal) return [];
+  const out = [];
+  for (const rel of REGISTRY_CANDIDATES) {
+    out.push(resolve(wsReal, rel));
+  }
+  if (dataDir) {
+    out.push(getManagedRegistryPath(dataDir, wsReal));
+    const wsCfg = readWorkspaceSettingsSafe(dataDir, wsReal);
+    if (wsCfg?.customRegistryRelPath) {
+      try {
+        const customRel = validateCustomRegistryRelPath(wsCfg.customRegistryRelPath);
+        out.push(resolve(wsReal, customRel));
+      } catch {
+        // ignore invalid custom rel
+      }
+    }
+  }
+  return out;
+}
+
 export function findRegistryInWorkspaces(workspacePaths, { dataDir = '' } = {}) {
   if (!Array.isArray(workspacePaths)) return null;
   for (const raw of workspacePaths) {
@@ -559,10 +643,18 @@ export function withFileLockSync(lockPath, fn, { timeoutMs = 1500, staleMs = 100
       if (err?.code !== 'EEXIST') break;
       const holder = readJsonSafe(lockPath, null);
       const now = Date.now();
+      let emptyOrCorruptStale = false;
+      if (!holder) {
+        try {
+          emptyOrCorruptStale = now - statSync(lockPath).mtimeMs > 250;
+        } catch {
+          emptyOrCorruptStale = false;
+        }
+      }
       const isStale =
-        !holder ||
-        now - Number(holder.ts || 0) > staleMs ||
-        (holder.pid && !isPidAlive(Number(holder.pid)));
+        emptyOrCorruptStale ||
+        (holder && now - Number(holder.ts || 0) > staleMs) ||
+        (holder?.pid && !isPidAlive(Number(holder.pid)));
       if (isStale) {
         try {
           unlinkSync(lockPath);

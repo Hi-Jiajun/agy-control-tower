@@ -125,8 +125,13 @@ export function validatePluginBundleOffline(pluginDir = join(REPO_ROOT, 'plugin'
                 continue;
               }
               const relMatch = c.command.match(/\.\/([^\s"']+)/);
-              if (relMatch && !existsSync(join(absPlugin, relMatch[1]))) {
-                addFinding('missing_hook_script', `Hook script not found: ${relMatch[1]}`);
+              if (relMatch) {
+                const hookScriptAbs = resolve(absPlugin, relMatch[1]);
+                if (!hookScriptAbs.startsWith(`${absPlugin}${process.platform === 'win32' ? '\\' : '/'}`)) {
+                  addFinding('escaping_hook_script', `Hook script escapes plugin root: ${relMatch[1]}`);
+                } else if (!existsSync(hookScriptAbs)) {
+                  addFinding('missing_hook_script', `Hook script not found: ${relMatch[1]}`);
+                }
               }
             }
           }
@@ -152,8 +157,14 @@ export function validatePluginBundleOffline(pluginDir = join(REPO_ROOT, 'plugin'
       const sc = JSON.parse(readFileSync(sidecarJsonPath, 'utf8'));
       if (sc.command !== 'node' || !Array.isArray(sc.args) || !sc.args[0]) {
         addFinding('invalid_sidecar_cmd', 'sidecar.json must launch node with entry script');
-      } else if (!existsSync(join(sidecarDir, sc.args[0]))) {
-        addFinding('missing_sidecar_entry', `Sidecar entry script missing: ${sc.args[0]}`);
+      } else {
+        const entryAbs = resolve(sidecarDir, sc.args[0]);
+        const sepChar = process.platform === 'win32' ? '\\' : '/';
+        if (!entryAbs.startsWith(`${sidecarDir}${sepChar}`)) {
+          addFinding('escaping_sidecar_entry', `Sidecar entry escapes sidecar dir: ${sc.args[0]}`);
+        } else if (!existsSync(entryAbs)) {
+          addFinding('missing_sidecar_entry', `Sidecar entry script missing: ${sc.args[0]}`);
+        }
       }
       if (sc.has_web_ui !== true || !Array.isArray(sc.ui_config?.views) || sc.ui_config.views.length === 0) {
         addFinding('invalid_sidecar_ui', 'sidecar.json must declare Aux Pane UI view');
@@ -181,9 +192,11 @@ export function validatePluginBundleOffline(pluginDir = join(REPO_ROOT, 'plugin'
         addFinding('invalid_skill_desc', 'SKILL.md frontmatter description must be non-empty');
       }
     }
-    for (const m of md.matchAll(/\]\((\.\/[^)#\s]+)\)/g)) {
+    for (const m of md.matchAll(/\]\(((?:\.\/|(?!https?:|mailto:|file:|conversation:|#)[^)#\s]+))\)/g)) {
       const relTarget = m[1];
-      if (!existsSync(join(skillDir, relTarget))) {
+      const linkAbs = resolve(skillDir, relTarget);
+      const sepChar = process.platform === 'win32' ? '\\' : '/';
+      if (!linkAbs.startsWith(`${skillDir}${sepChar}`) || !existsSync(linkAbs)) {
         addFinding('broken_skill_link', `Broken relative reference in SKILL.md: ${relTarget}`);
       }
     }

@@ -299,7 +299,7 @@ export function bindSettingsEvents(ctx) {
     e.preventDefault();
     try {
       const customRaw = $('gs-customAllowedModels').value
-        .split(',')
+        .split(/[,;，；、\n]/)
         .map((x) => x.trim())
         .filter(Boolean);
       const res = await api('/api/settings/global', {

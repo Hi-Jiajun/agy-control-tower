@@ -76,9 +76,17 @@ test('resolveRegistryTarget blocks traversal and escaping symlinks', () => {
 
     assert.throws(() => resolveRegistryTarget(ws, '../outside/secret.md', { allowMissing: true }), PathError);
 
-    symlinkSync(secretFile, join(ws, 'SESSION-REGISTRY.md'));
-    assert.throws(() => resolveRegistryTarget(ws, 'SESSION-REGISTRY.md'), PathError);
-    assert.throws(() => findExistingRegistry(ws), PathError);
+    let fileSymlinkOk = true;
+    try {
+      symlinkSync(secretFile, join(ws, 'SESSION-REGISTRY.md'));
+    } catch (err) {
+      if (process.platform === 'win32' && err?.code === 'EPERM') fileSymlinkOk = false;
+      else throw err;
+    }
+    if (fileSymlinkOk) {
+      assert.throws(() => resolveRegistryTarget(ws, 'SESSION-REGISTRY.md'), PathError);
+      assert.throws(() => findExistingRegistry(ws), PathError);
+    }
   } finally {
     sb.cleanup();
   }

@@ -1,9 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 export function makeSandbox(prefix = 'ct-test-') {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
+  const rawDir = mkdtempSync(join(tmpdir(), prefix));
+  const dir = realpathSync(rawDir);
   return {
     dir,
     cleanup() {

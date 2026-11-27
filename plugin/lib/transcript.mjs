@@ -450,7 +450,7 @@ export function inspectTranscript(tp, { cacheEntry = null } = {}) {
       cacheEntry.acc;
 
     let goal = canResumeHead && typeof cacheEntry.info?.goal === 'string' ? cacheEntry.info.goal : '';
-    if (!goal) {
+    if (!canResumeHead || (!goal && !cacheEntry.headScanned)) {
       const headLen = Math.min(HEAD_BYTES, fileSize);
       const headBuf =
         headLen <= probeLen
@@ -585,6 +585,7 @@ export function inspectTranscript(tp, { cacheEntry = null } = {}) {
       size: fileSize,
       mtimeMs,
       headHash,
+      headScanned: true,
       offset: nextOffset,
       acc,
       info,
@@ -675,12 +676,50 @@ export function hasOutboundAgentApiReport(tp, recipientId) {
     const tcs = Array.isArray(step.tool_calls) ? step.tool_calls : [];
     for (const tc of tcs) {
       const tcName = String(tc?.name || tc?.function?.name || '').trim();
+      const tcNameLower = tcName.toLowerCase();
+      const isCmdTool =
+        tcNameLower === 'run_command' ||
+        tcNameLower === 'bash' ||
+        tcNameLower === 'execute_command' ||
+        tcNameLower === 'shell';
+      if (tcName !== 'send_message' && !isCmdTool) continue;
       const tcBlob = JSON.stringify(tc?.args ?? tc?.function?.arguments ?? '').toLowerCase();
       const hasRecipient =
         tcBlob.includes(targetFull) || (targetPrefix.length >= 8 && tcBlob.includes(targetPrefix));
       if (!hasRecipient) continue;
-      if (tcName === 'send_message') return true;
-      if (tcBlob.includes('send-message')) return true;
+      if (tcName !== 'send_message' && !tcBlob.includes('send-message')) continue;
+
+      const tcId = String(tc?.id || tc?.tool_call_id || '').trim();
+      let callFailed = false;
+      for (let j = i + 1; j < steps.length; j += 1) {
+        const nextStep = steps[j];
+        const nextType = String(nextStep?.type || '').toUpperCase();
+        if (nextType === 'USER_INPUT') break;
+        const matchesId =
+          tcId &&
+          (nextStep?.tool_call_id === tcId ||
+            (Array.isArray(nextStep?.tool_results) &&
+              nextStep.tool_results.some((tr) => tr?.tool_call_id === tcId && (tr?.status === 'ERROR' || tr?.error))));
+        const isImmediateErr =
+          !tcId &&
+          j === i + 1 &&
+          (String(nextStep?.status || '').toUpperCase() === 'ERROR' || Boolean(nextStep?.error));
+        if (
+          matchesId &&
+          (String(nextStep?.status || '').toUpperCase() === 'ERROR' ||
+            Boolean(nextStep?.error) ||
+            (typeof nextStep?.content === 'string' &&
+              (nextStep.content.includes('Command failed:') || nextStep.content.includes('ENOENT'))))
+        ) {
+          callFailed = true;
+          break;
+        }
+        if (isImmediateErr) {
+          callFailed = true;
+          break;
+        }
+      }
+      if (!callFailed) return true;
     }
   }
   return false;

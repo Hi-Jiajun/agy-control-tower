@@ -48,6 +48,11 @@ function resolveModuleSpecifier(relFile, specifier) {
   if (!BUNDLE_ENTRY_SET.has(depKey)) {
     throw new Error(`Unknown frontend module import "${specifier}" (resolved "${depKey}") in ${relFile}`);
   }
+  const depIdx = BUNDLE_ENTRY_FILES.indexOf(depKey);
+  const selfIdx = BUNDLE_ENTRY_FILES.indexOf(relFile);
+  if (depIdx < 0 || (selfIdx >= 0 && depIdx >= selfIdx)) {
+    throw new Error(`Invalid module load order: ${relFile} cannot import later/self module ${depKey}`);
+  }
   return depKey;
 }
 

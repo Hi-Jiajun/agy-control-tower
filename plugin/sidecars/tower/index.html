@@ -139,14 +139,14 @@
         </div>
 
         <div class="mode-cards" role="radiogroup" aria-label="台账落点模式">
-          <button type="button" class="mode-card active" data-relpath=".agents/SESSION-REGISTRY.md">
+          <button type="button" role="radio" aria-checked="true" class="mode-card active" data-relpath=".agents/SESSION-REGISTRY.md">
             <div class="mode-card-head">
               <strong>工作区标准模式</strong>
               <span class="badge badge-ok">推荐</span>
             </div>
             <span class="item-meta">存于 <code>.agents/SESSION-REGISTRY.md</code>，随项目归档</span>
           </button>
-          <button type="button" class="mode-card" data-relpath="@plugin_data/SESSION-REGISTRY.md">
+          <button type="button" role="radio" aria-checked="false" class="mode-card" data-relpath="@plugin_data/SESSION-REGISTRY.md">
             <div class="mode-card-head">
               <strong>零侵入托管模式</strong>
               <span class="badge badge-muted">纯净仓</span>

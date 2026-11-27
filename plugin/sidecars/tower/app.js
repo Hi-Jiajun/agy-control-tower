@@ -51,6 +51,7 @@ const state = {
   sseWorkspace: '',
   sseFailCount: 0,
   sseRefreshTimer: null,
+  pendingSilentRefresh: false,
   rawDirty: false,
   rawBaseHash: '',
   rmL1Dirty: false,
@@ -63,6 +64,7 @@ const state = {
     workspace: false,
   },
   refreshSeq: 0,
+  activePollSeq: 0,
   diagSeq: 0,
   probeSeq: 0,
   lastProbe: null,
@@ -172,7 +174,10 @@ async function confirmInline(btn, confirmLabel, asyncFn, timeoutMs = 3000) {
     btn.classList.add('btn-confirm-armed');
     const prevTimer = confirmTimers.get(btn);
     if (prevTimer) clearTimeout(prevTimer);
-    const t = setTimeout(() => disarmInlineConfirm(btn), timeoutMs);
+    const t = setTimeout(() => {
+      disarmInlineConfirm(btn);
+      flushPendingSilentRefresh();
+    }, timeoutMs);
     confirmTimers.set(btn, t);
     return;
   }
@@ -257,7 +262,7 @@ function setModelField(id, rawVal, { inheritLabel = '' } = {}) {
   if (cust) {
     cust.value = resolved.customValue;
     cust.classList.toggle('hidden', !resolved.showCustom);
-    cust.required = resolved.showCustom && mode !== 'inherit';
+    cust.required = resolved.showCustom;
   }
 }
 
@@ -302,7 +307,7 @@ async function api(path, { method = 'GET', body } = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    if (res.status === 409) {
+    if (res.status === 409 && data?.error === 'hash_conflict') {
       $('conflict-banner')?.classList.remove('hidden');
     }
     const err = new Error(data.message || data.error || `HTTP ${res.status}`);
@@ -418,8 +423,12 @@ function resetTransientForms() {
     'queue-form',
     'dispatch-form',
     'dispatch-policy-hint',
+    'rm-l1-wrap',
   ].forEach((id) => {
-    $(id)?.classList.add('hidden');
+    const el = $(id);
+    if (!el) return;
+    if (typeof el.reset === 'function') el.reset();
+    el.classList.add('hidden');
   });
 }
 
@@ -524,34 +533,23 @@ function switchSettingsScope(scope) {
   }
 }
 
-function isUiBusyEditing() {
-  const activeTag = document.activeElement?.tagName;
-  if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT') return true;
+function shouldDeferSilentRefresh() {
   if (document.querySelector('.btn-confirm-armed')) return true;
-  const openForms = [
-    'lease-form',
-    'ctrl-form',
-    'dispatch-form',
-    'session-form',
-    'archive-form',
-    'rm-node-form',
-    'rm-ms-form',
-    'queue-form',
-    'rm-l1-wrap',
-  ];
-  if (openForms.some((id) => $(id) && !$(id).classList.contains('hidden'))) return true;
-  if (
-    state.rawDirty ||
-    state.rmL1Dirty ||
-    state.globalDocDirty ||
-    state.wsDocDirty ||
-    state.settingsDirty.plugin ||
-    state.settingsDirty.global ||
-    state.settingsDirty.workspace
-  ) {
-    return true;
+  const active = document.activeElement;
+  if (!active || active === document.body) return false;
+  const mainScroll = $('main-scroll');
+  if (mainScroll && mainScroll.contains(active)) {
+    const tag = active.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
   }
   return false;
+}
+
+function flushPendingSilentRefresh() {
+  if (!state.pendingSilentRefresh || state.pollPausedByUser || state.pollInFlight) return;
+  if (document.visibilityState !== 'visible' || shouldDeferSilentRefresh()) return;
+  state.pendingSilentRefresh = false;
+  refresh(undefined, { silent: true });
 }
 
 function connectSseStream(wsTarget = state.workspace) {
@@ -607,7 +605,10 @@ function connectSseStream(wsTarget = state.workspace) {
     if (state.sseRefreshTimer) clearTimeout(state.sseRefreshTimer);
     state.sseRefreshTimer = setTimeout(() => {
       state.sseRefreshTimer = null;
-      if (state.pollInFlight || isUiBusyEditing()) return;
+      if (state.pollInFlight || shouldDeferSilentRefresh()) {
+        state.pendingSilentRefresh = true;
+        return;
+      }
       refresh(undefined, { silent: true });
     }, 90);
   });
@@ -639,11 +640,14 @@ window.addEventListener('beforeunload', () => {
 
 function updateLivePollControls(snap) {
   connectSseStream(snap?.workspace || state.workspace);
+  const hiddenActive =
+    (snap?.executionSurfaces?.subagents?.length || 0) +
+    (snap?.executionSurfaces?.workflows?.length || 0);
   const plan = computeLivePollPlan({
     pluginPollEnabled: snap?.settings?.plugin?.livePollEnabled !== false,
     pausedByUser: state.pollPausedByUser,
     intervalSec: Number(snap?.settings?.plugin?.livePollIntervalSec || 4),
-    activeSessionCount: (snap?.parsed?.activeSessions || []).length,
+    activeSessionCount: (snap?.parsed?.activeSessions || []).length + hiddenActive,
     swarmActive: Boolean(snap?.nativeSwarm?.active),
     sseConnected: state.sseConnected,
   });
@@ -656,8 +660,11 @@ function updateLivePollControls(snap) {
   state.pollTimer = null;
   if (plan.shouldSchedule) {
     state.pollTimer = setInterval(() => {
-      if (state.pollInFlight || document.visibilityState !== 'visible') return;
-      if (isUiBusyEditing()) return;
+      if (document.visibilityState !== 'visible') return;
+      if (state.pollInFlight || shouldDeferSilentRefresh()) {
+        state.pendingSilentRefresh = true;
+        return;
+      }
       refresh(undefined, { silent: true });
     }, plan.intervalMs);
   }
@@ -668,6 +675,7 @@ function render(snap) {
   if (snap.workspace && state.workspace && snap.workspace !== state.workspace) {
     return;
   }
+  state.refreshSeq += 1;
   if (snap.workspace) {
     state.workspace = snap.workspace;
   }
@@ -706,7 +714,7 @@ function render(snap) {
   updateLivePollControls(snap);
 }
 
-async function refresh(wsOverride, { recordSelection = false, silent = false } = {}) {
+async function refresh(wsOverride, { recordSelection = false, silent = false, unbound = false } = {}) {
   const targetWs = wsOverride !== undefined ? wsOverride : state.workspace;
   if (wsOverride !== undefined && wsOverride !== state.workspace) {
     resetTransientForms();
@@ -715,6 +723,7 @@ async function refresh(wsOverride, { recordSelection = false, silent = false } =
     state.dirtyTabs.clear();
   }
   const seq = ++state.refreshSeq;
+  state.activePollSeq = seq;
   state.pollInFlight = true;
   try {
     let snap;
@@ -727,6 +736,7 @@ async function refresh(wsOverride, { recordSelection = false, silent = false } =
     } else {
       const sp = new URLSearchParams();
       if (targetWs) sp.set('workspace', targetWs);
+      else if (unbound) sp.set('unbound', '1');
       if (silent && state.snap?.stateSig && (state.snap.workspace || '') === (targetWs || '')) {
         sp.set('sinceSig', state.snap.stateSig);
       }
@@ -735,7 +745,11 @@ async function refresh(wsOverride, { recordSelection = false, silent = false } =
       if (snap?.unchanged) return;
     }
     if (seq !== state.refreshSeq) return;
-    if (silent && isUiBusyEditing()) return;
+    if (silent && shouldDeferSilentRefresh()) {
+      state.pendingSilentRefresh = true;
+      return;
+    }
+    state.pendingSilentRefresh = false;
     state.workspace = snap.workspace || '';
     if (!silent) {
       state.rawDirty = false;
@@ -747,10 +761,13 @@ async function refresh(wsOverride, { recordSelection = false, silent = false } =
     }
     render(snap);
   } catch (err) {
-    if (!silent && seq === state.refreshSeq) showToast(err.message, true);
+    if (!silent && seq === state.activePollSeq) showToast(err.message, true);
   } finally {
-    if (seq === state.refreshSeq) {
+    if (seq === state.activePollSeq) {
       state.pollInFlight = false;
+      if (state.pendingSilentRefresh) {
+        setTimeout(flushPendingSilentRefresh, 60);
+      }
     }
   }
 }
@@ -781,7 +798,7 @@ document.addEventListener('change', (e) => {
   const isCustom = sel.value === '__custom__';
   if (cust) {
     cust.classList.toggle('hidden', !isCustom);
-    cust.required = isCustom && sel.dataset.modelPicker !== 'inherit';
+    cust.required = isCustom;
     if (isCustom) cust.focus();
   }
   if (sel.id === 'df-model') sel.dataset.userEdited = '1';
@@ -794,12 +811,12 @@ document.addEventListener('input', (e) => {
   if (cust.id === 'qf-route-custom') $('qf-route').dataset.userEdited = '1';
 });
 
-function bindArrowTabNav(selector, activateBtn) {
+function bindArrowTabNav(selector, activateBtn, roleAttr = 'tab') {
   const container = document.querySelector(selector);
   if (!container) return;
   container.addEventListener('keydown', (e) => {
     if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
-    const btns = [...container.querySelectorAll('button[role="tab"]')];
+    const btns = [...container.querySelectorAll(`button[role="${roleAttr}"]`)];
     const idx = btns.indexOf(document.activeElement);
     if (idx < 0) return;
     e.preventDefault();
@@ -879,6 +896,16 @@ document.querySelectorAll('.mode-card').forEach((card) => {
 });
 $('init-relpath').addEventListener('change', (e) => {
   syncInitModeCards(e.target.value);
+});
+bindArrowTabNav('.mode-cards', (btn) => btn.click(), 'radio');
+$('init-custom-relpath')?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    $('init-registry-btn')?.click();
+  }
+});
+$('main-scroll')?.addEventListener('focusout', () => {
+  setTimeout(flushPendingSilentRefresh, 60);
 });
 $('unbound-open-settings-btn')?.addEventListener('click', () => switchTab('settings'));
 $('init-registry-btn').addEventListener('click', async () => {
@@ -1048,7 +1075,10 @@ document.body.addEventListener('click', async (e) => {
       $('rnf-ownership').value = (node.ownership || []).join(', ');
       setModelField('rnf-model', node.recommendedModel || 'Orchestrator (Neon Extra High)');
       $('rnf-acceptance').value = node.acceptance || '';
-      $('rm-node-form').classList.remove('hidden');
+      const formEl = $('rm-node-form');
+      formEl.classList.remove('hidden');
+      formEl.scrollIntoView?.({ block: 'nearest' });
+      $('rnf-title')?.focus();
     }
     return;
   }
@@ -1066,6 +1096,11 @@ document.body.addEventListener('click', async (e) => {
             expectedL2Hash: state.snap?.roadmap?.l2Hash || '',
           },
         });
+        if ($('rnf-originalId').value === nodeId) {
+          $('rm-node-form').reset();
+          $('rnf-originalId').value = '';
+          $('rm-node-form').classList.add('hidden');
+        }
         render(res.snapshot);
         showToast(`已删除分支节点 ${nodeId}`);
       } catch (err) {
@@ -1234,7 +1269,10 @@ document.body.addEventListener('click', async (e) => {
       $('qf-summary').value = row.summary;
       $('qf-status').value = row.status;
       setModelField('qf-route', row.route);
-      $('queue-form')?.classList.remove('hidden');
+      const qForm = $('queue-form');
+      qForm?.classList.remove('hidden');
+      qForm?.scrollIntoView?.({ block: 'nearest' });
+      $('qf-summary')?.focus();
     }
     return;
   }
@@ -1253,6 +1291,11 @@ document.body.addEventListener('click', async (e) => {
             id: taskId,
           },
         });
+        if ($('qf-originalId').value === taskId) {
+          $('queue-form')?.reset();
+          $('qf-originalId').value = '';
+          $('queue-form')?.classList.add('hidden');
+        }
         render(res.snapshot);
         showToast(`已删除任务 ${taskId}`);
       } catch (err) {
@@ -1274,14 +1317,29 @@ $('boot-fallback')?.classList.add('hidden');
 
 async function bootstrapSidecar() {
   let bootstrappedWs = null;
+  let hostTimedOut = false;
   if (typeof window.sidecar?.getWorkspaceUris === 'function') {
     try {
+      const urisPromise = Promise.resolve(window.sidecar.getWorkspaceUris());
       const uris = await Promise.race([
-        window.sidecar.getWorkspaceUris(),
-        new Promise((r) => setTimeout(() => r(null), 1500)),
+        urisPromise,
+        new Promise((r) =>
+          setTimeout(() => {
+            hostTimedOut = true;
+            r(null);
+          }, 1500)
+        ),
       ]);
       if (Array.isArray(uris) && uris.length > 0 && uris[0]) {
         bootstrappedWs = uris[0];
+      } else if (hostTimedOut) {
+        urisPromise
+          .then((lateUris) => {
+            if (Array.isArray(lateUris) && lateUris[0] && !state.workspace) {
+              refresh(lateUris[0], { recordSelection: true });
+            }
+          })
+          .catch(() => {});
       }
     } catch {
       bootstrappedWs = null;
@@ -1294,8 +1352,8 @@ async function bootstrapSidecar() {
       if (nextWs && nextWs === state.workspace && state.snap) return;
       if (nextWs) {
         refresh(nextWs, { recordSelection: true });
-      } else if (!state.snap) {
-        refresh('');
+      } else {
+        refresh('', { unbound: true });
       }
     });
   }
@@ -1303,7 +1361,7 @@ async function bootstrapSidecar() {
   if (bootstrappedWs) {
     await refresh(bootstrappedWs, { recordSelection: true });
   } else {
-    await refresh('');
+    await refresh('', { unbound: true });
   }
 }
 

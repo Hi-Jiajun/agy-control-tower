@@ -244,6 +244,12 @@ async function launchChrome(chromeBin, profileDir) {
 }
 
 export async function runUiSmoke({ requireBrowser = false, screenshotDir = '' } = {}) {
+  if (typeof WebSocket !== 'function') {
+    if (requireBrowser) {
+      throw new Error('L3 UI smoke requires Node.js >= 22 (built-in global WebSocket)');
+    }
+    return { skipped: true, reason: 'Global WebSocket unavailable on current Node runtime' };
+  }
   const chromeBin = findChromeBinary();
   if (!chromeBin) {
     if (requireBrowser) {
@@ -1010,7 +1016,7 @@ if (args.includes('get-conversation-metadata')) {
       async () =>
         Boolean(
           await cdp.evaluate(
-            `document.querySelectorAll('#rm-nodes-list .item-box[data-node-status="active"]').length === 1`
+            `document.getElementById('toast')?.textContent?.includes('契约投递总控按隐藏面派单') && document.querySelectorAll('#rm-nodes-list .item-box[data-node-status="active"]').length === 1`
           )
         ),
       { label: 'roadmap hidden dispatch marks W1 active' }

@@ -4,13 +4,13 @@
  * Stores pre-install plugin package snapshots in <PLUGIN_DATA>/releases/ (keeping last 3),
  * and performs all installations/rollbacks strictly via official `agy plugin install`.
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { appendFlightEvent } from '../plugin/lib/logger.mjs';
-import { readJsonSafe, resolvePluginDataDir } from '../plugin/lib/paths.mjs';
+import { readJsonSafe, resolveCommandExecutable, resolvePluginDataDir } from '../plugin/lib/paths.mjs';
 import { inspectRunningSidecars, runDoctor } from './ct-doctor.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -174,6 +174,24 @@ function recycleStaleSidecars(cfgDir, resolvedDataDir) {
   return recycled;
 }
 
+function runAgyCli(args, childEnv) {
+  const resolvedExe = resolveCommandExecutable('agy', { env: childEnv }) || 'agy';
+  const needsShell = process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(resolvedExe);
+  if (!needsShell) {
+    return execFileSync(resolvedExe, args, { env: childEnv, encoding: 'utf8' });
+  }
+  const res = spawnSync(resolvedExe, args, {
+    env: childEnv,
+    encoding: 'utf8',
+    shell: true,
+  });
+  if (res.error) throw res.error;
+  if (res.status !== 0) {
+    throw new Error((res.stderr || res.stdout || `agy exited with ${res.status}`).trim());
+  }
+  return res.stdout || '';
+}
+
 export function rollbackToSnapshot({
   snapshotName = '',
   env = process.env,
@@ -199,7 +217,7 @@ export function rollbackToSnapshot({
 
   const cfgDir = resolveConfigDir(env, configDir);
   const childEnv = buildAgyChildEnv(env, cfgDir);
-  execFileSync('agy', ['plugin', 'install', target.pluginDir], { env: childEnv, encoding: 'utf8' });
+  runAgyCli(['plugin', 'install', target.pluginDir], childEnv);
   if (checkProcesses) {
     recycleStaleSidecars(cfgDir, resolvedDataDir);
   }
@@ -236,12 +254,12 @@ export function safeInstallRelease({
   const absPlugin = resolve(pluginRoot);
   const cfgDir = resolveConfigDir(env, configDir);
   const childEnv = buildAgyChildEnv(env, cfgDir);
-  execFileSync('agy', ['plugin', 'validate', '--strict', absPlugin], { env: childEnv, encoding: 'utf8' });
+  runAgyCli(['plugin', 'validate', '--strict', absPlugin], childEnv);
 
   const resolvedDataDir = dataDir ? resolve(dataDir) : resolvePluginDataDir({ env });
   const snapshotRes = createSnapshot({ env, configDir, dataDir: resolvedDataDir });
 
-  execFileSync('agy', ['plugin', 'install', absPlugin], { env: childEnv, encoding: 'utf8' });
+  runAgyCli(['plugin', 'install', absPlugin], childEnv);
   if (checkProcesses) {
     recycleStaleSidecars(cfgDir, resolvedDataDir);
   }
@@ -303,7 +321,7 @@ if (isMain) {
 
     if (cmd === 'rollback') {
       const targetArg = args[1] && !args[1].startsWith('--') ? args[1] : '';
-      const res = rollbackToSnapshot({ ...common, snapshotName: targetArg });
+      const res = rollbackToSnapshot({ ...common, snapshotName: targetArg, checkProcesses: true });
       if (jsonMode) process.stdout.write(`${JSON.stringify(res, null, 2)}\n`);
       else console.log(`OK: 已回滚至 ${res.target.name} (v${res.target.version}), doctor=${res.doctor.ok ? 'HEALTHY' : 'UNHEALTHY'}`);
       process.exit(res.ok ? 0 : 1);

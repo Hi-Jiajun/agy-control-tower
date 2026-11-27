@@ -49,11 +49,20 @@ export function renderRoadmap(ctx, snap) {
   }
 
   const overlaps = graph.overlaps || [];
-  $('rm-overlap-banner').classList.toggle('hidden', overlaps.length === 0);
+  const bannerAlerts = [];
+  if (graph.hasCycle) {
+    bannerAlerts.push(`检测到依赖环路 (${(graph.cycleNodes || []).join(' -> ')})`);
+  }
   if (overlaps.length > 0) {
-    $('rm-overlap-text').textContent = `所有权冲突预警 (${overlaps.length} 组): ${overlaps
-      .map((o) => `${o.nodeA}/${o.nodeB} [${o.paths.join(', ')}]`)
-      .join('；')}`;
+    bannerAlerts.push(
+      `所有权冲突预警 (${overlaps.length} 组): ${overlaps
+        .map((o) => `${o.nodeA}/${o.nodeB} [${o.paths.join(', ')}]`)
+        .join('；')}`
+    );
+  }
+  $('rm-overlap-banner').classList.toggle('hidden', bannerAlerts.length === 0);
+  if (bannerAlerts.length > 0) {
+    $('rm-overlap-text').textContent = bannerAlerts.join(' | ');
   }
 
   $('rm-nodes-badge').textContent = `${graph.counts.done}/${graph.counts.total} | 就绪 ${graph.counts.ready}`;
@@ -66,11 +75,13 @@ export function renderRoadmap(ctx, snap) {
     .map((n) => {
       const st = formatRoadmapStatusBadge(n.effectiveStatus);
       const depsLine =
-        n.unmetDeps?.length > 0
-          ? `阻塞前置: ${n.unmetDeps.join(', ')}`
-          : n.dependsOn?.length > 0
-            ? `前置已满足: ${n.dependsOn.join(', ')}`
-            : '无前置依赖';
+        n.missingDeps?.length > 0
+          ? `缺失前置: ${n.missingDeps.join(', ')}`
+          : n.unmetDeps?.length > 0
+            ? `阻塞前置: ${n.unmetDeps.join(', ')}`
+            : n.dependsOn?.length > 0
+              ? `前置已满足: ${n.dependsOn.join(', ')}`
+              : '无前置依赖';
       const ownLine = n.ownership?.length > 0 ? n.ownership.join(', ') : '未限定';
       const isDone = n.status === 'done' || n.status === 'verified';
       const isBlocked = n.effectiveStatus === 'blocked';
@@ -167,19 +178,22 @@ export function bindRoadmapEvents(ctx) {
   });
 
   $('rm-l1-save-btn').addEventListener('click', async () => {
-    if (!state.workspace) return;
+    const reqWs = state.workspace;
+    if (!reqWs) return;
     try {
       const res = await api('/api/roadmap/l1/save', {
         method: 'POST',
         body: {
-          workspace: state.workspace,
+          workspace: reqWs,
           content: $('rm-l1-editor').value,
           expectedL1Hash: state.rmL1BaseHash || state.snap?.roadmap?.l1Hash || '',
         },
       });
-      state.rmL1Dirty = false;
-      state.rmL1BaseHash = res.snapshot?.roadmap?.l1Hash || '';
-      render(res.snapshot);
+      if (state.workspace === reqWs) {
+        state.rmL1Dirty = false;
+        state.rmL1BaseHash = res.snapshot?.roadmap?.l1Hash || '';
+        render(res.snapshot);
+      }
       showToast('已保存 L1 战略北极星 ROADMAP.md');
     } catch (err) {
       showToast(err.message, true);

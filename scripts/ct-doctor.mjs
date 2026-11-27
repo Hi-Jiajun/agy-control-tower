@@ -62,7 +62,8 @@ export function inspectRunningSidecars(installedDir = '') {
   const pjPath = installedDir ? join(installedDir, 'plugin.json') : '';
   if (pjPath && existsSync(pjPath)) {
     try {
-      pluginMtimeMs = statSync(pjPath).mtimeMs;
+      const st = statSync(pjPath);
+      pluginMtimeMs = Math.max(st.mtimeMs || 0, st.ctimeMs || 0);
     } catch {
       pluginMtimeMs = 0;
     }

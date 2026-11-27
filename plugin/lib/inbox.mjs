@@ -149,12 +149,33 @@ export function setDeferredReceipt(dataDir, wsReal, receipt) {
   if (!dataDir || !wsReal || !receipt) return null;
   return withInboxLock(dataDir, wsReal, () => {
     const inbox = loadWorkspaceInbox(dataDir, wsReal);
-    inbox.deferredReceipt = {
-      controllerId: String(receipt.controllerId || ''),
-      message: String(receipt.message || '').slice(0, 1200),
-      completedIds: Array.isArray(receipt.completedIds) ? receipt.completedIds.map(String) : [],
-      createdAt: Number(receipt.createdAt) || Date.now(),
-    };
+    const nextCtrl = String(receipt.controllerId || '');
+    const nextMsg = String(receipt.message || '').trim();
+    const nextIds = Array.isArray(receipt.completedIds) ? receipt.completedIds.map(String).filter(Boolean) : [];
+    const prev = inbox.deferredReceipt;
+    if (
+      prev &&
+      (!prev.controllerId || !nextCtrl || prev.controllerId === nextCtrl)
+    ) {
+      const mergedIds = [...new Set([...(prev.completedIds || []), ...nextIds])];
+      const mergedMsg =
+        prev.message && nextMsg && !prev.message.includes(nextMsg)
+          ? `${prev.message}；${nextMsg}`.slice(0, 1600)
+          : (nextMsg || prev.message || '').slice(0, 1600);
+      inbox.deferredReceipt = {
+        controllerId: nextCtrl || prev.controllerId || '',
+        message: mergedMsg,
+        completedIds: mergedIds,
+        createdAt: Number(prev.createdAt) || Number(receipt.createdAt) || Date.now(),
+      };
+    } else {
+      inbox.deferredReceipt = {
+        controllerId: nextCtrl,
+        message: nextMsg.slice(0, 1600),
+        completedIds: nextIds,
+        createdAt: Number(receipt.createdAt) || Date.now(),
+      };
+    }
     return saveWorkspaceInbox(dataDir, wsReal, inbox);
   });
 }

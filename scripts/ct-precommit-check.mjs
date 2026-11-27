@@ -25,9 +25,26 @@ const privateIpRe = new RegExp(
 );
 const uuidRe = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
+function decodeTextBufferIfText(buf) {
+  if (!buf || buf.length === 0) return null;
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) {
+    return buf.subarray(2).toString('utf16le');
+  }
+  if (buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff) {
+    const swapped = Buffer.allocUnsafe(buf.length - 2);
+    for (let i = 2; i + 1 < buf.length; i += 2) {
+      swapped[i - 2] = buf[i + 1];
+      swapped[i - 1] = buf[i];
+    }
+    return swapped.toString('utf16le');
+  }
+  if (buf.includes(0)) return null;
+  return buf.toString('utf8');
+}
+
 export function checkTextHygiene(buf, label) {
-  if (!buf || buf.includes(0)) return;
-  const txt = buf.toString('utf8');
+  const txt = decodeTextBufferIfText(buf);
+  if (!txt) return;
   if (txt.includes(forbHome)) throw new Error(`个人路径泄漏于 ${label}`);
   if (txt.includes(forbUsers)) throw new Error(`个人路径泄漏于 ${label}`);
   if (winUsersRe.test(txt)) throw new Error(`Windows 个人路径泄漏于 ${label}`);

@@ -24,7 +24,21 @@ export function extractConvId(cell) {
 export function splitMdRow(line) {
   const s = (line || '').trim();
   if (!s.startsWith('|') || !s.endsWith('|')) return null;
-  return s.slice(1, -1).split('|').map((c) => c.trim());
+  return s
+    .slice(1, -1)
+    .split(/(?<!\\)\|/)
+    .map((c) => c.replace(/\\\|/g, '|').trim());
+}
+
+function sameSessionId(idA, idB) {
+  const a = String(idA || '').trim().toLowerCase();
+  const b = String(idB || '').trim().toLowerCase();
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a.length >= 8 && b.length >= 8 && /^[0-9a-f-]+$/.test(a) && /^[0-9a-f-]+$/.test(b)) {
+    return a.startsWith(b) || b.startsWith(a);
+  }
+  return false;
 }
 
 export function isSeparatorRow(cells) {
@@ -404,7 +418,7 @@ export function upsertActiveSessionRow(
     const first = cleanMdVal(cells[0]);
     if (!first || first === '暂无' || first === '-') continue;
     const rowCid = extractConvId(cells[0]).toLowerCase();
-    if (rowCid && (rowCid === idLower || rowCid.startsWith(idLower) || idLower.startsWith(rowCid))) {
+    if (rowCid && sameSessionId(rowCid, idLower)) {
       if (!replaced) {
         kept.push(newRow);
         replaced = true;
@@ -441,7 +455,7 @@ export function archiveActiveSession(mdText, { conversationId, milestone = '', s
     const first = cleanMdVal(cells[0]);
     if (!first || first === '暂无' || first === '-') continue;
     const rowCid = extractConvId(cells[0]).toLowerCase();
-    if (!matchedRow && rowCid && (rowCid === idLower || rowCid.startsWith(idLower) || idLower.startsWith(rowCid))) {
+    if (!matchedRow && rowCid && sameSessionId(rowCid, idLower)) {
       matchedRow = {
         conversationId: extractConvId(cells[0]) || cleanId,
         topic: cleanMdVal(cells[1]),
@@ -491,6 +505,25 @@ export function upsertQueueRow(mdText, item) {
     'Section 5 Task Queue'
   );
   const { sepIdx, tableEnd } = findTableBoundsInRange(lines, sec5.start, sec5.end, 'Section 5 Task Queue');
+
+  const existingIds = new Set();
+  for (let i = sepIdx + 1; i < tableEnd; i += 1) {
+    const cells = splitMdRow(lines[i]);
+    if (!cells) continue;
+    const rowId = cleanMdVal(cells[0]);
+    if (!rowId || rowId === '暂无' || rowId === '-' || PLACEHOLDER_RE.test(rowId)) continue;
+    existingIds.add(rowId);
+  }
+  if (origClean !== idClean && existingIds.has(idClean)) {
+    throw new PathError(409, `目标任务编号 ${idClean} 已存在于队列中，不能覆盖已有任务`, {
+      error: 'duplicate_id',
+    });
+  }
+  if (item?.requireNew === true && existingIds.has(idClean)) {
+    throw new PathError(409, `任务编号 ${idClean} 已存在于队列中，如需修改请使用编辑操作`, {
+      error: 'duplicate_id',
+    });
+  }
 
   const kept = [];
   let replaced = false;
@@ -558,8 +591,8 @@ export function extractTemplatesFromMarkdown(mdText) {
     const idx = mdText.search(headingPattern);
     if (idx < 0) return '';
     const sub = mdText.slice(idx);
-    const m = sub.match(/```(?:markdown|text)?\n([\s\S]*?)\n```/);
-    return m ? m[1] : '';
+    const m = sub.match(/```(?:markdown|text)?\r?\n([\s\S]*?)\r?\n```/);
+    return m ? m[1].replace(/\r\n/g, '\n') : '';
   };
   return {
     registrySkeleton: getCodeBlockAfter(/^## 1\./m) || fallback.registrySkeleton,

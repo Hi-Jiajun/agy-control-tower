@@ -651,23 +651,40 @@ if (args.includes('new-conversation')) {
     assert.equal(allowCustomGlobal.status, 200);
     assert.equal(allowCustomGlobal.data.snapshot.settings.effective.l2StandardModel, 'custom-corp-v4');
 
-    // 21) Snapshot stateSig short-circuit for zero-payload silent polling
+    // 21) Snapshot stateSig short-circuit, ?unbound=1 empty-window guard, and 415 Content-Type CSRF defense
+    const textPlainPost = await fetch(`${base}/api/queue/upsert`, {
+      method: 'POST',
+      headers: { 'x-sidecar-token': token, 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ workspace: ws, id: 'CSRF1', summary: 'blocked' }),
+    });
+    assert.equal(textPlainPost.status, 415);
+
+    const unboundSnap = await req('GET', '/api/snapshot?unbound=1');
+    assert.equal(unboundSnap.status, 200);
+    assert.ok(!unboundSnap.data.workspace);
+    assert.ok(Array.isArray(unboundSnap.data.recentWorkspaces) && unboundSnap.data.recentWorkspaces.length >= 1);
+
     const fullSnap = await req('GET', `/api/snapshot?workspace=${encodeURIComponent(ws)}`);
     assert.equal(fullSnap.status, 200);
     assert.ok(typeof fullSnap.data.stateSig === 'string' && fullSnap.data.stateSig.length === 16);
-    const t0Short = performance.now();
-    const shortSnap = await req(
-      'GET',
-      `/api/snapshot?workspace=${encodeURIComponent(ws)}&sinceSig=${encodeURIComponent(fullSnap.data.stateSig)}`
+    const shortRes = await fetch(
+      `${base}/api/snapshot?workspace=${encodeURIComponent(ws)}&sinceSig=${encodeURIComponent(fullSnap.data.stateSig)}`,
+      { headers: { 'x-sidecar-token': token } }
     );
-    const shortElapsedMs = performance.now() - t0Short;
-    assert.equal(shortSnap.status, 200);
-    assert.equal(shortSnap.data.unchanged, true);
-    assert.equal(shortSnap.data.stateSig, fullSnap.data.stateSig);
-    assert.ok(shortElapsedMs < 80, `Expected fast unchanged snapshot short-circuit (<80ms), got ${shortElapsedMs.toFixed(1)}ms`);
+    const shortRawText = await shortRes.text();
+    const shortData = JSON.parse(shortRawText);
+    assert.equal(shortRes.status, 200);
+    assert.equal(shortData.unchanged, true);
+    assert.equal(shortData.stateSig, fullSnap.data.stateSig);
+    assert.ok(shortRawText.length < 240, `Expected tiny unchanged payload (<240B), got ${shortRawText.length}B`);
   } finally {
     if (server) await server.close();
-    process.env = prevEnv;
+    for (const k of Object.keys(process.env)) {
+      if (!(k in prevEnv)) delete process.env[k];
+    }
+    for (const [k, v] of Object.entries(prevEnv)) {
+      if (v !== undefined) process.env[k] = v;
+    }
     sb.cleanup();
   }
 });

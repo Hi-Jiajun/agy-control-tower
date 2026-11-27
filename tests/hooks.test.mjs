@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFile
 import { join } from 'node:path';
 import test from 'node:test';
 import { getManagedRegistryPath } from '../plugin/lib/paths.mjs';
-import { saveGlobalSettings, savePluginSettings } from '../plugin/lib/settings.mjs';
+import { saveGlobalSettings, savePluginSettings, saveWorkspaceSettings } from '../plugin/lib/settings.mjs';
 import { loadWorkspaceInbox, recordControllerFocus } from '../plugin/lib/inbox.mjs';
 import { loadPluginState, savePluginState } from '../plugin/lib/transcript.mjs';
 import { makeConvId, makeSandbox, makeTranscriptPath } from './helpers.mjs';
@@ -945,6 +945,50 @@ test('PreInvocation throttles empty-candidate milestone /learn checkpoints (15m)
       env
     );
     assert.ok(r3.injectSteps.some((s) => s.systemMessage.systemMessage.includes('[control-tower 自学习检查点]')));
+
+    // 4th: Subagent <SYSTEM_MESSAGE> containing correction keywords must NOT trigger false user-correction /learn or lock Focus Gate
+    const subMsg = `<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-28T00:00:00Z sender=${makeConvId('9', '9', '4', '8', 'e')} priority=HIGH content=审计发现之前写法不对，应该改为严格匹配\n</SYSTEM_MESSAGE>`;
+    const r4 = callHook(
+      'PreInvocation',
+      {
+        conversationId: ctrlId,
+        workspacePaths: [ws],
+        invocationNum: 5,
+        lastUserInput: subMsg,
+        transcriptPath: cLog,
+      },
+      env
+    );
+    assert.equal(
+      (r4.injectSteps || []).some((s) => s.systemMessage.systemMessage.includes('纠偏自学习提醒')),
+      false
+    );
+    assert.equal(loadWorkspaceInbox(dataDir, ws).focus.inFlight, false);
+
+    // 5th: PreToolUse blocks shadowing write to .agents/SESSION-REGISTRY.md when managed @plugin_data registry is active
+    const wsManaged = join(sb.dir, 'ws-shadow');
+    mkdirSync(wsManaged, { recursive: true });
+    saveWorkspaceSettings(dataDir, wsManaged, { registryMode: 'plugin_data' });
+    const managedReg = getManagedRegistryPath(dataDir, wsManaged);
+    mkdirSync(join(managedReg, '..'), { recursive: true });
+    writeFileSync(
+      managedReg,
+      `# 台账\n## 一、当前独占资源租约\n| 字段 | 当前值 |\n| --- | --- |\n| **锁状态** | \`IDLE\` |\n## 二、常驻主交流总控会话\n- **当前现役总控会话**：\`${ctrlId}\`（状态：\`ONLINE\`）\n`,
+      'utf8'
+    );
+    const shadowAttempt = callHook(
+      'PreToolUse',
+      {
+        conversationId: makeConvId('8', '8', '4', '8', 'd'),
+        workspacePaths: [wsManaged],
+        toolCall: {
+          name: 'write_file',
+          args: { Path: join(wsManaged, '.agents', 'SESSION-REGISTRY.md'), Content: '# rogue shadow' },
+        },
+      },
+      env
+    );
+    assert.notEqual(shadowAttempt.decision, 'allow');
   } finally {
     sb.cleanup();
   }

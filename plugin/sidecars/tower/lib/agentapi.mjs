@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { resolveAgentApiSpec } from '../../../lib/paths.mjs';
 
 const UUID_EXTRACT_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const DEFAULT_META_CACHE_TTL_MS = 5000;
@@ -21,14 +22,8 @@ export function execAgentApiAsync(args, { projectId, timeoutMs = 15000 } = {}) {
   return new Promise((resolveCall, rejectCall) => {
     const env = { ...process.env };
     if (projectId) env.ANTIGRAVITY_PROJECT_ID = projectId;
-    const exe = process.env.ANTIGRAVITY_AGENTAPI_EXE;
-    const isNodeScript = Boolean(exe && /\.m?js$/i.test(exe));
-    const file = isNodeScript ? process.execPath : exe || 'agentapi';
-    const execArgs = isNodeScript
-      ? [exe, 'agentapi', ...args]
-      : exe
-        ? ['agentapi', ...args]
-        : args;
+    const { file, prefixArgs } = resolveAgentApiSpec({ env });
+    const execArgs = [...prefixArgs, ...args];
     let settled = false;
     let killEscalationTimer = null;
 

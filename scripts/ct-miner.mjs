@@ -302,7 +302,11 @@ export function mineTelemetryAndLogs({
       if (obj.status === 'ERROR') {
         errorSteps += 1;
       }
-      if (typeof obj.content === 'string' && obj.content.includes('target content not found')) {
+      if (
+        obj.status === 'ERROR' &&
+        typeof obj.content === 'string' &&
+        obj.content.includes('target content not found')
+      ) {
         editMismatchCount += 1;
         convEditMismatch += 1;
         editMismatchByModel.set(lastPlannerModel, (editMismatchByModel.get(lastPlannerModel) || 0) + 1);

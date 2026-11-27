@@ -7,8 +7,11 @@ import { fileURLToPath } from 'node:url';
 import {
   findExistingRegistry,
   findRegistryInWorkspaces,
+  getProtectedRegistryPaths,
+  loadKnownWorkspaces,
   normalizeWorkspaceInput,
   recordKnownWorkspace,
+  resolveAgentApiSpec,
   resolvePluginDataDir,
   sha256,
 } from '../lib/paths.mjs';
@@ -188,16 +191,10 @@ function canInvokeAgentApiInHook(env = process.env) {
   );
 }
 
-function sendAgentApiMessage(recipientId, title, message) {
-  const exe = process.env.ANTIGRAVITY_AGENTAPI_EXE;
-  const isNodeScript = Boolean(exe && /\.m?js$/i.test(exe));
-  const file = isNodeScript ? process.execPath : exe || 'agentapi';
+function sendAgentApiMessage(recipientId, title, message, hintPath = '') {
+  const { file, prefixArgs } = resolveAgentApiSpec({ env: process.env, hintPath });
   const baseArgs = ['send-message', '--title', title, recipientId, message];
-  const args = isNodeScript
-    ? [exe, 'agentapi', ...baseArgs]
-    : exe
-      ? ['agentapi', ...baseArgs]
-      : baseArgs;
+  const args = [...prefixArgs, ...baseArgs];
   execFileSync(file, args, {
     encoding: 'utf8',
     timeout: 3000,
@@ -347,7 +344,15 @@ function isLegitimateHandoverTakeover({
   return { allowed: false, reason: 'unverified_non_controller' };
 }
 
-function runThrottledHookSentinel(regFound, parsedReg, resolved, dataDir, hintPath, cacheMap = null) {
+function runThrottledHookSentinel(
+  regFound,
+  parsedReg,
+  resolved,
+  dataDir,
+  hintPath,
+  cacheMap = null,
+  touchedCacheKeys = null
+) {
   if (resolved.plugin.sentinelEnabled === false) return false;
   const activeSessions = parsedReg.activeSessions || [];
   const ctrlId = String(parsedReg?.controller?.currentControllerId || '').trim();
@@ -361,7 +366,7 @@ function runThrottledHookSentinel(regFound, parsedReg, resolved, dataDir, hintPa
   }
 
   let cacheTouched = false;
-  const prevKeys = cacheMap ? Object.keys(cacheMap).length : 0;
+  const prevRefs = cacheMap ? new Map(Object.entries(cacheMap)) : null;
   try {
     const enrichedActive = activeSessions.map((s) => ({
       ...s,
@@ -369,8 +374,13 @@ function runThrottledHookSentinel(regFound, parsedReg, resolved, dataDir, hintPa
     }));
     const nativeSwarm = ctrlId ? inspectNativeSwarm(ctrlId, { hintPath, cacheMap }) : null;
     const hidden = ctrlId ? inspectHiddenSurfaces(ctrlId, { hintPath, cacheMap }) : { subagents: [] };
-    if (cacheMap && Object.keys(cacheMap).length !== prevKeys) {
-      cacheTouched = true;
+    if (cacheMap && prevRefs) {
+      for (const [k, v] of Object.entries(cacheMap)) {
+        if (prevRefs.get(k) !== v) {
+          cacheTouched = true;
+          if (touchedCacheKeys) touchedCacheKeys.add(k);
+        }
+      }
     }
     if (enrichedActive.length === 0 && !nativeSwarm?.active && hidden.subagents.length === 0) {
       return cacheTouched;
@@ -714,6 +724,7 @@ function handleSessionStart(regFound, parsedReg, resolved, dataDir, convId) {
       const rm = loadWorkspaceRoadmap(regFound.workspace, {
         dataDir,
         workspaceSettings: resolved.workspace,
+        includeHandoffs: false,
       });
       if (rm.exists && rm.graph) {
         const readyLabel = rm.graph.readyIds.slice(0, 4).join(', ') || '无';
@@ -804,17 +815,24 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
   const injectSteps = [];
   const lastInput = String(payload.lastUserInput || '');
   const strippedInput = stripSystemMessageEnvelope(lastInput);
+  const trimmedDirective = (strippedInput || lastInput).trimStart();
+  const sysMsgMatch = /^<SYSTEM_MESSAGE>[\s\S]*?\[Message\]\s+timestamp=\S+\s+sender=([^\s]+)/i.exec(
+    lastInput.trim()
+  );
+  const isSystemMessageInbound = Boolean(sysMsgMatch);
+  const inboundSenderId = sysMsgMatch ? String(sysMsgMatch[1] || '').split('/')[0].trim() : '';
   const autoLearnMode = resolved.effective.autoLearnMode || 'smart_proposal';
   let hasDeferredReceiptInjected = false;
   let learnCheckpointInjected = false;
   const isAutomatedInbound =
-    lastInput.includes('[CT_AUTO_RECEIPT]') ||
-    lastInput.includes('[CT_REPORT:') ||
-    lastInput.includes('[CT_ROADMAP_DISPATCH]') ||
-    lastInput.includes('[CT_SWARM_CLEANUP]') ||
-    lastInput.includes('[CT_INBOX_DELIVER]');
+    isSystemMessageInbound ||
+    trimmedDirective.startsWith('[CT_AUTO_RECEIPT]') ||
+    trimmedDirective.startsWith('[CT_REPORT:') ||
+    trimmedDirective.startsWith('[CT_ROADMAP_DISPATCH]') ||
+    trimmedDirective.startsWith('[CT_SWARM_CLEANUP]') ||
+    trimmedDirective.startsWith('[CT_INBOX_DELIVER]');
 
-  // Capture any queued/deferred Stop receipt BEFORE recordControllerFocus clears it
+  // Capture any queued/deferred Stop receipt BEFORE recording focus
   const priorInbox = existsSync(dataDir) ? loadWorkspaceInbox(dataDir, regFound.workspace) : null;
   if (
     !isAutomatedInbound &&
@@ -845,14 +863,13 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
     }
   }
 
-  // Record foreground focus state on genuine user turns (never mark automated receipts as foreground chat)
+  // Record foreground focus state on genuine user turns (never mark automated/subagent messages as foreground chat)
   if (!isAutomatedInbound && lastInput.trim()) {
     try {
       recordControllerFocus(dataDir, regFound.workspace, {
         controllerId: convId,
         inFlight: true,
         lastUserInputAt: Date.now(),
-        clearDeferredReceipt: true,
       });
     } catch {
       // ignore focus write errors
@@ -860,13 +877,13 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
   }
 
   // 1) Intake routing: Stage receipt vs Board directives vs Decision/Done reports vs Bare/Multi-ID lookup
-  if (lastInput.includes('[CT_AUTO_RECEIPT]')) {
+  if (trimmedDirective.startsWith('[CT_AUTO_RECEIPT]')) {
     const receiptNote =
       `[control-tower 阶段收口指引] 已收到专职会话自动阶段回执，请核查尾步与交付清单、同步更新 ${regFound.absPath}，` +
       `并在全部阶段任务收口后向用户输出整理好的成果汇总并结束回合以触发 Antigravity 原生系统通知（严禁使用外部桌面通知命令）。`;
     injectSteps.push({ systemMessage: { systemMessage: receiptNote } });
   } else {
-    if (lastInput.includes('[CT_ROADMAP_DISPATCH]')) {
+    if (trimmedDirective.startsWith('[CT_ROADMAP_DISPATCH]')) {
       injectSteps.push({
         systemMessage: {
           systemMessage:
@@ -874,7 +891,7 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
             `请核对文件所有权无未解冲突后直接按契约通过原生 swarm 或 invoke_subagent 拉起执行。`,
         },
       });
-    } else if (lastInput.includes('[CT_SWARM_CLEANUP]')) {
+    } else if (trimmedDirective.startsWith('[CT_SWARM_CLEANUP]')) {
       injectSteps.push({
         systemMessage: {
           systemMessage:
@@ -882,13 +899,13 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
             `执行前请先核查目标休眠成员无未合流代码或未落盘 .agents/handoffs/ 契约。`,
         },
       });
-    } else if (lastInput.includes('[CT_INBOX_DELIVER]')) {
+    } else if (trimmedDirective.startsWith('[CT_INBOX_DELIVER]')) {
       injectSteps.push({
         systemMessage: {
           systemMessage: `[control-tower 收件箱投递] 请按 P0/P1/P2 优先级逐项处置以下看板投递事件并同步更新台账。`,
         },
       });
-    } else if (lastInput.includes('[CT_REPORT:DECISION]')) {
+    } else if (trimmedDirective.startsWith('[CT_REPORT:DECISION]')) {
       const level = resolved.effective.effectiveAutonomy;
       const decisionNote =
         `[control-tower 代决策指引] 当前生效代决策档位: ${level} (${resolved.effective.autonomySource})。` +
@@ -901,14 +918,14 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
           priority: 'P0',
           kind: 'decision',
           source: 'worker',
-          convId,
+          convId: inboundSenderId || convId,
           title: '专职会话请求分叉拍板',
           summary: cleanSummary,
         });
       } catch {
         // ignore inbox error
       }
-    } else if (lastInput.includes('[CT_REPORT:DONE]')) {
+    } else if (trimmedDirective.startsWith('[CT_REPORT:DONE]')) {
       const cleanSummary = (strippedInput || lastInput).replace(/\s+/g, ' ').trim().slice(0, 140);
       try {
         upsertInboxItem(dataDir, regFound.workspace, {
@@ -916,7 +933,7 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
           priority: 'P2',
           kind: 'worker_done',
           source: 'worker',
-          convId,
+          convId: inboundSenderId || convId,
           title: '收到专职会话完成汇报',
           summary: cleanSummary,
         });
@@ -927,6 +944,7 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
         const rm = loadWorkspaceRoadmap(regFound.workspace, {
           dataDir,
           workspaceSettings: resolved.workspace,
+          includeHandoffs: false,
         });
         if (rm.exists && rm.graph) {
           const activeNodes = rm.graph.nodes.filter((n) => n.effectiveStatus === 'active');
@@ -950,17 +968,15 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
       }
     } else {
       // Throttled zero-token sentinel sweep + single-source inbox cleanup
-      const sentinelCached = runThrottledHookSentinel(
+      runThrottledHookSentinel(
         regFound,
         parsedReg,
         resolved,
         dataDir,
         hintPath,
-        state.transcriptCache
+        state.transcriptCache,
+        touchedCacheKeys
       );
-      if (sentinelCached) {
-        for (const k of Object.keys(state.transcriptCache)) touchedCacheKeys.add(k);
-      }
       const handoverIgnored = Boolean(state.controllers[convId]?.handoverIgnored);
       const inbox = cleanupWorkspaceInbox(dataDir, regFound.workspace, {
         activeControllerId: convId,
@@ -1222,7 +1238,7 @@ function handleStop(payload, regFound, parsedReg, resolved, dataDir, hintPath, c
     if (payload.continuationActive !== true) {
       try {
         const curInbox = loadWorkspaceInbox(dataDir, regFound.workspace);
-        if (curInbox.focus.inFlight || curInbox.focus.lastUserInputAt > 0) {
+        if (curInbox.focus.inFlight) {
           recordControllerFocus(dataDir, regFound.workspace, {
             controllerId: convId,
             inFlight: false,
@@ -1521,17 +1537,22 @@ function findMatchingRegistriesForTargets(wsPaths, targets, payloadCwd, argsCwd,
     rawCandidates.push(baseForGuess);
   }
 
+  const normCmp = (p) => (process.platform === 'win32' ? String(p || '').toLowerCase() : String(p || ''));
   for (const t of targets) {
     const targetReal = resolveCanonicalPath(t.rawPath, baseForGuess);
-    if (!targetReal || basename(targetReal) !== 'SESSION-REGISTRY.md') continue;
-    const parent = dirname(targetReal);
-    rawCandidates.push(parent);
-    const parentName = basename(parent);
-    if (parentName === '.agents' || parentName === 'research') {
-      const grandParent = dirname(parent);
-      if (grandParent && grandParent !== parent) {
-        rawCandidates.push(grandParent);
-      }
+    if (!targetReal || !targetReal.toLowerCase().endsWith('.md')) continue;
+    let curDir = dirname(targetReal);
+    for (let depth = 0; depth < 6; depth += 1) {
+      if (!curDir) break;
+      rawCandidates.push(curDir);
+      const nextDir = dirname(curDir);
+      if (!nextDir || nextDir === curDir) break;
+      curDir = nextDir;
+    }
+  }
+  if (existsSync(dataDir)) {
+    for (const kw of loadKnownWorkspaces(dataDir, { maxEntries: 16 })) {
+      rawCandidates.push(kw);
     }
   }
 
@@ -1546,10 +1567,16 @@ function findMatchingRegistriesForTargets(wsPaths, targets, payloadCwd, argsCwd,
       const found = findExistingRegistry(wsReal, { dataDir });
       if (!found) continue;
       const regReal = resolveCanonicalPath(found.absPath);
-      if (!regReal || seenRegPaths.has(regReal)) continue;
-      seenRegPaths.add(regReal);
+      const regCmp = normCmp(regReal);
+      if (!regReal || seenRegPaths.has(regCmp)) continue;
+      seenRegPaths.add(regCmp);
+      const protectedSet = new Set(
+        [regReal, ...getProtectedRegistryPaths(wsReal, { dataDir })]
+          .map((p) => normCmp(resolveCanonicalPath(p)))
+          .filter(Boolean)
+      );
       const baseDir = resolveEffectiveBaseDir(payloadCwd, argsCwd, wsReal);
-      const hitTargets = targets.filter((t) => resolveCanonicalPath(t.rawPath, baseDir) === regReal);
+      const hitTargets = targets.filter((t) => protectedSet.has(normCmp(resolveCanonicalPath(t.rawPath, baseDir))));
       if (hitTargets.length > 0) {
         matches.push({
           regFound: { workspace: wsReal, ...found },
@@ -1630,6 +1657,7 @@ function run() {
         dataDir,
         wsReal: hit.regFound.workspace,
         pluginRoot: PLUGIN_ROOT,
+        includeDocs: false,
       });
       const res = evaluatePreToolUse({
         payload,
@@ -1692,6 +1720,7 @@ function run() {
     dataDir,
     wsReal: regFound.workspace,
     pluginRoot: PLUGIN_ROOT,
+    includeDocs: eventName === 'SessionStart',
   });
 
   if (eventName === 'SessionStart') {

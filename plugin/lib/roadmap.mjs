@@ -92,7 +92,7 @@ function cleanId(val) {
 function cleanStringArray(val, maxItems = 16, maxLen = 120) {
   if (typeof val === 'string') {
     val = val
-      .split(/[,;\n]/)
+      .split(/[,;，；、\n]/)
       .map((s) => s.trim())
       .filter(Boolean);
   }
@@ -122,6 +122,12 @@ function normalizePathPrefix(raw) {
   return cleaned === '.' || cleaned === '*' || cleaned === '**' ? '*' : cleaned;
 }
 
+function globToRegex(globStr) {
+  const escaped = globStr.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  const reBody = escaped.replace(/\*\*/g, '\u0000').replace(/\*/g, '[^/]*').replace(/\u0000/g, '.*');
+  return new RegExp(`^${reBody}(?:$|/)`);
+}
+
 export function pathsOverlap(pathA, pathB) {
   const a = normalizePathPrefix(pathA);
   const b = normalizePathPrefix(pathB);
@@ -129,6 +135,15 @@ export function pathsOverlap(pathA, pathB) {
   if (a === '*' || b === '*') return true;
   if (a === b) return true;
   if (a.startsWith(`${b}/`) || b.startsWith(`${a}/`)) return true;
+  if (a.includes('*') && !b.includes('*') && globToRegex(a).test(b)) return true;
+  if (b.includes('*') && !a.includes('*') && globToRegex(b).test(a)) return true;
+  if (a.includes('*') && b.includes('*')) {
+    const dirA = a.split('*')[0].replace(/\/+$/, '');
+    const dirB = b.split('*')[0].replace(/\/+$/, '');
+    if (!dirA || !dirB || dirA === dirB || dirA.startsWith(`${dirB}/`) || dirB.startsWith(`${dirA}/`)) {
+      return true;
+    }
+  }
   return false;
 }
 
@@ -470,7 +485,10 @@ export function inspectNodeHandoff(wsReal, node) {
   }
 }
 
-export function loadWorkspaceRoadmap(wsReal, { dataDir = '', workspaceSettings = null } = {}) {
+export function loadWorkspaceRoadmap(
+  wsReal,
+  { dataDir = '', workspaceSettings = null, includeHandoffs = true } = {}
+) {
   const found = findExistingRoadmap(wsReal, { dataDir, workspaceSettings });
   if (!found) {
     return {
@@ -500,10 +518,17 @@ export function loadWorkspaceRoadmap(wsReal, { dataDir = '', workspaceSettings =
   }
   const data = sanitizeRoadmapData(rawL2 || buildDefaultRoadmapL2(basename(wsReal)));
   const graph = evaluateRoadmapGraph(data);
-  graph.nodes = graph.nodes.map((n) => ({
-    ...n,
-    handoff: inspectNodeHandoff(wsReal, n),
-  }));
+  if (includeHandoffs) {
+    graph.nodes = graph.nodes.map((n) => ({
+      ...n,
+      handoff: inspectNodeHandoff(wsReal, n),
+    }));
+  } else {
+    graph.nodes = graph.nodes.map((n) => ({
+      ...n,
+      handoff: { exists: false, relPath: n.handoffPath || `.agents/handoffs/${n.id}.md`, bytes: 0, preview: '' },
+    }));
+  }
   return {
     exists: true,
     isManaged: found.isManaged,
@@ -549,7 +574,7 @@ export function saveRoadmapL1(
     const loaded = loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings });
     if (!loaded.exists) throw new PathError(404, 'Roadmap not initialized in workspace');
     if (expectedL1Hash && loaded.l1Hash && expectedL1Hash !== loaded.l1Hash) {
-      throw new PathError(409, 'ROADMAP.md 已被外部修改，请重载后再保存');
+      throw new PathError(409, 'ROADMAP.md 已被外部修改，请重载后再保存', { error: 'hash_conflict' });
     }
     if (typeof content !== 'string') throw new PathError(400, 'content must be a string');
     if (Buffer.byteLength(content, 'utf8') > 256 * 1024) {
@@ -569,7 +594,7 @@ export function upsertRoadmapMilestone(
     const loaded = loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings });
     if (!loaded.exists) throw new PathError(404, 'Roadmap not initialized in workspace');
     if (expectedL2Hash && loaded.l2Hash && expectedL2Hash !== loaded.l2Hash) {
-      throw new PathError(409, 'roadmap.json 已被外部修改，请刷新后再保存');
+      throw new PathError(409, 'roadmap.json 已被外部修改，请刷新后再保存', { error: 'hash_conflict' });
     }
     const id = cleanId(milestone?.id);
     if (!id) throw new PathError(400, 'Milestone id is required');
@@ -598,7 +623,7 @@ export function upsertRoadmapNode(
     const loaded = loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings });
     if (!loaded.exists) throw new PathError(404, 'Roadmap not initialized in workspace');
     if (expectedL2Hash && loaded.l2Hash && expectedL2Hash !== loaded.l2Hash) {
-      throw new PathError(409, 'roadmap.json 已被外部修改，请刷新后再保存');
+      throw new PathError(409, 'roadmap.json 已被外部修改，请刷新后再保存', { error: 'hash_conflict' });
     }
     const id = cleanId(nodeInput?.id);
     if (!id) throw new PathError(400, 'Workstream node id is required');
@@ -610,7 +635,14 @@ export function upsertRoadmapNode(
     const prev = prevIdx >= 0 ? data.nodes[prevIdx] : null;
 
     if (!hasExplicitOrig && nodeInput?.requireNew === true && prev) {
-      throw new PathError(409, `分支节点 ${id} 已存在，如需修改请使用编辑操作`);
+      throw new PathError(409, `分支节点 ${id} 已存在，如需修改请使用编辑操作`, {
+        error: 'duplicate_id',
+      });
+    }
+    if (origId !== id && data.nodes.some((n) => n.id === id)) {
+      throw new PathError(409, `目标分支节点 ${id} 已存在，不能覆盖已有节点`, {
+        error: 'duplicate_id',
+      });
     }
 
     const mergedNode = {
@@ -664,13 +696,13 @@ export function upsertRoadmapNode(
 export function updateRoadmapNodeStatus(
   wsReal,
   { id, status, linkedConvId } = {},
-  { dataDir = '', workspaceSettings = null, expectedL2Hash = '' } = {}
+  { dataDir = '', workspaceSettings = null, expectedL2Hash = '', onlyIfNotDone = false } = {}
 ) {
   return withRoadmapLock(wsReal, dataDir, () => {
     const loaded = loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings });
     if (!loaded.exists) throw new PathError(404, 'Roadmap not initialized in workspace');
     if (expectedL2Hash && loaded.l2Hash && expectedL2Hash !== loaded.l2Hash) {
-      throw new PathError(409, 'roadmap.json 已被外部修改，请刷新后再保存');
+      throw new PathError(409, 'roadmap.json 已被外部修改，请刷新后再保存', { error: 'hash_conflict' });
     }
     const targetId = cleanId(id);
     if (!targetId) throw new PathError(400, 'Node id is required');
@@ -683,7 +715,9 @@ export function updateRoadmapNodeStatus(
     const node = data.nodes.find((n) => n.id === targetId);
     if (!node) throw new PathError(404, `Workstream node ${targetId} not found`);
 
-    if (status) node.status = status;
+    if (status && !(onlyIfNotDone && (node.status === 'done' || node.status === 'verified'))) {
+      node.status = status;
+    }
     if (linkedConvId !== undefined) node.linkedConvId = cleanString(linkedConvId, '', 64);
     node.updatedAt = new Date().toISOString();
     data.updatedAt = node.updatedAt;
@@ -707,7 +741,7 @@ export function deleteRoadmapNode(
     const loaded = loadWorkspaceRoadmap(wsReal, { dataDir, workspaceSettings });
     if (!loaded.exists) throw new PathError(404, 'Roadmap not initialized in workspace');
     if (expectedL2Hash && loaded.l2Hash && expectedL2Hash !== loaded.l2Hash) {
-      throw new PathError(409, 'roadmap.json 已被外部修改，请刷新后再保存');
+      throw new PathError(409, 'roadmap.json 已被外部修改，请刷新后再保存', { error: 'hash_conflict' });
     }
     const targetId = cleanId(id);
     const data = sanitizeRoadmapData(loaded.data);

@@ -171,11 +171,20 @@ export async function handleRoadmapRoute({
     if (!body.force) {
       if (node.effectiveStatus === 'blocked') {
         const blockers = [...(node.unmetDeps || []), ...(node.missingDeps || [])].join(', ');
-        throw new HttpError(409, `分支 ${node.id} 前置依赖尚未完成 (${blockers || '未知'})，请先推进前置节点`);
+        throw new HttpError(409, `分支 ${node.id} 前置依赖尚未完成 (${blockers || '未知'})，请先推进前置节点`, {
+          error: 'node_not_ready',
+        });
       }
       if (node.effectiveStatus === 'done') {
-        throw new HttpError(409, `分支 ${node.id} 已标记完成，无需重复派单`);
+        throw new HttpError(409, `分支 ${node.id} 已标记完成，无需重复派单`, {
+          error: 'node_not_ready',
+        });
       }
+    }
+    if (body.expectedL2Hash && snap.roadmap.l2Hash && body.expectedL2Hash !== snap.roadmap.l2Hash) {
+      throw new HttpError(409, 'roadmap.json 已被外部修改，请刷新后再派单', {
+        error: 'hash_conflict',
+      });
     }
 
     const resolved = resolveEffectiveSettings({ dataDir, wsReal, pluginRoot, env: process.env });
@@ -210,7 +219,7 @@ export async function handleRoadmapRoute({
       {
         dataDir,
         workspaceSettings: resolved.workspace,
-        expectedL2Hash: body.expectedL2Hash || '',
+        onlyIfNotDone: true,
       }
     );
     sendJson(res, 200, {

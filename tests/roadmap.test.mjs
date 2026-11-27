@@ -178,12 +178,20 @@ test('Phase 3: 3-tier hybrid roadmap supports DAG readiness, cycle rejection, ow
     const outsideDir = join(sb.dir, 'outside_secret');
     mkdirSync(outsideDir, { recursive: true });
     writeFileSync(join(outsideDir, 'leak.md'), 'TOP_SECRET', 'utf8');
-    symlinkSync(outsideDir, join(ws, '.agents', 'escape_link'));
-    const hfSymlinkEscape = inspectNodeHandoff(ws, {
-      id: 'W2',
-      handoffPath: '.agents/escape_link/leak.md',
-    });
-    assert.equal(hfSymlinkEscape.exists, false);
+    let symlinkCreated = true;
+    try {
+      symlinkSync(outsideDir, join(ws, '.agents', 'escape_link'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (err) {
+      if (process.platform === 'win32' && err?.code === 'EPERM') symlinkCreated = false;
+      else throw err;
+    }
+    if (symlinkCreated) {
+      const hfSymlinkEscape = inspectNodeHandoff(ws, {
+        id: 'W2',
+        handoffPath: '.agents/escape_link/leak.md',
+      });
+      assert.equal(hfSymlinkEscape.exists, false);
+    }
 
     // 10) Editing existing node preserves linkedConvId/notes and renaming migrates downstream dependsOn; stale expectedL2Hash throws 409
     upsertRoadmapNode(ws, {
@@ -198,6 +206,15 @@ test('Phase 3: 3-tier hybrid roadmap supports DAG readiness, cycle rejection, ow
       notes: 'preserved-note',
     });
     const renamedNode = edited.graph.nodes.find((n) => n.id === 'W2_RENAMED');
+    assert.throws(
+      () =>
+        upsertRoadmapNode(ws, {
+          originalId: 'W2_RENAMED',
+          id: 'W3',
+          title: '禁止重命名吞掉已有节点',
+        }),
+      (err) => err?.status === 409 && err?.extra?.error === 'duplicate_id'
+    );
     const downstreamNode = edited.graph.nodes.find((n) => n.id === 'W3');
     assert.ok(renamedNode);
     assert.equal(renamedNode.notes, 'preserved-note');

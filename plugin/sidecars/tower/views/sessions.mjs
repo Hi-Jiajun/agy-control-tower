@@ -200,8 +200,13 @@ export function renderQueue(ctx, snap) {
   const { $, setModelField, setHtmlIfChanged } = ctx;
   const queue = snap.parsed?.queue || [];
   const eff = snap.settings?.effective || {};
+  const defaultRouteCandidate = `L2 ${eff.l2StandardModel || 'Orchestrator (Neon Extra High)'}`;
+  const fallbackQueueRoute =
+    [defaultRouteCandidate, 'L2 Orchestrator (Neon Extra High)', 'L2 Gemini 4 Neon (XHigh)'].find((r) =>
+      [...($('qf-route')?.querySelectorAll('option') || [])].some((o) => o.value === r)
+    ) || 'L2 Orchestrator (Neon Extra High)';
   if (!$('qf-originalId').value && !$('qf-route').dataset.userEdited) {
-    setModelField('qf-route', `L2 ${eff.l2StandardModel || 'Orchestrator (Neon Extra High)'}`);
+    setModelField('qf-route', fallbackQueueRoute);
   }
   $('queue-count-badge').textContent = String(queue.length);
   const box = $('queue-list');
@@ -380,7 +385,9 @@ export function bindSessionsAndQueueEvents(ctx) {
       render(res.snapshot);
       showToast('已入账活跃专职会话');
     } catch (err) {
-      if (err.status === 409) $('conflict-banner').classList.remove('hidden');
+      if (err.status === 409 && err.data?.error === 'hash_conflict') {
+        $('conflict-banner').classList.remove('hidden');
+      }
       showToast(err.message, true);
     }
   });
@@ -410,7 +417,9 @@ export function bindSessionsAndQueueEvents(ctx) {
       render(res.snapshot);
       showToast(`已归档会话 ${convId.slice(0, 8)}`);
     } catch (err) {
-      if (err.status === 409) $('conflict-banner').classList.remove('hidden');
+      if (err.status === 409 && err.data?.error === 'hash_conflict') {
+        $('conflict-banner').classList.remove('hidden');
+      }
       showToast(err.message, true);
     }
   });
@@ -473,13 +482,15 @@ export function bindSessionsAndQueueEvents(ctx) {
   $('queue-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     try {
+      const origVal = $('qf-originalId').value.trim();
       const res = await api('/api/queue/upsert', {
         method: 'POST',
         body: {
           workspace: state.workspace,
           relPath: state.snap.registryRelPath,
           expectedHash: state.snap.hash,
-          originalId: $('qf-originalId').value || undefined,
+          originalId: origVal || undefined,
+          requireNew: !origVal,
           id: $('qf-id').value.trim(),
           summary: $('qf-summary').value.trim(),
           status: $('qf-status').value,
@@ -511,20 +522,24 @@ export function bindSessionsAndQueueEvents(ctx) {
   });
 
   $('save-raw-btn').addEventListener('click', async () => {
+    const reqWs = state.workspace;
+    if (!reqWs) return;
     try {
       const res = await api('/api/registry/save', {
         method: 'POST',
         body: {
-          workspace: state.workspace,
+          workspace: reqWs,
           relPath: state.snap.registryRelPath,
           expectedHash: state.rawBaseHash || state.snap.hash,
           content: $('raw-editor').value,
         },
       });
-      state.rawDirty = false;
-      state.rawBaseHash = res.snapshot?.hash || '';
-      $('conflict-banner').classList.add('hidden');
-      render(res.snapshot);
+      if (state.workspace === reqWs) {
+        state.rawDirty = false;
+        state.rawBaseHash = res.snapshot?.hash || '';
+        $('conflict-banner').classList.add('hidden');
+        render(res.snapshot);
+      }
       showToast('台账已保存');
     } catch (err) {
       showToast(err.message, true);
@@ -538,5 +553,20 @@ export function bindSessionsAndQueueEvents(ctx) {
     $('conflict-banner').classList.add('hidden');
   });
 
-  $('reload-latest-btn').addEventListener('click', () => refresh());
+  $('reload-latest-btn').addEventListener('click', () => {
+    const reloadBtn = $('reload-latest-btn');
+    const hasUnsavedDraft = state.rawDirty || state.rmL1Dirty;
+    const doReload = async () => {
+      ['lease-form', 'ctrl-form', 'session-form', 'archive-form', 'rm-node-form', 'rm-ms-form', 'queue-form'].forEach(
+        (id) => $(id)?.classList.add('hidden')
+      );
+      await refresh();
+      showToast('已重载外部最新台账与路线图');
+    };
+    if (hasUnsavedDraft && typeof ctx.confirmInline === 'function') {
+      ctx.confirmInline(reloadBtn, '丢弃草稿重载?', doReload);
+    } else {
+      doReload();
+    }
+  });
 }

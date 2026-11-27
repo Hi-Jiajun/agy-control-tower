@@ -1,9 +1,10 @@
 import { existsSync, watch } from 'node:fs';
-import { join } from 'node:path';
-import { getWorkspaceSettingsDir } from '../../../lib/paths.mjs';
+import { dirname, join, resolve } from 'node:path';
+import { getWorkspaceSettingsDir, readJsonSafe } from '../../../lib/paths.mjs';
 
 const HEARTBEAT_INTERVAL_MS = 20000;
 const WATCH_DEBOUNCE_MS = 120;
+const MAX_SSE_CLIENTS = 16;
 
 function isTransientWatchFilename(filename) {
   if (!filename) return false;
@@ -52,6 +53,18 @@ export class SseHub {
       heartbeatTimer.unref();
     }
 
+    if (this.#clients.size >= MAX_SSE_CLIENTS) {
+      const oldest = this.#clients.values().next().value;
+      if (oldest) {
+        clearInterval(oldest.heartbeatTimer);
+        this.#clients.delete(oldest);
+        try {
+          oldest.res.end();
+        } catch {
+          // ignore
+        }
+      }
+    }
     const client = { req, res, workspace: workspace || '', heartbeatTimer };
     this.#clients.add(client);
 
@@ -64,7 +77,7 @@ export class SseHub {
     }
 
     if (dataDir) this.#dataDir = dataDir;
-    if (workspace) this.#watchedWorkspaces.add(workspace);
+    if (workspace) this.#touchWorkspace(workspace);
     this.#syncWatchers();
 
     const cleanup = () => {
@@ -81,9 +94,15 @@ export class SseHub {
     res.on('error', cleanup);
   }
 
+  #touchWorkspace(wsReal) {
+    if (!wsReal) return;
+    this.#watchedWorkspaces.delete(wsReal);
+    this.#watchedWorkspaces.add(wsReal);
+  }
+
   trackWorkspace(wsReal, dataDir = '') {
     if (dataDir) this.#dataDir = dataDir;
-    if (wsReal) this.#watchedWorkspaces.add(wsReal);
+    if (wsReal) this.#touchWorkspace(wsReal);
     if (this.#clients.size > 0) {
       this.#syncWatchers();
     }
@@ -122,6 +141,7 @@ export class SseHub {
       const rsn = this.#pendingReason;
       this.#pendingWorkspace = '';
       this.#pendingReason = '';
+      this.#syncWatchers();
       this.notify({ workspace: ws, reason: rsn });
       if (this.#onFsEvent) {
         try {
@@ -137,9 +157,30 @@ export class SseHub {
   }
 
   #ensureDirWatcher(dirPath, associatedWorkspace = '') {
-    if (!dirPath || this.#watchers.has(dirPath) || !existsSync(dirPath)) return;
+    if (!dirPath) return;
+    if (!existsSync(dirPath)) {
+      const staleWatcher = this.#watchers.get(dirPath);
+      if (staleWatcher) {
+        try {
+          staleWatcher.close();
+        } catch {
+          // ignore
+        }
+        this.#watchers.delete(dirPath);
+      }
+      return;
+    }
+    if (this.#watchers.has(dirPath)) return;
     try {
       const watcher = watch(dirPath, { persistent: false }, (_eventType, filename) => {
+        if (!existsSync(dirPath)) {
+          try {
+            watcher.close();
+          } catch {
+            // ignore
+          }
+          this.#watchers.delete(dirPath);
+        }
         if (isTransientWatchFilename(filename)) return;
         this.#scheduleDebouncedNotify(associatedWorkspace, `fs:${filename || 'change'}`);
       });
@@ -162,26 +203,49 @@ export class SseHub {
 
   #syncWatchers() {
     if (this.#clients.size === 0) return;
+    const desired = new Map();
     if (this.#dataDir && existsSync(this.#dataDir)) {
-      this.#ensureDirWatcher(this.#dataDir, '');
+      desired.set(this.#dataDir, '');
+      const wsRootDir = join(this.#dataDir, 'workspaces');
+      if (existsSync(wsRootDir)) {
+        desired.set(wsRootDir, '');
+      }
     }
     for (const client of this.#clients) {
-      if (client.workspace) this.#watchedWorkspaces.add(client.workspace);
+      if (client.workspace) this.#touchWorkspace(client.workspace);
     }
     for (const ws of [...this.#watchedWorkspaces].slice(-8)) {
       if (existsSync(ws)) {
-        this.#ensureDirWatcher(ws, ws);
+        desired.set(ws, ws);
         const agentsDir = join(ws, '.agents');
-        if (existsSync(agentsDir)) {
-          this.#ensureDirWatcher(agentsDir, ws);
-        }
+        if (existsSync(agentsDir)) desired.set(agentsDir, ws);
+        const researchDir = join(ws, 'research');
+        if (existsSync(researchDir)) desired.set(researchDir, ws);
       }
       if (this.#dataDir) {
         const wsDataDir = getWorkspaceSettingsDir(this.#dataDir, ws);
         if (existsSync(wsDataDir)) {
-          this.#ensureDirWatcher(wsDataDir, ws);
+          desired.set(wsDataDir, ws);
+          const wsCfg = readJsonSafe(join(wsDataDir, 'settings.json'), null);
+          if (wsCfg?.customRegistryRelPath && typeof wsCfg.customRegistryRelPath === 'string') {
+            const customParent = dirname(resolve(ws, wsCfg.customRegistryRelPath));
+            if (existsSync(customParent)) desired.set(customParent, ws);
+          }
         }
       }
+    }
+    for (const [dirPath, watcher] of [...this.#watchers.entries()]) {
+      if (!desired.has(dirPath) || !existsSync(dirPath)) {
+        try {
+          watcher.close();
+        } catch {
+          // ignore
+        }
+        this.#watchers.delete(dirPath);
+      }
+    }
+    for (const [dirPath, assocWs] of desired.entries()) {
+      this.#ensureDirWatcher(dirPath, assocWs);
     }
   }
 

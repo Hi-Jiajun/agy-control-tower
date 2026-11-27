@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
   archiveActiveSession,
   deleteQueueRow,
   extractTemplates,
+  extractTemplatesFromMarkdown,
   isActiveController,
   parseRegistry,
   updateControllerSection,
@@ -91,10 +93,51 @@ test('registry parses and mutates Sections 1..5 cleanly while sanitizing markdow
     status: 'RUNNING',
     route: 'L2 Orchestrator (Neon)',
   });
+  md = upsertQueueRow(md, {
+    id: 'T10',
+    summary: '第二个任务',
+    status: 'QUEUED',
+    route: 'L1 Gemini 4 Hydrogen (XHigh)',
+    requireNew: true,
+  });
+  assert.throws(
+    () => upsertQueueRow(md, { id: 'T9', summary: '重复新增拦截', requireNew: true }),
+    (err) => err?.status === 409 && err?.extra?.error === 'duplicate_id'
+  );
+  assert.throws(
+    () => upsertQueueRow(md, { originalId: 'T9', id: 'T10', summary: '重命名吞数据拦截' }),
+    (err) => err?.status === 409 && err?.extra?.error === 'duplicate_id'
+  );
   parsed = parseRegistry(md);
   assert.ok(parsed.queue.some((q) => q.id === 'T9' && q.status === 'RUNNING'));
+  assert.ok(parsed.queue.some((q) => q.id === 'T10'));
 
   md = deleteQueueRow(md, 'T9');
+  md = deleteQueueRow(md, 'T10');
   parsed = parseRegistry(md);
   assert.equal(parsed.queue.some((q) => q.id === 'T9'), false);
+
+  // CRLF templates & non-hex short worker ID prefix non-collision
+  const rawCrlf = readFileSync(templatesPath, 'utf8').replace(/\r?\n/g, '\r\n');
+  const parsedCrlf = extractTemplatesFromMarkdown(rawCrlf);
+  assert.equal(parsedCrlf.registrySkeleton, templates.registrySkeleton);
+  assert.ok(parsedCrlf.handoverTemplate.length > 80);
+
+  md = upsertActiveSessionRow(md, {
+    conversationId: 'worker-1',
+    topic: '子任务 1',
+    modelTool: 'Neon',
+    lockStatus: '纯离线无锁',
+    status: 'ACTIVE',
+    paths: '-',
+  });
+  md = upsertActiveSessionRow(md, {
+    conversationId: 'worker-10',
+    topic: '子任务 10',
+    modelTool: 'Neon',
+    lockStatus: '纯离线无锁',
+    status: 'ACTIVE',
+    paths: '-',
+  });
+  assert.equal(parseRegistry(md).activeSessions.length, 2);
 });

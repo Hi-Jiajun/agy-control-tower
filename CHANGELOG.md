@@ -10,8 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - **Sidecar 本地跨站与防 DNS 重绑定纵深加固**：
   - `plugin/sidecars/tower/main.mjs` 将 `#validOrigin` 从前缀匹配升级为 `new URL(origin)` 精确环回主机名比对，彻底阻断 `http://127.0.0.1.evil.example`、`http://localhost.evil.example` 等子域前缀伪造与未授权跨站沙箱 `Origin: null`。
-  - 新增 `#validHost` 环回主机名校验阻断 DNS Rebinding 攻击，在 `/api/*` 与 `/_sidecar/*` 全量拦截 `Sec-Fetch-Site: cross-site`，并为所有静态资源与 JSON 响应附加 `X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer` 与 `Cross-Origin-Resource-Policy: same-origin` 安全头。
-  - `plugin/lib/logger.mjs` 与 `scripts/ct-precommit-check.mjs` 补齐 Windows 个人主目录路径自动脱敏与提交门禁扫描。
+  - 新增 `#validHost` 环回主机名校验阻断 DNS Rebinding 攻击，在 `/api/*` 与 `/_sidecar/*` 全量拦截 `Sec-Fetch-Site: cross-site`，对非空 `POST` 请求强制校验 `Content-Type: application/json`（`415` 阻断跨端口 `no-cors` 简单请求），并为所有静态资源与 JSON 响应附加 `X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer` 与 `Cross-Origin-Resource-Policy: same-origin` 安全头。
+  - `plugin/scripts/ct-hook.mjs` 加固 `PreToolUse` 台账候选全集合写保护，阻断在托管或自定义台账工作区通过新建高优先级 `.agents/SESSION-REGISTRY.md` 实施遮蔽夺权；`plugin/lib/logger.mjs` 与 `scripts/ct-precommit-check.mjs` 补齐 Windows 个人目录与 UTF-16 文本脱敏扫描。
 
 ### Added
 - **开源社区治理、中英双语文档与三端 GitHub Actions CI**：
@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **质感微动效与前后端渲染性能深度优化**：新增 GPU `translate3d` 滑动底栏标签指示条与三段式设置滑块、磨砂半透吸顶阴影、暗色卡片 `1px` 高光微浮雕、刷新旋钮微反馈与折叠/面板入场缓动（严格兼容 `减弱动效` 与 `prefers-reduced-motion`）；后端消除跨工作区概览重复文件 I/O 并引入 `stateSig`/`sinceSig` 零载荷静默轮询短路，前端引入仅渲染当前活跃标签页（`dirtyTabs` 按需刷新）、`setHtmlIfChanged` DOM 签名记忆化与 `content-visibility: auto` 布局隔离。
   - `scripts/ct-ui-smoke.mjs` 与 `tests/ui-logic.test.mjs` 升级为覆盖全部 6 大标签页、13 处模型选择、滑动指示条、DOM 零重绘记忆化、RPC 派单/巡检/投递及 `360px` / `390px` / `960px` 亮暗主题的 36 项全功能真浏览器回归门禁；`scripts/ct-doctor.mjs` 与 `ct-release.mjs` 同步支持识别并在实装时自动回收旧驻留 Sidecar 进程。
 - **全平台（Linux / macOS / Windows）运行态与工具链兼容增强**：
-  - `plugin/lib/paths.mjs`、`plugin/lib/settings.mjs`、`plugin/scripts/ct-hook.mjs`、`plugin/sidecars/tower/lib/agentapi.mjs`、`scripts/ct-doctor.mjs`、`scripts/ct-release.mjs` 与 `scripts/ct-ui-smoke.mjs` 全面兼容 Windows `USERPROFILE`、盘符大小写归一化、跨平台 `PATH`/`PATHEXT` 命令探测、`.mjs` 桩脚本直接调用以及 macOS/Windows 下 Chrome/Edge/Playwright 浏览器路径自动发现；`package.json` `setup-hooks` 升级为跨平台 Node 实现。
+  - `plugin/lib/paths.mjs`、`plugin/lib/registry.mjs`、`plugin/lib/roadmap.mjs`、`plugin/lib/transcript.mjs`、`plugin/scripts/ct-hook.mjs`、`plugin/sidecars/tower/lib/{agentapi,sse-hub,bundle}.mjs`、`scripts/ct-{doctor,release,miner,ui-smoke}.mjs` 与 `.gitattributes` 全面打通跨平台细节：修复 Windows CRLF 模板提取、macOS `/private/var` 软链哈希对齐、桌面图标启动宿主下 `<appDataDir>/bin/agentapi` 自动寻址、`SseHub` 新建子目录动态补挂与 LRU 回收、`PreInvocation` 哨兵引用级增量缓存、`hasOutboundAgentApiReport` 报错过滤、`<SYSTEM_MESSAGE>` 焦点隔离以及路线图/队列重命名防覆盖保护。
   - 重构升级中文主页 `README.md`（新增 Mermaid 系统架构图、3 分钟快速开始、零侵入 `PLUGIN_DATA` 托管指引与实证路由表），并同步更新 `plugin/README.md` 与 `docs/ARCHITECTURE-ROADMAP.md`。
 
 ## [1.9.1] - 2026-11-27

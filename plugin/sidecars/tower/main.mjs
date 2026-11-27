@@ -402,6 +402,14 @@ class ControlTowerServer {
         if (settled) return;
         const raw = Buffer.concat(chunks).toString('utf8').trim();
         if (!raw) return done(null, {});
+        const ct = String(req.headers['content-type'] || '').toLowerCase();
+        if (!ct.includes('application/json')) {
+          return done(
+            new HttpError(415, 'Content-Type must be application/json', {
+              error: 'unsupported_media_type',
+            })
+          );
+        }
         try {
           const parsed = JSON.parse(raw);
           done(null, parsed && typeof parsed === 'object' ? parsed : {});
@@ -417,13 +425,24 @@ class ControlTowerServer {
     });
   }
 
-  #buildSnapshot(wsRaw, { recentOverride = null } = {}) {
+  #activateWorkspaceIfIdle(wsReal, dataDir) {
+    if (!wsReal) return;
+    if (!this.#activeWorkspace) {
+      this.#activeWorkspace = wsReal;
+      this.#sseHub.trackWorkspace(wsReal, dataDir);
+      this.#ensureSentinelTimer();
+    }
+  }
+
+  #buildSnapshot(wsRaw, { recentOverride = null, allowRecentFallback = true } = {}) {
     const dataDir = getDataDir();
     const plugin = readPluginMeta();
     const recent = recentOverride || loadRecentWorkspaces();
     const wsReal = wsRaw
       ? normalizeWorkspaceInput(wsRaw, { throwOnInvalid: true })
-      : recent[0] || null;
+      : allowRecentFallback
+        ? recent[0] || null
+        : null;
 
     const resolved = resolveEffectiveSettings({
       dataDir,
@@ -764,10 +783,12 @@ class ControlTowerServer {
     const currentHash = sha256(content);
     if (body.expectedHash && body.expectedHash !== currentHash) {
       throw new HttpError(409, '台账已被外部会话修改，请重载最新内容后再保存。', {
+        error: 'hash_conflict',
         currentHash,
         content,
       });
     }
+    this.#activateWorkspaceIfIdle(wsReal, dataDir);
     return { dataDir, wsReal, target, content, currentHash, resolved };
   }
 
@@ -861,6 +882,7 @@ class ControlTowerServer {
     if (req.method === 'GET' && url.pathname === '/api/events') {
       const wsRaw = url.searchParams.get('workspace') || '';
       const wsReal = wsRaw ? normalizeWorkspaceInput(wsRaw, { throwOnInvalid: false }) || '' : '';
+      if (wsReal) this.#activateWorkspaceIfIdle(wsReal, dataDir);
       this.#sseHub.subscribe(req, res, { workspace: wsReal, dataDir });
       return;
     }
@@ -880,7 +902,12 @@ class ControlTowerServer {
     }
 
     if (req.method === 'GET' && url.pathname === '/api/snapshot') {
-      const snap = this.#buildSnapshot(url.searchParams.get('workspace') || '');
+      const wsParam = url.searchParams.get('workspace') || '';
+      const unbound = url.searchParams.get('unbound') === '1';
+      const snap = this.#buildSnapshot(wsParam, { allowRecentFallback: !unbound });
+      if (wsParam && snap.workspace) {
+        this.#activateWorkspaceIfIdle(snap.workspace, dataDir);
+      }
       const sinceSig = (url.searchParams.get('sinceSig') || '').trim();
       if (sinceSig && snap.stateSig && sinceSig === snap.stateSig) {
         return this.#sendJson(res, 200, { unchanged: true, stateSig: snap.stateSig, workspace: snap.workspace });
@@ -1192,7 +1219,8 @@ class ControlTowerServer {
         if (wantsExclusiveLock && parsedReg && !isLeaseIdle(parsedReg.lease?.lockStatus || '')) {
           throw new HttpError(
             409,
-            `当前工作区独占资源已被占用 (${parsedReg.lease?.holder || parsedReg.lease?.lockStatus})，请先释放租约或改为纯离线无锁派遣`
+            `当前工作区独占资源已被占用 (${parsedReg.lease?.holder || parsedReg.lease?.lockStatus})，请先释放租约或改为纯离线无锁派遣`,
+            { error: 'lease_busy' }
           );
         }
 
@@ -1223,13 +1251,19 @@ class ControlTowerServer {
         if (newConvId && regFound) {
           let nextMd = readFileSync(regFound.absPath, 'utf8');
           const topicLabel = String(body.topic || title || rawPrompt.slice(0, 48)).trim();
+          let effectiveLockLabel = lockStatus;
           if (wantsExclusiveLock) {
             try {
-              nextMd = updateLeaseSection(nextMd, {
-                lockStatus: 'LOCKED（独占占用中）',
-                holder: newConvId,
-                since: new Date().toISOString().slice(0, 16).replace('T', ' '),
-              });
+              const freshParsed = parseRegistry(nextMd);
+              if (isLeaseIdle(freshParsed.lease?.lockStatus || '')) {
+                nextMd = updateLeaseSection(nextMd, {
+                  lockStatus: 'LOCKED（独占占用中）',
+                  holder: newConvId,
+                  since: new Date().toISOString().slice(0, 16).replace('T', ' '),
+                });
+              } else {
+                effectiveLockLabel = '纯离线无锁 (锁已被并发抢占)';
+              }
             } catch {
               // ignore non-standard Section 1
             }
@@ -1238,7 +1272,7 @@ class ControlTowerServer {
             conversationId: newConvId,
             topic: topicLabel,
             modelTool: slashPrefix ? `${check.model} + ${slashPrefix}` : check.model,
-            lockStatus,
+            lockStatus: effectiveLockLabel,
             status: 'ACTIVE',
             paths: String(body.paths || '-').trim() || '-',
           });
@@ -1251,7 +1285,7 @@ class ControlTowerServer {
             updateRoadmapNodeStatus(
               wsReal,
               { id: body.workstreamId, status: 'active', linkedConvId: newConvId },
-              { dataDir, workspaceSettings: resolved.workspace }
+              { dataDir, workspaceSettings: resolved.workspace, onlyIfNotDone: true }
             );
           } catch {
             // ignore roadmap link mismatch
@@ -1399,6 +1433,10 @@ class ControlTowerServer {
 
     if (url.pathname === '/api/queue/upsert') {
       const { wsReal, target, content } = this.#loadRegistryForMutation(body);
+      const routeStr = String(body.route || '').trim();
+      if (routeStr && /(?:\bargon\b|3\.8|flash[_-]?lite)/i.test(routeStr)) {
+        throw new HttpError(400, '队列建议路线包含禁用模型（严禁 Argon / Gemini 3.8 / flash_lite）');
+      }
       const next = upsertQueueRow(content, body);
       atomicWriteText(target.absPath, next.endsWith('\n') ? next : `${next}\n`);
       return this.#sendJson(res, 200, { ok: true, snapshot: this.#buildSnapshot(wsReal) });
