@@ -14,6 +14,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { appendFlightEvent } from '../plugin/lib/logger.mjs';
 import { upsertInboxItem } from '../plugin/lib/inbox.mjs';
+import { resolveCommandExecutable } from '../plugin/lib/paths.mjs';
 import { ControlTowerServer } from '../plugin/sidecars/tower/main.mjs';
 import { makeConvId, makeSandbox, makeTranscriptPath } from '../tests/helpers.mjs';
 
@@ -21,8 +22,18 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
 
 function findChromeBinary() {
-  const envBin = (process.env.CT_CHROME_BIN || process.env.CHROME_BIN || '').trim();
+  const envBin = (
+    process.env.CT_CHROME_BIN ||
+    process.env.CHROME_BIN ||
+    process.env.CHROME_PATH ||
+    ''
+  ).trim();
   if (envBin && existsSync(envBin)) return envBin;
+
+  for (const cmd of ['google-chrome-stable', 'google-chrome', 'chrome', 'chromium', 'chromium-browser']) {
+    const fromPath = resolveCommandExecutable(cmd);
+    if (fromPath && existsSync(fromPath)) return fromPath;
+  }
 
   const fixed = [
     '/usr/bin/google-chrome-stable',
@@ -188,19 +199,33 @@ async function waitForCondition(fn, { timeoutMs = 6000, intervalMs = 100, label 
 }
 
 async function launchChrome(chromeBin, profileDir) {
+  const chromeEnv = { ...process.env };
+  delete chromeEnv.DBUS_SESSION_BUS_ADDRESS;
+  delete chromeEnv.DBUS_SYSTEM_BUS_ADDRESS;
+
   const proc = spawn(
     chromeBin,
     [
       '--headless=new',
       '--no-sandbox',
+      '--disable-setuid-sandbox',
       '--disable-gpu',
       '--disable-dev-shm-usage',
       '--disable-extensions',
+      '--disable-background-networking',
+      '--disable-sync',
+      '--disable-default-apps',
+      '--disable-component-update',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--password-store=basic',
+      '--use-mock-keychain',
+      '--remote-debugging-address=127.0.0.1',
       '--remote-debugging-port=0',
       `--user-data-dir=${profileDir}`,
       'about:blank',
     ],
-    { stdio: ['ignore', 'pipe', 'pipe'] }
+    { env: chromeEnv, stdio: ['ignore', 'pipe', 'pipe'] }
   );
 
   try {
@@ -208,11 +233,11 @@ async function launchChrome(chromeBin, profileDir) {
     const wsBrowserUrl = await new Promise((res, rej) => {
       const timer = setTimeout(
         () => rej(new Error(`Chrome failed to emit DevTools URL: ${stderrBuf.slice(-400)}`)),
-        12000
+        25000
       );
       proc.stderr.on('data', (chunk) => {
         stderrBuf += chunk.toString('utf8');
-        const m = stderrBuf.match(/DevTools listening on (ws:\/\/127\.0\.0\.1:\d+\/[^\s]+)/);
+        const m = stderrBuf.match(/DevTools listening on (ws:\/\/[^\s]+)/);
         if (m) {
           clearTimeout(timer);
           res(m[1]);
@@ -224,7 +249,7 @@ async function launchChrome(chromeBin, profileDir) {
       });
     });
 
-    const portMatch = wsBrowserUrl.match(/127\.0\.0\.1:(\d+)/);
+    const portMatch = wsBrowserUrl.match(/:(\d+)\//);
     const debugPort = portMatch[1];
     const targetsRes = await fetch(`http://127.0.0.1:${debugPort}/json/list`);
     const targets = await targetsRes.json();

@@ -11,6 +11,9 @@ on:
 permissions:
   contents: read
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -45,6 +48,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Chrome
+        id: chrome
         uses: browser-actions/setup-chrome@v1
 
       - name: Setup Node.js 22 LTS
@@ -53,4 +57,6 @@ jobs:
           node-version: '22'
 
       - name: Run narrow/wide Aux Pane CDP UI smoke checks
+        env:
+          CT_CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
         run: npm run test:ui
