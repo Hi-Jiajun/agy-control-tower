@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
+import { getManagedRegistryPath } from '../plugin/lib/paths.mjs';
 import { saveGlobalSettings, savePluginSettings } from '../plugin/lib/settings.mjs';
 import { loadWorkspaceInbox, recordControllerFocus } from '../plugin/lib/inbox.mjs';
 import { loadPluginState, savePluginState } from '../plugin/lib/transcript.mjs';
@@ -228,11 +229,30 @@ process.stdout.write(JSON.stringify({ ok: true }));
       pHandover.injectSteps.some((s) => s.systemMessage.systemMessage.includes('[control-tower 换届提醒]') && s.systemMessage.systemMessage.includes('5 次'))
     );
 
-    // Mark handoverIgnored for ctrlId & verify 6th compaction stays quiet
+    // Reaching 6th compaction WITHOUT handoverIgnored still stays quiet (warned only once per session at threshold)
+    writeFileSync(cLog, makeCompactedLog(6), 'utf8');
+    const pHandoverRepeat = callHook(
+      'PreInvocation',
+      {
+        conversationId: ctrlId,
+        workspacePaths: [ws],
+        lastUserInput: '继续第 6 次压缩后检查',
+        transcriptPath: cLog,
+      },
+      env
+    );
+    assert.equal(
+      (pHandoverRepeat.injectSteps || []).some((s) =>
+        s.systemMessage.systemMessage.includes('[control-tower 换届提醒]')
+      ),
+      false
+    );
+
+    // Mark handoverIgnored for ctrlId & verify 7th compaction stays quiet
     const stAfterHandover = loadPluginState(dataDir);
     stAfterHandover.controllers[ctrlId].handoverIgnored = true;
     savePluginState(dataDir, stAfterHandover);
-    writeFileSync(cLog, makeCompactedLog(6), 'utf8');
+    writeFileSync(cLog, makeCompactedLog(7), 'utf8');
     const pIgnored = callHook(
       'PreInvocation',
       {
@@ -468,6 +488,463 @@ test('PreInvocation emits one-shot plugin version sync notice for existing contr
     );
     assert.deepEqual(rFresh, {});
     assert.ok(loadPluginState(dataDir).controllers[freshCtrlId]?.lastSyncedVersion);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('PreToolUse guards agy-fast apply_edits and call_mcp_tool across array, JSON string, malformed, managed, multi-file forgery, handover, and cross-dir paths', () => {
+  // 1) hooks.json PreToolUse matcher covers built-in writers and MCP apply_edits while skipping read tools
+  const hooksJson = JSON.parse(readFileSync(join(process.cwd(), 'plugin', 'hooks.json'), 'utf8'));
+  const preMatcher = hooksJson['control-tower-pre-tool-use']?.PreToolUse?.[0]?.matcher || '';
+  const matcherRe = new RegExp(`^(?:${preMatcher})$`);
+  for (const name of ['write_file', 'edit_file', 'mcp_agy-fast_fast_apply_edits', 'apply_edits', 'call_mcp_tool']) {
+    assert.equal(matcherRe.test(name), true, `Expected PreToolUse matcher to include ${name}`);
+  }
+  for (const name of ['read_file', 'mcp_agy-fast_fast_batch_search', 'mcp_agy-fast_fast_quick_outline', 'run_command']) {
+    assert.equal(matcherRe.test(name), false, `Expected PreToolUse matcher to exclude ${name}`);
+  }
+
+  const sb = makeSandbox('ct-apply-edits-');
+  try {
+    const ws = join(sb.dir, 'ws');
+    const subWs = join(ws, 'packages', 'sub');
+    mkdirSync(join(ws, '.agents'), { recursive: true });
+    mkdirSync(subWs, { recursive: true });
+    const appDir = join(sb.dir, 'app_data');
+    const dataDir = join(sb.dir, 'plugin_data');
+    const cfgDir = join(sb.dir, 'cfg');
+    mkdirSync(cfgDir, { recursive: true });
+    writeFileSync(
+      join(cfgDir, 'config.json'),
+      JSON.stringify({ userSettings: { permissionPreset: 'AGENT_PERMISSION_PRESET_AUTO' } }),
+      'utf8'
+    );
+
+    const ctrlId = makeConvId('c', '1', '4', '8', 'a');
+    const workerA = makeConvId('a', '2', '4', '8', 'b');
+    const newCtrl = makeConvId('d', '3', '4', '8', 'c');
+    const rogueCtrl = makeConvId('e', '4', '4', '8', 'd');
+
+    const regPath = join(ws, '.agents', 'SESSION-REGISTRY.md');
+    writeFileSync(
+      regPath,
+      `# 台账
+## 一、当前独占资源租约
+| 字段 | 当前值 |
+| --- | --- |
+| **锁状态** | \`IDLE（空闲待分配）\` |
+| **持锁会话** | - |
+
+## 二、常驻主交流总控会话
+- **当前现役总控会话**：\`${ctrlId}\`（状态：\`ONLINE\`）
+
+## 三、活跃 / 挂起专职会话台账
+| 会话链接与 ID | 任务编号 / 主题 | 模型与工具 | 资源锁状态 | 当前状态 | 工作目录与日志回查路径 |
+| --- | --- | --- | --- | --- | --- |
+| [\`${workerA.slice(0, 8)}\`](conversation://${workerA}) | 任务A | Orchestrator (Neon) | 纯离线无锁 | \`ACTIVE\` | - |
+`,
+      'utf8'
+    );
+
+    const env = {
+      AGY_CONTROL_TOWER_DATA_DIR: dataDir,
+      ANTIGRAVITY_APP_DATA_DIR: appDir,
+      AGY_CONFIG_DIR: cfgDir,
+    };
+
+    // 2) Normal files via mcp_agy-fast_fast_apply_edits (array & JSON string) stay allowed without creating plugin_data
+    assert.deepEqual(
+      callHook(
+        'PreToolUse',
+        {
+          conversationId: workerA,
+          workspacePaths: [ws],
+          cwd: ws,
+          toolCall: {
+            name: 'mcp_agy-fast_fast_apply_edits',
+            args: {
+              edits: [{ path: 'src/a.js', hunks: [{ target: 'a', replacement: 'b' }] }],
+            },
+          },
+        },
+        env
+      ),
+      { decision: 'allow' }
+    );
+    assert.deepEqual(
+      callHook(
+        'PreToolUse',
+        {
+          conversationId: workerA,
+          workspacePaths: [ws],
+          cwd: ws,
+          toolCall: {
+            name: 'mcp_agy-fast_fast_apply_edits',
+            args: {
+              edits: JSON.stringify([{ path: 'src/b.js', create: 'export const x = 1;\n' }]),
+            },
+          },
+        },
+        env
+      ),
+      { decision: 'allow' }
+    );
+    assert.equal(existsSync(dataDir), false);
+
+    // 3) call_mcp_tool for non-write tool (batch_search) stays zero-IO allow
+    assert.deepEqual(
+      callHook(
+        'PreToolUse',
+        {
+          conversationId: workerA,
+          workspacePaths: [ws],
+          cwd: ws,
+          toolCall: {
+            name: 'call_mcp_tool',
+            args: {
+              ServerName: 'agy-fast_fast',
+              ToolName: 'batch_search',
+              Arguments: { queries: [{ type: 'text', pattern: 'SESSION-REGISTRY' }] },
+            },
+          },
+        },
+        env
+      ),
+      { decision: 'allow' }
+    );
+    assert.equal(existsSync(dataDir), false);
+
+    // 4) Multi-file array edits hitting registry -> ask for worker, allow for active controller
+    const multiArrayRes = callHook(
+      'PreToolUse',
+      {
+        conversationId: workerA,
+        workspacePaths: [ws],
+        cwd: ws,
+        toolCall: {
+          name: 'mcp_agy-fast_fast_apply_edits',
+          args: {
+            edits: [
+              { path: 'src/a.js', create: 'ok\n' },
+              { path: '.agents/SESSION-REGISTRY.md', hunks: [{ target: 'IDLE', replacement: 'LOCKED' }] },
+            ],
+          },
+        },
+      },
+      env
+    );
+    assert.equal(multiArrayRes.decision, 'ask');
+
+    assert.deepEqual(
+      callHook(
+        'PreToolUse',
+        {
+          conversationId: ctrlId,
+          workspacePaths: [ws],
+          cwd: ws,
+          toolCall: {
+            name: 'mcp_agy-fast_fast_apply_edits',
+            args: {
+              edits: JSON.stringify([
+                { path: '.agents/SESSION-REGISTRY.md', hunks: [{ target: 'IDLE', replacement: 'LOCKED' }] },
+              ]),
+            },
+          },
+        },
+        env
+      ),
+      { decision: 'allow' }
+    );
+
+    // 5) JSON string payload with args.cwd subdirectory (.agents) and malformed string fallback both get guarded
+    const strSubCwdRes = callHook(
+      'PreToolUse',
+      {
+        conversationId: workerA,
+        workspacePaths: [ws],
+        cwd: ws,
+        toolCall: {
+          name: 'mcp_agy-fast_fast_apply_edits',
+          args: {
+            cwd: '.agents',
+            edits: JSON.stringify([{ path: 'SESSION-REGISTRY.md', create: 'hijack' }]),
+          },
+        },
+      },
+      env
+    );
+    assert.equal(strSubCwdRes.decision, 'ask');
+
+    const malformedRes = callHook(
+      'PreToolUse',
+      {
+        conversationId: workerA,
+        workspacePaths: [ws],
+        cwd: ws,
+        toolCall: {
+          name: 'mcp_agy-fast_fast_apply_edits',
+          args: {
+            edits: '[{"path":".agents/SESSION-REGISTRY.md","create":"bad',
+          },
+        },
+      },
+      env
+    );
+    assert.equal(malformedRes.decision, 'ask');
+
+    // 6) Lazy call_mcp_tool apply_edits (object Arguments & JSON string Arguments) gets guarded
+    const lazyObjRes = callHook(
+      'PreToolUse',
+      {
+        conversationId: workerA,
+        workspacePaths: [ws],
+        cwd: ws,
+        toolCall: {
+          name: 'call_mcp_tool',
+          args: {
+            ServerName: 'agy-fast_fast',
+            ToolName: 'apply_edits',
+            Arguments: {
+              edits: JSON.stringify([{ path: regPath, create: 'hijack' }]),
+            },
+          },
+        },
+      },
+      env
+    );
+    assert.equal(lazyObjRes.decision, 'ask');
+
+    const lazyStrRes = callHook(
+      'PreToolUse',
+      {
+        conversationId: workerA,
+        workspacePaths: [ws],
+        cwd: ws,
+        toolCall: {
+          name: 'call_mcp_tool',
+          args: {
+            ServerName: 'agy-fast_fast',
+            ToolName: 'apply_edits',
+            Arguments: JSON.stringify({
+              edits: [{ path: '.agents/SESSION-REGISTRY.md', create: 'hijack' }],
+            }),
+          },
+        },
+      },
+      env
+    );
+    assert.equal(lazyStrRes.decision, 'ask');
+
+    // 7) Cross-directory guard: sub-workspace without its own registry writing parent registry
+    const crossDirRes = callHook(
+      'PreToolUse',
+      {
+        conversationId: workerA,
+        workspacePaths: [subWs],
+        cwd: subWs,
+        toolCall: {
+          name: 'mcp_agy-fast_fast_apply_edits',
+          args: {
+            edits: [{ path: '../../.agents/SESSION-REGISTRY.md', create: 'hijack' }],
+          },
+        },
+      },
+      env
+    );
+    assert.equal(crossDirRes.decision, 'ask');
+
+    // 8) Multi-file forgery check: putting Section 2 controller takeover inside notes.md while editing Section 1 in registry stays blocked
+    const rogueTp = makeTranscriptPath(appDir, rogueCtrl);
+    writeFileSync(
+      rogueTp,
+      `${JSON.stringify({ step_index: 0, type: 'USER_INPUT', content: `请作为常驻主交流总控接班 前任总控 ${ctrlId}` })}\n`,
+      'utf8'
+    );
+    const forgeryRes = callHook(
+      'PreToolUse',
+      {
+        conversationId: rogueCtrl,
+        workspacePaths: [ws],
+        cwd: ws,
+        toolCall: {
+          name: 'mcp_agy-fast_fast_apply_edits',
+          args: {
+            edits: [
+              {
+                path: 'notes.md',
+                create: `- **当前现役总控会话**：\`${rogueCtrl}\`（状态：\`ONLINE\`）\n`,
+              },
+              {
+                path: '.agents/SESSION-REGISTRY.md',
+                hunks: [{ target: '| **持锁会话** | - |', replacement: `| **持锁会话** | \`${rogueCtrl}\` |` }],
+              },
+            ],
+          },
+        },
+      },
+      env
+    );
+    assert.equal(forgeryRes.decision, 'ask');
+
+    // 9) Legitimate handover successor via mcp_agy-fast_fast_apply_edits JSON string hunks passes & records state
+    const newTp = makeTranscriptPath(appDir, newCtrl);
+    writeFileSync(
+      newTp,
+      `${JSON.stringify({ step_index: 0, type: 'USER_INPUT', content: `请作为常驻主交流总控接班，前任总控 ${ctrlId}` })}\n`,
+      'utf8'
+    );
+    const takeoverRes = callHook(
+      'PreToolUse',
+      {
+        conversationId: newCtrl,
+        workspacePaths: [ws],
+        cwd: ws,
+        toolCall: {
+          name: 'mcp_agy-fast_fast_apply_edits',
+          args: {
+            edits: JSON.stringify([
+              {
+                path: '.agents/SESSION-REGISTRY.md',
+                hunks: JSON.stringify([
+                  {
+                    target: `- **当前现役总控会话**：\`${ctrlId}\`（状态：\`ONLINE\`）`,
+                    replacement: `- **当前现役总控会话**：\`${newCtrl}\`（状态：\`ONLINE\`）`,
+                  },
+                ]),
+              },
+            ]),
+          },
+        },
+      },
+      env
+    );
+    assert.equal(takeoverRes.decision, 'allow');
+    assert.ok(loadPluginState(dataDir).controllers[newCtrl]?.lastSyncedVersion);
+
+    // 10) PLUGIN_DATA managed registry is also guarded via apply_edits
+    const wsManaged = join(sb.dir, 'ws-managed');
+    mkdirSync(wsManaged, { recursive: true });
+    const managedPath = getManagedRegistryPath(dataDir, realpathSync(wsManaged));
+    mkdirSync(join(managedPath, '..'), { recursive: true });
+    writeFileSync(
+      managedPath,
+      `# 台账\n## 二、常驻主交流总控会话\n- **当前现役总控会话**：\`${ctrlId}\`（状态：\`ONLINE\`）\n`,
+      'utf8'
+    );
+    const managedAsk = callHook(
+      'PreToolUse',
+      {
+        conversationId: workerA,
+        workspacePaths: [wsManaged],
+        cwd: wsManaged,
+        toolCall: {
+          name: 'mcp_agy-fast_fast_apply_edits',
+          args: { edits: [{ path: managedPath, create: 'hijack' }] },
+        },
+      },
+      env
+    );
+    assert.equal(managedAsk.decision, 'ask');
+
+    // 11) registryWriteGuard settings: deny -> deny, off -> allow
+    savePluginSettings(dataDir, { registryWriteGuard: 'deny' });
+    const denyRes = callHook(
+      'PreToolUse',
+      {
+        conversationId: workerA,
+        workspacePaths: [ws],
+        cwd: ws,
+        toolCall: {
+          name: 'mcp_agy-fast_fast_apply_edits',
+          args: { edits: [{ path: '.agents/SESSION-REGISTRY.md', create: 'hijack' }] },
+        },
+      },
+      env
+    );
+    assert.equal(denyRes.decision, 'deny');
+
+    savePluginSettings(dataDir, { registryWriteGuard: 'off' });
+    const offRes = callHook(
+      'PreToolUse',
+      {
+        conversationId: workerA,
+        workspacePaths: [ws],
+        cwd: ws,
+        toolCall: {
+          name: 'mcp_agy-fast_fast_apply_edits',
+          args: { edits: [{ path: '.agents/SESSION-REGISTRY.md', create: 'allowed' }] },
+        },
+      },
+      env
+    );
+    assert.equal(offRes.decision, 'allow');
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test('PreInvocation throttles empty-candidate milestone /learn checkpoints (15m) while passing explicit candidates', () => {
+  const sb = makeSandbox('ct-learn-milestone-');
+  try {
+    const ws = join(sb.dir, 'ws');
+    const appDir = join(sb.dir, 'app_data');
+    const dataDir = join(sb.dir, 'plugin_data');
+    mkdirSync(join(ws, '.agents'), { recursive: true });
+    const ctrlId = makeConvId('c', '8', '4', '8', 'a');
+    writeFileSync(
+      join(ws, '.agents', 'SESSION-REGISTRY.md'),
+      `# 台账\n## 一、当前独占资源租约\n| 字段 | 当前值 |\n| --- | --- |\n| **锁状态** | \`IDLE\` |\n## 二、常驻主交流总控会话\n- **当前现役总控会话**：\`${ctrlId}\`（状态：\`ONLINE\`）\n`,
+      'utf8'
+    );
+    const cLog = makeTranscriptPath(appDir, ctrlId);
+    writeFileSync(cLog, `${JSON.stringify({ step_index: 0, type: 'USER_INPUT', content: 'start' })}\n`, 'utf8');
+    const env = { AGY_CONTROL_TOWER_DATA_DIR: dataDir, ANTIGRAVITY_APP_DATA_DIR: appDir };
+
+    // 1st DONE without candidate triggers checkpoint once & logs flight event
+    const r1 = callHook(
+      'PreInvocation',
+      {
+        conversationId: ctrlId,
+        workspacePaths: [ws],
+        invocationNum: 2,
+        lastUserInput: '[CT_REPORT:DONE] T1 收口 | 【可沉淀经验候选】：无',
+        transcriptPath: cLog,
+      },
+      env
+    );
+    assert.ok(r1.injectSteps.some((s) => s.systemMessage.systemMessage.includes('[control-tower 自学习检查点]')));
+
+    // 2nd DONE without candidate within 15 min is throttled silently
+    const r2 = callHook(
+      'PreInvocation',
+      {
+        conversationId: ctrlId,
+        workspacePaths: [ws],
+        invocationNum: 3,
+        lastUserInput: '[CT_REPORT:DONE] T2 收口 | 【可沉淀经验候选】：暂无',
+        transcriptPath: cLog,
+      },
+      env
+    );
+    assert.equal(
+      (r2.injectSteps || []).some((s) => s.systemMessage.systemMessage.includes('[control-tower 自学习检查点]')),
+      false
+    );
+
+    // 3rd DONE WITH explicit candidate bypasses 15 min cooldown
+    const r3 = callHook(
+      'PreInvocation',
+      {
+        conversationId: ctrlId,
+        workspacePaths: [ws],
+        invocationNum: 4,
+        lastUserInput: '[CT_REPORT:DONE] T3 收口 | 【可沉淀经验候选】：必须保留 5 秒短缓存失效顺序',
+        transcriptPath: cLog,
+      },
+      env
+    );
+    assert.ok(r3.injectSteps.some((s) => s.systemMessage.systemMessage.includes('[control-tower 自学习检查点]')));
   } finally {
     sb.cleanup();
   }

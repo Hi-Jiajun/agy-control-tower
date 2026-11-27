@@ -135,6 +135,28 @@ export function runSkillEval() {
             })
           );
           assert.equal(out.decision, 'ask');
+
+          const mcpOut = JSON.parse(
+            execFileSync(process.execPath, [HOOK_SCRIPT, 'PreToolUse'], {
+              input: JSON.stringify({
+                conversationId: workerId,
+                workspacePaths: [ws],
+                cwd: ws,
+                toolCall: {
+                  name: 'mcp_agy-fast_fast_apply_edits',
+                  args: {
+                    edits: JSON.stringify([
+                      { path: 'src/ok.js', create: 'ok' },
+                      { path: '.agents/SESSION-REGISTRY.md', create: 'hijack' },
+                    ]),
+                  },
+                },
+              }),
+              encoding: 'utf8',
+              env: { ...process.env, AGY_CONTROL_TOWER_DATA_DIR: dataDir },
+            })
+          );
+          assert.equal(mcpOut.decision, 'ask');
         } finally {
           sb.cleanup();
         }
@@ -201,9 +223,13 @@ export function runSkillEval() {
     },
     {
       id: 'EVAL-09',
-      title: '模板可移植性与全插件零间隔号字符门禁',
+      title: '模板可移植性、条件式 Swarm --cli 速查零强依赖与全插件零间隔号字符门禁',
       run() {
-        assert.equal(templatesMd.includes('.gemini/config'), false);
+        const agyFastCliPath = '$HOME/.gemini/config/plugins/agy-fast/dist/mcp-server.mjs';
+        assert.ok(skillMd.includes(agyFastCliPath) && skillMd.includes('--cli') && skillMd.includes('零强依赖'));
+        assert.ok(templatesMd.includes(agyFastCliPath) && templatesMd.includes('--cli') && templatesMd.includes('零强依赖'));
+        assert.equal(templatesMd.includes('~/.gemini/config'), false);
+        assert.equal(templatesMd.replaceAll(agyFastCliPath, '').includes('.gemini/config'), false);
         assert.equal(templatesMd.includes('skills/control-tower'), false);
         const dot = String.fromCharCode(0x00b7);
         for (const f of pluginFiles) {

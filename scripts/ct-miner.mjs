@@ -21,7 +21,21 @@ import { inspectTranscript, loadPluginState } from '../plugin/lib/transcript.mjs
 
 const MAX_READ_BYTES_PER_FILE = 8 * 1024 * 1024;
 
-function parseArgs(argv) {
+function readFlagValue(argv, idx, flag) {
+  const arg = argv[idx];
+  if (arg.startsWith(`${flag}=`)) {
+    return { value: arg.slice(flag.length + 1), advance: 0 };
+  }
+  if (arg === flag && idx + 1 < argv.length) {
+    const next = argv[idx + 1];
+    if (typeof next === 'string' && !next.startsWith('--')) {
+      return { value: next, advance: 1 };
+    }
+  }
+  return null;
+}
+
+export function parseArgs(argv) {
   const opts = {
     days: 7,
     appDataDir: '',
@@ -30,21 +44,42 @@ function parseArgs(argv) {
     json: false,
     out: '',
   };
-  for (const arg of argv) {
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
     if (arg === '--json') {
       opts.json = true;
-    } else if (arg.startsWith('--days=')) {
-      const n = Number(arg.slice('--days='.length));
+      continue;
+    }
+    const daysMatch = readFlagValue(argv, i, '--days');
+    if (daysMatch) {
+      const n = Number(daysMatch.value);
       if (Number.isFinite(n) && n > 0) opts.days = Math.min(90, n);
-    } else if (arg.startsWith('--max=')) {
-      const n = Number(arg.slice('--max='.length));
+      i += daysMatch.advance;
+      continue;
+    }
+    const maxMatch = readFlagValue(argv, i, '--max');
+    if (maxMatch) {
+      const n = Number(maxMatch.value);
       if (Number.isFinite(n) && n > 0) opts.maxConversations = Math.min(500, Math.trunc(n));
-    } else if (arg.startsWith('--app-data=')) {
-      opts.appDataDir = arg.slice('--app-data='.length).trim();
-    } else if (arg.startsWith('--data-dir=')) {
-      opts.dataDir = arg.slice('--data-dir='.length).trim();
-    } else if (arg.startsWith('--out=')) {
-      opts.out = arg.slice('--out='.length).trim();
+      i += maxMatch.advance;
+      continue;
+    }
+    const appMatch = readFlagValue(argv, i, '--app-data');
+    if (appMatch) {
+      opts.appDataDir = appMatch.value.trim();
+      i += appMatch.advance;
+      continue;
+    }
+    const dataMatch = readFlagValue(argv, i, '--data-dir');
+    if (dataMatch) {
+      opts.dataDir = dataMatch.value.trim();
+      i += dataMatch.advance;
+      continue;
+    }
+    const outMatch = readFlagValue(argv, i, '--out');
+    if (outMatch) {
+      opts.out = outMatch.value.trim();
+      i += outMatch.advance;
     }
   }
   return opts;
@@ -168,6 +203,7 @@ export function mineTelemetryAndLogs({
   const highCompactionSessions = [];
   const modeBuckets = {
     customOrchestrator: makeModeBucket(),
+    customOrchestratorDirect: makeModeBucket(),
     legacyOrchestrator: makeModeBucket(),
     singleModel: makeModeBucket(),
   };
@@ -277,10 +313,18 @@ export function mineTelemetryAndLogs({
       let modeKey = 'singleModel';
       if (convModels.has('gemini-flash-worker-agy')) {
         modeKey = 'legacyOrchestrator';
-      } else if (convHasExitPlanMode && convModels.size >= 2) {
+      } else if (
+        convHasExitPlanMode &&
+        (convModels.size >= 2 ||
+          convModels.has('gemini-pro-orchestrator') ||
+          convModels.has('gemini-pro-orchestrator-neon'))
+      ) {
         modeKey = 'customOrchestrator';
-      } else if (convModels.has('gemini-pro-orchestrator') || convModels.has('gemini-pro-orchestrator-neon')) {
-        modeKey = convHasExitPlanMode ? 'customOrchestrator' : 'legacyOrchestrator';
+      } else if (
+        convModels.has('gemini-pro-orchestrator') ||
+        convModels.has('gemini-pro-orchestrator-neon')
+      ) {
+        modeKey = 'customOrchestratorDirect';
       }
       const mb = modeBuckets[modeKey];
       mb.sessions += 1;
@@ -418,6 +462,7 @@ export function mineTelemetryAndLogs({
     models,
     orchestratorComparison: {
       customOrchestrator: finalizeModeBucket(modeBuckets.customOrchestrator),
+      customOrchestratorDirect: finalizeModeBucket(modeBuckets.customOrchestratorDirect),
       legacyOrchestrator: finalizeModeBucket(modeBuckets.legacyOrchestrator),
       singleModel: finalizeModeBucket(modeBuckets.singleModel),
     },
@@ -469,8 +514,9 @@ export function formatMinerMarkdown(report) {
     `| --- | --- | --- | --- | --- | --- | --- |`
   );
   for (const [label, key] of [
-    ['新版自定义 Orchestrator', 'customOrchestrator'],
-    ['旧版 Orchestrator', 'legacyOrchestrator'],
+    ['新版自定义 Orchestrator (含切层)', 'customOrchestrator'],
+    ['新版 Orchestrator (纯规划/直答)', 'customOrchestratorDirect'],
+    ['旧版 Orchestrator (flash-worker)', 'legacyOrchestrator'],
     ['纯单模型会话', 'singleModel'],
   ]) {
     const b = oc[key] || { sessions: 0, steps: 0, switches: 0, cacheHitPct: null, avgUncached: 0, editMismatches: 0 };

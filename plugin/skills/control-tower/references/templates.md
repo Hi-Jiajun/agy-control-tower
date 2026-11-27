@@ -191,6 +191,16 @@
   - `<边界条件、未覆盖项或禁止修改的共享约定>`
 ```
 
+### 4.5 条件式可选附件：Swarm Worker 编码/验证 `--cli` 速查块（零强依赖）
+
+因原生 `swarm` worker 不挂载宿主 MCP 与全局规则，**仅当本机存在 `$HOME/.gemini/config/plugins/agy-fast/dist/mcp-server.mjs` 时**，派发编码或验证类 worker 可在 `brief` 末尾附带以下 3 行 `$HOME` 脱敏路径速查块（无 `agy-fast` 环境时完全跳过，保持零强依赖；严禁用于修改 `SESSION-REGISTRY.md`）：
+
+```text
+node "$HOME/.gemini/config/plugins/agy-fast/dist/mcp-server.mjs" --cli search --path <dir> --text "<kw>" --git "status --short"
+node "$HOME/.gemini/config/plugins/agy-fast/dist/mcp-server.mjs" --cli outline <file1> <file2>   # 配合并行分段 read_file (<=200行)
+node "$HOME/.gemini/config/plugins/agy-fast/dist/mcp-server.mjs" --cli check --compact "<cmd1>" "<cmd2>"   # 批量改盘: --cli edit --best-effort --stdin
+```
+
 ---
 
 ## 5. 日常与总控交互的高频快捷口令

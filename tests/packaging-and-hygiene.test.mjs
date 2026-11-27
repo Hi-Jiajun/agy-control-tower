@@ -40,7 +40,7 @@ test('Version single source of truth & plugin package metadata hygiene', () => {
   assert.equal(existsSync(join(PLUGIN_DIR, pluginJson.logo)), true);
   assert.equal(existsSync(join(PLUGIN_DIR, 'AGENTS.md')), false);
 
-  // Check SKILL.md frontmatter & relative links & zero hardcoded ~/.gemini/config in templates
+  // Check SKILL.md frontmatter, relative links, conditional agy-fast --cli attachment & zero hardcoded ~/.gemini/config
   const skillMd = readFileSync(join(PLUGIN_DIR, 'skills', 'control-tower', 'SKILL.md'), 'utf8');
   assert.match(skillMd, /^---\n[\s\S]*?name:\s*control-tower[\s\S]*?\n---\n/);
   assert.ok(skillMd.includes('./references/model-routing.md'));
@@ -50,7 +50,14 @@ test('Version single source of truth & plugin package metadata hygiene', () => {
     join(PLUGIN_DIR, 'skills', 'control-tower', 'references', 'templates.md'),
     'utf8'
   );
-  assert.equal(templatesMd.includes('.gemini/config'), false);
+  const agyFastCliPath = '$HOME/.gemini/config/plugins/agy-fast/dist/mcp-server.mjs';
+  assert.ok(skillMd.includes(agyFastCliPath) && skillMd.includes('--cli') && skillMd.includes('零强依赖'));
+  assert.ok(templatesMd.includes(agyFastCliPath) && templatesMd.includes('--cli') && templatesMd.includes('零强依赖'));
+  const sec45Match = templatesMd.match(/### 4\.5[^\n]*[\s\S]*?```text\n([\s\S]*?)\n```/);
+  assert.ok(sec45Match, 'Section 4.5 conditional Swarm --cli block missing in templates.md');
+  assert.equal(sec45Match[1].trim().split(/\r?\n/).length, 3);
+  assert.equal(templatesMd.includes('~/.gemini/config'), false);
+  assert.equal(templatesMd.replaceAll(agyFastCliPath, '').includes('.gemini/config'), false);
   assert.equal(templatesMd.includes('skills/control-tower'), false);
 });
 

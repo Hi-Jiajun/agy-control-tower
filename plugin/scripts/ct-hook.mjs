@@ -52,6 +52,7 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(__dirname, '..');
 const LEARN_CORRECTION_THROTTLE_MS = 15 * 60 * 1000;
+const LEARN_MILESTONE_THROTTLE_MS = 15 * 60 * 1000;
 
 function detectUserCorrectionSignal(rawText) {
   if (!rawText || typeof rawText !== 'string') return false;
@@ -66,6 +67,15 @@ function detectUserCorrectionSignal(rawText) {
   return /(?:^|[\s，。！？,.;:：])(?:不对|错了|不要再|别再用|以后(?:必须|都|不要|别|统一)|记住(?:以后|这个|这条)?|踩坑|立个?规矩|改为|改成(?:这样|用)|不要擅自|下次(?:不要|别|记得)|always\s+remember|never\s+do\s+that|don'?t\s+do\s+that|stop\s+doing)/i.test(
     clean
   );
+}
+
+function hasNonEmptyLearnCandidate(rawText) {
+  if (!rawText || typeof rawText !== 'string') return false;
+  const m = rawText.match(/【?可沉淀经验候选】?\s*[：:]\s*([^\r\n]+)/);
+  if (!m) return false;
+  const val = m[1].trim().replace(/^[`"'*_\s]+|[`"'*_\s。.;；]+$/g, '');
+  if (!val) return false;
+  return !/^(?:无|暂无|无新经验|无新可复用经验|无新增|略|none|null|n\/a|-+|—+)$/i.test(val);
 }
 
 function readInstalledPluginVersion() {
@@ -202,7 +212,7 @@ const IGNORED_WRITE_KEYS = new Set([
 ]);
 
 function collectWriteStrings(node, out = [], depth = 0) {
-  if (!node || depth > 4) return out;
+  if (!node || depth > 6) return out;
   if (typeof node === 'string') {
     out.push(node);
     return out;
@@ -263,7 +273,15 @@ function isKnownHiddenWorkerOfController(oldCtrlId, convId, hintPath) {
   return false;
 }
 
-function isLegitimateHandoverTakeover({ payload, regFound, parsedReg, dataDir, hintPath, convId }) {
+function isLegitimateHandoverTakeover({
+  payload,
+  regFound,
+  parsedReg,
+  dataDir,
+  hintPath,
+  convId,
+  writePayload,
+}) {
   // 1) Never allow enrolled active top-level workers or hidden Swarm/subagent workers to self-promote
   const enrolledWorker = findActiveWorkerSession(convId, parsedReg);
   if (enrolledWorker && String(enrolledWorker.status || '').toUpperCase() !== 'DONE') {
@@ -275,7 +293,12 @@ function isLegitimateHandoverTakeover({ payload, regFound, parsedReg, dataDir, h
   }
 
   // 2) Must actually be assigning Section 2 active controller to its own conversationId
-  const args = payload?.toolCall?.args && typeof payload.toolCall.args === 'object' ? payload.toolCall.args : {};
+  const args =
+    writePayload !== undefined
+      ? writePayload
+      : payload?.toolCall?.args && typeof payload.toolCall.args === 'object'
+        ? payload.toolCall.args
+        : {};
   if (!toolArgsAssignControllerToSelf(args, convId)) {
     return { allowed: false, reason: 'missing_self_controller_assignment' };
   }
@@ -365,30 +388,215 @@ function runThrottledHookSentinel(regFound, parsedReg, resolved, dataDir, hintPa
   return cacheTouched;
 }
 
-function handlePreToolUse(payload, regFound, parsedReg, resolved, dataDir, hintPath, convId) {
+const APPLY_EDITS_TOOL_RE = /(?:^|[_:./-])apply_edits$/i;
+const BUILTIN_WRITE_TOOL_RE = /^(?:write_file|edit_file)$/i;
+
+function parseMaybeJsonValue(raw) {
+  if (typeof raw !== 'string') return raw;
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) return null;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+}
+
+function unwrapPreToolCall(toolCall) {
+  const rawName = String(toolCall?.name || '').trim();
+  const rawArgs =
+    toolCall?.args && typeof toolCall.args === 'object' && !Array.isArray(toolCall.args)
+      ? toolCall.args
+      : {};
+
+  if (rawName.toLowerCase() === 'call_mcp_tool') {
+    const innerTool = String(rawArgs.ToolName || rawArgs.toolName || '').trim();
+    if (!APPLY_EDITS_TOOL_RE.test(innerTool)) {
+      return {
+        kind: 'ignore',
+        rawName,
+        resolvedName: innerTool ? `${rawName}:${innerTool}` : rawName,
+        toolArgs: {},
+      };
+    }
+    const rawInnerArgs = rawArgs.Arguments ?? rawArgs.arguments;
+    let parsedInnerArgs = {};
+    if (typeof rawInnerArgs === 'string') {
+      const parsed = parseMaybeJsonValue(rawInnerArgs);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        parsedInnerArgs = parsed;
+      } else {
+        parsedInnerArgs = { edits: rawInnerArgs };
+      }
+    } else if (rawInnerArgs && typeof rawInnerArgs === 'object' && !Array.isArray(rawInnerArgs)) {
+      parsedInnerArgs = rawInnerArgs;
+    }
+    return {
+      kind: 'apply_edits',
+      rawName,
+      resolvedName: `${rawName}:${innerTool}`,
+      toolArgs: parsedInnerArgs,
+    };
+  }
+
+  if (APPLY_EDITS_TOOL_RE.test(rawName)) {
+    return {
+      kind: 'apply_edits',
+      rawName,
+      resolvedName: rawName,
+      toolArgs: rawArgs,
+    };
+  }
+
+  if (!rawName || BUILTIN_WRITE_TOOL_RE.test(rawName)) {
+    return {
+      kind: 'builtin_write',
+      rawName,
+      resolvedName: rawName,
+      toolArgs: rawArgs,
+    };
+  }
+
+  if (rawArgs.edits !== undefined) {
+    return {
+      kind: 'apply_edits',
+      rawName,
+      resolvedName: rawName,
+      toolArgs: rawArgs,
+    };
+  }
+
+  return {
+    kind: 'builtin_write',
+    rawName,
+    resolvedName: rawName,
+    toolArgs: rawArgs,
+  };
+}
+
+function normalizeApplyEditEntry(entry) {
+  if (!entry) return null;
+  if (typeof entry === 'string') {
+    const rawPath = entry.trim();
+    return rawPath ? { rawPath, writePayload: {} } : null;
+  }
+  if (typeof entry === 'object' && !Array.isArray(entry)) {
+    const rawPath = String(
+      entry.path ?? entry.Path ?? entry.TargetFile ?? entry.file ?? ''
+    ).trim();
+    if (!rawPath) return null;
+    let writePayload = entry;
+    if (typeof entry.hunks === 'string') {
+      const parsedHunks = parseMaybeJsonValue(entry.hunks);
+      if (Array.isArray(parsedHunks)) {
+        writePayload = { ...entry, hunks: parsedHunks };
+      }
+    }
+    return { rawPath, writePayload };
+  }
+  return null;
+}
+
+function extractApplyEditEntries(rawEdits) {
+  const results = [];
+  if (Array.isArray(rawEdits)) {
+    for (const item of rawEdits.slice(0, 100)) {
+      const norm = normalizeApplyEditEntry(item);
+      if (norm) results.push(norm);
+    }
+    return results;
+  }
+  if (typeof rawEdits === 'string') {
+    const parsed = parseMaybeJsonValue(rawEdits);
+    if (Array.isArray(parsed)) {
+      for (const item of parsed.slice(0, 100)) {
+        const norm = normalizeApplyEditEntry(item);
+        if (norm) results.push(norm);
+      }
+      return results;
+    }
+    if (parsed && typeof parsed === 'object') {
+      const norm = normalizeApplyEditEntry(parsed);
+      if (norm) results.push(norm);
+      return results;
+    }
+    // Fallback regex extraction for malformed JSON string payloads
+    const pathRe = /["'](?:path|Path|TargetFile|file)["']\s*:\s*"((?:[^"\\]|\\.)+)"/g;
+    let m;
+    while ((m = pathRe.exec(rawEdits)) !== null && results.length < 100) {
+      let decoded = m[1];
+      try {
+        decoded = JSON.parse(`"${m[1]}"`);
+      } catch {
+        // keep raw capture
+      }
+      const rawPath = String(decoded || '').trim();
+      if (rawPath) {
+        results.push({ rawPath, writePayload: {} });
+      }
+    }
+    return results;
+  }
+  if (rawEdits && typeof rawEdits === 'object') {
+    const norm = normalizeApplyEditEntry(rawEdits);
+    if (norm) results.push(norm);
+  }
+  return results;
+}
+
+function extractPreToolWriteTargets(unwrapped) {
+  const args = unwrapped?.toolArgs || {};
+  if (unwrapped?.kind === 'apply_edits') {
+    const entries = extractApplyEditEntries(args.edits);
+    if (entries.length > 0) return entries;
+  }
+  const fallbackPath = String(
+    args.Path ?? args.TargetFile ?? args.path ?? args.file ?? ''
+  ).trim();
+  if (fallbackPath) {
+    return [{ rawPath: fallbackPath, writePayload: args }];
+  }
+  return [];
+}
+
+function resolveEffectiveBaseDir(payloadCwd, argsCwd, fallbackWs = '') {
+  const base =
+    (typeof payloadCwd === 'string' && payloadCwd.trim()) ||
+    (typeof fallbackWs === 'string' && fallbackWs.trim()) ||
+    '';
+  if (typeof argsCwd === 'string' && argsCwd.trim()) {
+    return resolveCanonicalPath(argsCwd.trim(), base) || argsCwd.trim();
+  }
+  return base;
+}
+
+function evaluatePreToolUse({
+  payload,
+  regFound,
+  parsedReg,
+  resolved,
+  dataDir,
+  hintPath,
+  convId,
+  unwrapped,
+  hitTargets,
+}) {
   const guardMode = resolved.plugin.registryWriteGuard || 'ask';
   if (guardMode === 'off') {
-    process.stdout.write('{"decision":"allow"}\n');
-    return;
+    return { decision: 'allow' };
   }
 
-  const args = payload?.toolCall?.args && typeof payload.toolCall.args === 'object' ? payload.toolCall.args : {};
-  const rawTarget = args.Path || args.TargetFile || args.path || args.file || '';
-  if (typeof rawTarget !== 'string' || !rawTarget.trim()) {
-    process.stdout.write('{"decision":"allow"}\n');
-    return;
+  if (!Array.isArray(hitTargets) || hitTargets.length === 0) {
+    return { decision: 'allow' };
   }
 
-  const baseDir = String(payload.cwd || regFound.workspace || '');
-  const targetReal = resolveCanonicalPath(rawTarget, baseDir);
-  const regReal = resolveCanonicalPath(regFound.absPath);
-  if (!targetReal || targetReal !== regReal) {
-    process.stdout.write('{"decision":"allow"}\n');
-    return;
-  }
+  const writePayload =
+    unwrapped?.kind === 'builtin_write'
+      ? hitTargets[0]?.writePayload || {}
+      : hitTargets.map((t) => t.writePayload);
 
   if (!hasValidController(parsedReg) || isActiveController(convId, parsedReg)) {
-    if (!hasValidController(parsedReg) && toolArgsAssignControllerToSelf(args, convId)) {
+    if (!hasValidController(parsedReg) && toolArgsAssignControllerToSelf(writePayload, convId)) {
       try {
         const curVer = readInstalledPluginVersion();
         if (curVer) {
@@ -405,8 +613,7 @@ function handlePreToolUse(payload, regFound, parsedReg, resolved, dataDir, hintP
         // ignore
       }
     }
-    process.stdout.write('{"decision":"allow"}\n');
-    return;
+    return { decision: 'allow' };
   }
 
   // Double-evidence legitimate handover takeover check
@@ -417,6 +624,7 @@ function handlePreToolUse(payload, regFound, parsedReg, resolved, dataDir, hintP
     dataDir,
     hintPath,
     convId,
+    writePayload,
   });
   if (takeover.allowed) {
     try {
@@ -449,8 +657,7 @@ function handlePreToolUse(payload, regFound, parsedReg, resolved, dataDir, hintP
       message: `Allowed legitimate controller handover (${takeover.reason}) on ${regFound.relPath}`,
       detail: { reason: takeover.reason, relPath: regFound.relPath },
     });
-    process.stdout.write('{"decision":"allow"}\n');
-    return;
+    return { decision: 'allow' };
   }
 
   const decision = guardMode === 'deny' ? 'deny' : 'ask';
@@ -464,14 +671,14 @@ function handlePreToolUse(payload, regFound, parsedReg, resolved, dataDir, hintP
     detail: {
       decision,
       reason: takeover.reason,
-      toolName: payload?.toolCall?.name || '',
+      toolName: unwrapped?.resolvedName || payload?.toolCall?.name || '',
       relPath: regFound.relPath,
     },
   });
   const reason =
     `[control-tower 台账写保护] SESSION-REGISTRY.md 已由现役总控会话接管，` +
     `当前会话非现役总控。如需入账或换届，请由现役总控更新或在 Control Tower 看板操作。`;
-  process.stdout.write(`${JSON.stringify({ decision, reason })}\n`);
+  return { decision, reason };
 }
 
 function handleSessionStart(regFound, parsedReg, resolved, dataDir, convId) {
@@ -844,7 +1051,7 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
     const comps = selfInfo.compactions || 0;
     const threshold = resolved.effective.controllerCompactionThreshold || 5;
     const lastWarned = prevCtrlEntry.lastWarnedCompactions || 0;
-    if (!prevCtrlEntry.handoverIgnored && comps >= threshold && (typeof lastWarned !== 'number' || comps > lastWarned)) {
+    if (!prevCtrlEntry.handoverIgnored && comps >= threshold && Number(lastWarned) < threshold) {
       const handoverLearnSuffix =
         autoLearnMode !== 'off'
           ? '换届前请一并自检本任期是否有值得按 /learn 沉淀的可复用经验提案（无则跳过）。'
@@ -888,14 +1095,32 @@ function handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hi
       lastInput.includes('[CT_REPORT:DONE]') ||
       lastInput.includes('[CT_AUTO_RECEIPT]');
     if (isMilestoneReport) {
-      injectSteps.push({
-        systemMessage: {
-          systemMessage:
-            `[control-tower 自学习检查点] 本阶段任务收口或回执已到达，请核查专职回报中的「可沉淀经验候选」与本轮排障根因；` +
-            `若存在可复用约束或技巧，请按原生 /learn 规范产出精简 learning_proposal.md 提案供用户审批后再落盘（优先写当前工作区 .agents/，严禁擅改规则；无新经验请静默跳过）。`,
-        },
-      });
-      learnCheckpointInjected = true;
+      const nowMs = Date.now();
+      const hasCandidate = hasNonEmptyLearnCandidate(lastInput);
+      const lastCheckpointAt = Number(prevCtrlEntry.lastLearnCheckpointAt || 0);
+      if (hasCandidate || nowMs - lastCheckpointAt >= LEARN_MILESTONE_THROTTLE_MS) {
+        injectSteps.push({
+          systemMessage: {
+            systemMessage:
+              `[control-tower 自学习检查点] 本阶段任务收口或回执已到达，请核查专职回报中的「可沉淀经验候选」与本轮排障根因；` +
+              `若存在可复用约束或技巧，请按原生 /learn 规范产出精简 learning_proposal.md 提案供用户审批后再落盘（优先写当前工作区 .agents/，严禁擅改规则；无新经验请静默跳过）。`,
+          },
+        });
+        learnCheckpointInjected = true;
+        ctrlPatch.lastLearnCheckpointAt = nowMs;
+        ctrlPatch.updatedAt = nowMs;
+        ctrlDirty = true;
+        appendFlightEvent(dataDir, {
+          level: 'info',
+          source: 'hook',
+          event: 'learn_checkpoint_injected',
+          conv: convId,
+          message: hasCandidate
+            ? 'Injected milestone auto-/learn checkpoint (explicit candidate present)'
+            : 'Injected throttled milestone auto-/learn checkpoint',
+          detail: { hasCandidate },
+        });
+      }
     } else if (
       autoLearnMode === 'smart_proposal' &&
       !isAutomatedInbound &&
@@ -1276,24 +1501,62 @@ function handleStop(payload, regFound, parsedReg, resolved, dataDir, hintPath, c
   process.stdout.write('{}\n');
 }
 
-function findMatchingRegistryForTarget(wsPaths, rawTarget, cwd, dataDir) {
-  if (!Array.isArray(wsPaths) || !rawTarget) return null;
-  for (const rawWs of wsPaths) {
+function findMatchingRegistriesForTargets(wsPaths, targets, payloadCwd, argsCwd, dataDir) {
+  if (!Array.isArray(targets) || targets.length === 0) return [];
+
+  const rawCandidates = [];
+  if (Array.isArray(wsPaths)) {
+    for (const w of wsPaths) {
+      if (typeof w === 'string' && w.trim()) rawCandidates.push(w);
+    }
+  }
+  const fallbackWs = rawCandidates[0] || '';
+  const baseForGuess = resolveEffectiveBaseDir(payloadCwd, argsCwd, fallbackWs);
+  if (typeof argsCwd === 'string' && argsCwd.trim() && baseForGuess) {
+    rawCandidates.push(baseForGuess);
+  }
+
+  for (const t of targets) {
+    const targetReal = resolveCanonicalPath(t.rawPath, baseForGuess);
+    if (!targetReal || basename(targetReal) !== 'SESSION-REGISTRY.md') continue;
+    const parent = dirname(targetReal);
+    rawCandidates.push(parent);
+    const parentName = basename(parent);
+    if (parentName === '.agents' || parentName === 'research') {
+      const grandParent = dirname(parent);
+      if (grandParent && grandParent !== parent) {
+        rawCandidates.push(grandParent);
+      }
+    }
+  }
+
+  const matches = [];
+  const seenWorkspaces = new Set();
+  const seenRegPaths = new Set();
+  for (const rawWs of rawCandidates) {
     const wsReal = normalizeWorkspaceInput(rawWs, { throwOnInvalid: false });
-    if (!wsReal) continue;
+    if (!wsReal || seenWorkspaces.has(wsReal)) continue;
+    seenWorkspaces.add(wsReal);
     try {
       const found = findExistingRegistry(wsReal, { dataDir });
       if (!found) continue;
-      const targetReal = resolveCanonicalPath(rawTarget, cwd || wsReal);
       const regReal = resolveCanonicalPath(found.absPath);
-      if (targetReal && regReal && targetReal === regReal) {
-        return { workspace: wsReal, ...found };
+      if (!regReal || seenRegPaths.has(regReal)) continue;
+      seenRegPaths.add(regReal);
+      const baseDir = resolveEffectiveBaseDir(payloadCwd, argsCwd, wsReal);
+      const hitTargets = targets.filter((t) => resolveCanonicalPath(t.rawPath, baseDir) === regReal);
+      if (hitTargets.length > 0) {
+        matches.push({
+          regFound: { workspace: wsReal, ...found },
+          regReal,
+          hitTargets,
+        });
       }
     } catch {
       continue;
     }
   }
-  return null;
+  return matches;
 }
 
 function run() {
@@ -1316,26 +1579,90 @@ function run() {
   const hintPath = String(payload.transcriptPath || payload.artifactDirectoryPath || '').trim();
   const dataDir = resolvePluginDataDir({ hintPath });
 
-  let regFound = null;
   if (eventName === 'PreToolUse') {
-    const args =
-      payload?.toolCall?.args && typeof payload.toolCall.args === 'object'
-        ? payload.toolCall.args
-        : {};
-    const rawTarget = args.Path || args.TargetFile || args.path || args.file || '';
-    regFound =
-      findMatchingRegistryForTarget(wsPaths, rawTarget, String(payload.cwd || ''), dataDir) ||
-      findRegistryInWorkspaces(wsPaths, { dataDir });
-  } else {
-    regFound = findRegistryInWorkspaces(wsPaths, { dataDir });
+    const unwrapped = unwrapPreToolCall(payload?.toolCall);
+    if (unwrapped.kind === 'ignore') {
+      process.stdout.write('{"decision":"allow"}\n');
+      return;
+    }
+    const targets = extractPreToolWriteTargets(unwrapped);
+    if (!convId || targets.length === 0) {
+      process.stdout.write('{"decision":"allow"}\n');
+      return;
+    }
+    const argsCwd =
+      typeof unwrapped.toolArgs?.cwd === 'string' ? unwrapped.toolArgs.cwd : '';
+    const hits = findMatchingRegistriesForTargets(
+      wsPaths,
+      targets,
+      String(payload.cwd || ''),
+      argsCwd,
+      dataDir
+    );
+    if (hits.length === 0) {
+      process.stdout.write('{"decision":"allow"}\n');
+      return;
+    }
+
+    let finalResult = { decision: 'allow' };
+    for (const hit of hits) {
+      let parsedReg;
+      try {
+        parsedReg = parseRegistry(readFileSync(hit.regFound.absPath, 'utf8'));
+      } catch (err) {
+        appendFlightEvent(dataDir, {
+          level: 'error',
+          source: 'hook',
+          event: 'registry_parse_failed',
+          ok: false,
+          conv: convId,
+          message: err?.message || 'Failed to parse SESSION-REGISTRY.md',
+          detail: { eventName, relPath: hit.regFound.relPath },
+        });
+        continue;
+      }
+      const resolved = resolveEffectiveSettings({
+        dataDir,
+        wsReal: hit.regFound.workspace,
+        pluginRoot: PLUGIN_ROOT,
+      });
+      const res = evaluatePreToolUse({
+        payload,
+        regFound: hit.regFound,
+        parsedReg,
+        resolved,
+        dataDir,
+        hintPath,
+        convId,
+        unwrapped,
+        hitTargets: hit.hitTargets,
+      });
+      if (res.decision !== 'allow') {
+        finalResult = res;
+        break;
+      }
+    }
+    process.stdout.write(`${JSON.stringify(finalResult)}\n`);
+
+    const elapsedMs = Date.now() - startedAt;
+    if (elapsedMs >= SLOW_OP_THRESHOLD_MS && existsSync(dataDir)) {
+      appendFlightEvent(dataDir, {
+        level: 'warn',
+        source: 'hook',
+        event: 'slow_hook',
+        conv: convId,
+        durationMs: elapsedMs,
+        message: `Hook ${eventName || 'unknown'} took ${elapsedMs}ms`,
+        detail: { eventName },
+      });
+    }
+    return;
   }
 
+  const regFound = findRegistryInWorkspaces(wsPaths, { dataDir });
+
   if (!convId || !regFound) {
-    if (eventName === 'PreToolUse') {
-      process.stdout.write('{"decision":"allow"}\n');
-    } else {
-      process.stdout.write('{}\n');
-    }
+    process.stdout.write('{}\n');
     return;
   }
 
@@ -1352,11 +1679,7 @@ function run() {
       message: err?.message || 'Failed to parse SESSION-REGISTRY.md',
       detail: { eventName, relPath: regFound.relPath },
     });
-    if (eventName === 'PreToolUse') {
-      process.stdout.write('{"decision":"allow"}\n');
-    } else {
-      process.stdout.write('{}\n');
-    }
+    process.stdout.write('{}\n');
     return;
   }
 
@@ -1366,9 +1689,7 @@ function run() {
     pluginRoot: PLUGIN_ROOT,
   });
 
-  if (eventName === 'PreToolUse') {
-    handlePreToolUse(payload, regFound, parsedReg, resolved, dataDir, hintPath, convId);
-  } else if (eventName === 'SessionStart') {
+  if (eventName === 'SessionStart') {
     handleSessionStart(regFound, parsedReg, resolved, dataDir, convId);
   } else if (eventName === 'PreInvocation') {
     handlePreInvocation(payload, regFound, parsedReg, resolved, dataDir, hintPath, convId);

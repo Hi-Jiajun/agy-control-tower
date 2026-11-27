@@ -24,6 +24,7 @@ const SWARM_BOARD_TAIL_BYTES = 32 * 1024;
 const CHUNK_BYTES = 64 * 1024;
 const STATE_MAX_ENTRIES = 200;
 const ATTENTION_MAX_ENTRIES = 20;
+const COMPACTION_ACC_VERSION = 2;
 
 export const HEX_CONV_ID_RE =
   /^[0-9a-f]{8}(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f-]{0,28})$/i;
@@ -240,7 +241,12 @@ function readRangeSync(fd, offset, length) {
   return total === length ? buf : buf.subarray(0, total);
 }
 
-function recordCompactionEvent(acc, kind) {
+function resetCompactionWatermarks(acc, kind, modelKey, usedTokens) {
+  acc.prevUsedByModel =
+    kind === 'token_drop' && modelKey && usedTokens > 0 ? { [modelKey]: usedTokens } : {};
+}
+
+function recordCompactionEvent(acc, kind, { modelKey = '', usedTokens = 0 } = {}) {
   const line = acc.lineCount;
   // Deduplicate an explicit compaction event immediately followed within 2 lines by a token drop (or vice versa)
   if (
@@ -250,11 +256,13 @@ function recordCompactionEvent(acc, kind) {
   ) {
     acc.lastCompactionLine = line;
     acc.lastCompactionKind = kind;
+    resetCompactionWatermarks(acc, kind, modelKey, usedTokens);
     return;
   }
   acc.compactions += 1;
   acc.lastCompactionLine = line;
   acc.lastCompactionKind = kind;
+  resetCompactionWatermarks(acc, kind, modelKey, usedTokens);
 }
 
 function processStepForCompactions(step, acc) {
@@ -302,7 +310,7 @@ function processStepForCompactions(step, acc) {
         const mkey = (typeof step.model === 'string' && step.model.trim()) || '_default';
         const prevUsed = acc.prevUsedByModel[mkey] || 0;
         if (prevUsed > 0 && used < prevUsed * 0.72 && prevUsed - used > 30000) {
-          recordCompactionEvent(acc, 'token_drop');
+          recordCompactionEvent(acc, 'token_drop', { modelKey: mkey, usedTokens: used });
         }
         acc.prevUsedByModel[mkey] = used;
       }
@@ -406,6 +414,7 @@ export function inspectTranscript(tp, { cacheEntry = null } = {}) {
 
   if (
     cacheEntry &&
+    cacheEntry.accVersion === COMPACTION_ACC_VERSION &&
     cacheEntry.size === fileSize &&
     cacheEntry.mtimeMs === mtimeMs &&
     cacheEntry.info
@@ -426,27 +435,44 @@ export function inspectTranscript(tp, { cacheEntry = null } = {}) {
       };
     }
 
-    // 1) Read head up to 32KB for goal & headHash
-    const headLen = Math.min(HEAD_BYTES, fileSize);
-    const headBuf = readRangeSync(fd, 0, headLen);
-    const headHash = sha256(headBuf.subarray(0, Math.min(512, headBuf.length)));
-    const headText = headBuf.toString('utf8');
-    const headLines = fileSize > headLen ? headText.split('\n').slice(0, -1) : headText.split('\n');
-    let goal = '';
-    for (const rawLine of headLines) {
-      const line = rawLine.trim();
-      if (!line) continue;
-      try {
-        const step = JSON.parse(line);
-        if (step && typeof step === 'object') {
-          const stype = String(step.type || '').toUpperCase();
-          if (stype === 'USER_INPUT') {
-            goal = cleanGoal(step.content || '');
-            if (goal) break;
+    // 1) Probe first 512 bytes for headHash and skip full 32KB head scan on valid incremental cache hit
+    const probeLen = Math.min(512, fileSize);
+    const probeBuf = readRangeSync(fd, 0, probeLen);
+    const headHash = sha256(probeBuf);
+
+    const canResumeHead =
+      cacheEntry &&
+      cacheEntry.accVersion === COMPACTION_ACC_VERSION &&
+      cacheEntry.headHash === headHash &&
+      Number.isInteger(cacheEntry.offset) &&
+      cacheEntry.offset >= 0 &&
+      cacheEntry.offset <= fileSize &&
+      cacheEntry.acc;
+
+    let goal = canResumeHead && typeof cacheEntry.info?.goal === 'string' ? cacheEntry.info.goal : '';
+    if (!goal) {
+      const headLen = Math.min(HEAD_BYTES, fileSize);
+      const headBuf =
+        headLen <= probeLen
+          ? probeBuf
+          : Buffer.concat([probeBuf, readRangeSync(fd, probeLen, headLen - probeLen)]);
+      const headText = headBuf.toString('utf8');
+      const headLines = fileSize > headLen ? headText.split('\n').slice(0, -1) : headText.split('\n');
+      for (const rawLine of headLines) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        try {
+          const step = JSON.parse(line);
+          if (step && typeof step === 'object') {
+            const stype = String(step.type || '').toUpperCase();
+            if (stype === 'USER_INPUT') {
+              goal = cleanGoal(step.content || '');
+              if (goal) break;
+            }
           }
+        } catch {
+          // skip
         }
-      } catch {
-        // skip
       }
     }
 
@@ -502,13 +528,7 @@ export function inspectTranscript(tp, { cacheEntry = null } = {}) {
     }
 
     // 3) Incremental compaction scan from cached byte offset (or 0)
-    const canResume =
-      cacheEntry &&
-      cacheEntry.headHash === headHash &&
-      Number.isInteger(cacheEntry.offset) &&
-      cacheEntry.offset >= 0 &&
-      cacheEntry.offset <= fileSize &&
-      cacheEntry.acc;
+    const canResume = Boolean(canResumeHead);
 
     const acc = canResume
       ? {
@@ -561,6 +581,7 @@ export function inspectTranscript(tp, { cacheEntry = null } = {}) {
     };
 
     const nextCacheEntry = {
+      accVersion: COMPACTION_ACC_VERSION,
       size: fileSize,
       mtimeMs,
       headHash,

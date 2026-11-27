@@ -20,7 +20,7 @@
   "control-tower-pre-tool-use": {
     "PreToolUse": [
       {
-        "matcher": "write_file|edit_file",
+        "matcher": "write_file|edit_file|call_mcp_tool|mcp_.*apply_edits|apply_edits",
         "hooks": [
           {
             "type": "command",

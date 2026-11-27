@@ -186,6 +186,51 @@ test('inspectTranscript reads head/tail on large files, incrementally caches com
     assert.equal(resBigTail.info.lastStatus, 'RUNNING');
     assert.equal(resBigTail.info.lastUpdatedAt, '2026-11-24T01:00:00Z');
 
+    // Dual-model Orchestrator dedup: CHECKPOINT + delayed second-model drop must count as 1 compaction, not 2
+    const convDual = makeConvId('e', '5', '4', '8', 'f');
+    const dualTp = makeTranscriptPath(appDir, convDual);
+    const dualRows = [
+      { step_index: 0, type: 'USER_INPUT', content: '<USER_REQUEST>\n双层编排器防双计校验\n</USER_REQUEST>' },
+      { step_index: 1, type: 'PLANNER_RESPONSE', model: 'gemini-4-neon-xhigh', input_tokens: 180000, cache_read_tokens: 0 },
+      { step_index: 2, type: 'PLANNER_RESPONSE', model: 'gemini-4-hydrogen-xhigh', input_tokens: 180000, cache_read_tokens: 0 },
+      { step_index: 3, type: 'CHECKPOINT', status: 'DONE' },
+      { step_index: 4, type: 'PLANNER_RESPONSE', model: 'gemini-4-neon-xhigh', input_tokens: 30000, cache_read_tokens: 0 },
+      { step_index: 5, type: 'GENERIC', status: 'DONE' },
+      { step_index: 6, type: 'GENERIC', status: 'DONE' },
+      { step_index: 7, type: 'GENERIC', status: 'DONE' },
+      { step_index: 8, type: 'PLANNER_RESPONSE', model: 'gemini-4-hydrogen-xhigh', input_tokens: 35000, cache_read_tokens: 0 },
+      { step_index: 9, type: 'PLANNER_RESPONSE', model: 'gemini-4-neon-xhigh', input_tokens: 180000, cache_read_tokens: 0 },
+      { step_index: 10, type: 'PLANNER_RESPONSE', model: 'gemini-4-hydrogen-xhigh', input_tokens: 180000, cache_read_tokens: 0 },
+      { step_index: 11, type: 'CHECKPOINT', status: 'DONE' },
+      { step_index: 12, type: 'PLANNER_RESPONSE', model: 'gemini-4-neon-xhigh', input_tokens: 30000, cache_read_tokens: 0 },
+      { step_index: 13, type: 'GENERIC', status: 'DONE' },
+      { step_index: 14, type: 'GENERIC', status: 'DONE' },
+      { step_index: 15, type: 'GENERIC', status: 'DONE' },
+      { step_index: 16, type: 'PLANNER_RESPONSE', model: 'gemini-4-hydrogen-xhigh', input_tokens: 35000, cache_read_tokens: 0 },
+    ];
+    writeFileSync(dualTp, `${dualRows.map((r) => JSON.stringify(r)).join('\n')}\n`, 'utf8');
+    const resDual = inspectTranscript(dualTp);
+    assert.equal(resDual.info.goal, '双层编排器防双计校验');
+    assert.equal(resDual.info.compactions, 2);
+    assert.equal(resDual.nextCacheEntry.accVersion, 2);
+
+    // Stale v1 cache (missing accVersion) recomputes cleanly back down to true count
+    const staleCache = {
+      ...resDual.nextCacheEntry,
+      accVersion: undefined,
+      info: { ...resDual.info, compactions: 9 },
+      acc: { ...resDual.nextCacheEntry.acc, compactions: 9 },
+    };
+    const resRecomputed = inspectTranscript(dualTp, { cacheEntry: staleCache });
+    assert.equal(resRecomputed.info.compactions, 2);
+    assert.equal(resRecomputed.nextCacheEntry.accVersion, 2);
+
+    // 512B head-hash incremental resume preserves goal without re-parsing head
+    appendFileSync(dualTp, `${JSON.stringify({ step_index: 17, type: 'GENERIC', status: 'DONE' })}\n`, 'utf8');
+    const resDualInc = inspectTranscript(dualTp, { cacheEntry: resDual.nextCacheEntry });
+    assert.equal(resDualInc.info.goal, '双层编排器防双计校验');
+    assert.equal(resDualInc.info.compactions, 2);
+
     // Verify prefix resolution
     const resolved = resolveBrainTranscript(convId.slice(0, 8), {
       env: { ANTIGRAVITY_APP_DATA_DIR: appDir },

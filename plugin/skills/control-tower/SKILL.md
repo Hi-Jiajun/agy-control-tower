@@ -67,6 +67,7 @@ Antigravity 中 `agentapi new-conversation` 一定会生成左侧顶层会话且
 
 1. **默认主力隐藏面（零左侧栏污染，覆盖 80%+ 开发与验证任务）**：
    - **原生 `swarm`（单 worker 或多 worker 首选，且必须显式传 `model`）**：即便只需 **1 个**专职 worker，只要需要精确指定舒适区模型、需要 `workspace: "share"` / `"branch"` 隔离、或需要多轮休眠续接，优先通过原生 `swarm` 创建命名 worker，并**显式传入 `model` 参数**（常规编码/复合验证指定 `gemini-pro-orchestrator-neon`，疑难攻坚指定 `gemini-pro-orchestrator`，纯只读调研/轻验指定 `gemini-4-hydrogen-xhigh`；做完后 `waiting` 零成本休眠，结项 `kill` 连带回收工作树）；
+   - **条件式 `--cli` 速查附注（零强依赖）**：由于原生 `swarm` worker 不挂载宿主 MCP 与全局规则，**仅当本机存在 `$HOME/.gemini/config/plugins/agy-fast/dist/mcp-server.mjs` 时**，派发编码/验证类 worker 可按 [references/templates.md](./references/templates.md) 在 `brief` 末尾附带 3 行 `$HOME` 脱敏路径 `--cli` 速查块（无 `agy-fast` 环境时完全跳过、保持零强依赖；仍严禁使用 `apply_edits` / `--cli edit` 修改 `SESSION-REGISTRY.md`）。
    - **`invoke_subagent`（同模型轻量单任务 / 只读深潜）**：不需异构模型时，使用 `research` 或 `self` / 自定义写盘子代理完成单路任务；
    - **`run_workflow`（多文件扇出与确定性流水线）**：批量代码审计、固定「实现 -> 复审 -> 复验」流水线直接用动态工作流脚本，结果按 JSON `schema` 强契约返回。
 2. **顶层会话（`agentapi new-conversation`）白名单准入与固定槽位复用**：仅在以下 3 类刚需时新开左侧顶层会话，且同类任务优先复用固定角色槽位（避免按 Wave 无限新开）：
@@ -95,7 +96,7 @@ Antigravity 中 `agentapi new-conversation` 一定会生成左侧顶层会话且
 
 ## 5. 冷热解耦后台监测、焦点防打扰、代决策与按需域分总控
 
-- **`SESSION-REGISTRY.md` 独占写入**：由总控统一维护，或通过 Aux Pane 看板操作。插件 `PreToolUse` 钩子默认开启 `ask` 写保护（可在设置中心切为 `deny` 或 `off`），防止专职会话误改台账；`SessionStart` 钩子会自动向已入账活跃专职会话注入锁边界与禁改提醒。
+- **`SESSION-REGISTRY.md` 独占写入**：由总控统一维护，或通过 Aux Pane 看板操作。插件 `PreToolUse` 钩子覆盖内置 `write_file` / `edit_file` 与 MCP `apply_edits`（含 `call_mcp_tool`），默认开启 `ask` 写保护（可在设置中心切为 `deny` 或 `off`），防止专职会话误改台账；`SessionStart` 钩子会自动向已入账活跃专职会话注入锁边界与禁改提醒。
 - **冷热解耦三层防打扰架构（前台人机对话永远最高优先）**：
   1. **零 Token Sidecar 后台哨兵（冷监测）**：由 Sidecar 本地守护进程按间隔增量巡检各执行面（Swarm / Subagent / 顶层会话）的报错、卡死（Stuck）、高压缩与停稳未归档状态，**消耗 0 Token 且永不抢占主总控回合**，并按分级写入工作区 `inbox.json`（`P0` 紧急阻塞 / `P1` 阶段里程碑 / `P2` 静默例行）。
   2. **焦点防打扰门禁（Focus Gate）**：当用户正在与总控连续对话（回复中或距上一条用户消息未超过焦点冷却窗口，默认 `180` 秒）时，`Stop` 钩子自动暂缓 `agentapi` 抢占式唤醒，仅将事件沉淀至 `inbox.json` 与看板角标；用户下一次发消息时 `PreInvocation` 附带一行极简摘要。总控必须 **100% 优先回答用户当前问题**，仅在回复末尾用 1 行简短附注提及非 `P0` 信箱待办（用户要求时再展开，或在看板点「投递总控」主动触发）。

@@ -5,6 +5,25 @@ All notable changes to `control-tower` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-11-27
+
+### Added
+- **`agy-fast` MCP `apply_edits` / `call_mcp_tool` 台账写保护与条件式 Swarm `--cli` 速查**：
+  - 合流并完善 `plugin/hooks.json` 与 `plugin/scripts/ct-hook.mjs`：`PreToolUse` 钩子扩展匹配 `call_mcp_tool`、`mcp_.*apply_edits` 与 `apply_edits`，自动解包 JSON 字符串参数、多文件批量改动及子目录跨仓目标，彻底堵住专职会话通过 MCP 工具绕过 `SESSION-REGISTRY.md` 写保护的漏洞（含伪造换届卡防线）。
+  - 更新 `plugin/skills/control-tower/SKILL.md` 与 `references/templates.md` 新增第 4.5 节：当且仅当本机存在 `$HOME/.gemini/config/plugins/agy-fast/dist/mcp-server.mjs` 时，为原生 `swarm` 编码/验证 worker 条件附带 3 行 `--cli` 速查指令，保持零强依赖。
+- **扩展质量门禁与事故回放**：新增 L2 回放夹具 `INC-016`（双层 `Orchestrator` 压缩去重 + `/learn` 里程碑 15 分钟节流与显式候选放行）及对应的单元测试回归。
+
+### Fixed
+- **根治双层 `Orchestrator` 上下文压缩双计与换届提醒刷屏**：
+  - `plugin/lib/transcript.mjs` 在 `CHECKPOINT` / `token_drop` 记入压缩时同步清空跨模型残留高水位 `prevUsedByModel`，避免切层执行模型时因旧水位引发二次误判（例如 4 次压缩误算为 8 次）；增量缓存新增 `accVersion: 2`，自动重算并修正历史虚高计数。
+  - `plugin/scripts/ct-hook.mjs` 收敛总控换届提醒频率，每个现役总控会话越过阈值后仅触发一次 `handover_warned` 与换届提示，后续仅由看板角标静默提示。
+- **智能收敛 `/learn` 里程碑检查点频次并补全黑匣子审计**：
+  - `[CT_REPORT:DONE]` / `[CT_AUTO_RECEIPT]` 若携带非空 `【可沉淀经验候选】` 则立即放行检查点，否则按 15 分钟冷却静默节流（`LEARN_MILESTONE_THROTTLE_MS`），同步写入 `learn_checkpoint_injected` 黑匣子事件。
+- **修复 `ct-miner.mjs` 参数解析与新版 `Orchestrator` 四分类口径**：
+  - `scripts/ct-miner.mjs` `parseArgs` 同步支持 `--days 3` 空格写法与 `--days=3` 等号写法，并将无切层步的新版 `Orchestrator` 单独拆分为「新版 Orchestrator (纯规划/直答)」桶，不再混入「旧版 Orchestrator」。
+- **大模型日志与跨工作区概览慢调用优化**：
+  - `plugin/sidecars/tower/main.mjs` 为 `buildMultiWorkspaceOverview` 接入 5 秒短 TTL 缓存（写操作与 SSE 变更即刻失效）；`inspectTranscript` 增量续扫优先只校验 512 字节头哈希，命中缓存后跳过 32KB 头部重读解析。
+
 ## [1.8.1] - 2026-11-26
 
 ### Fixed

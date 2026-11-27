@@ -11,7 +11,7 @@ import {
   sanitizeLogValue,
   summarizeFlightEvents,
 } from '../plugin/lib/logger.mjs';
-import { formatMinerMarkdown, mineTelemetryAndLogs } from '../scripts/ct-miner.mjs';
+import { formatMinerMarkdown, mineTelemetryAndLogs, parseArgs } from '../scripts/ct-miner.mjs';
 import { makeConvId, makeSandbox, makeTranscriptPath } from './helpers.mjs';
 
 test('Flight recorder logger sanitizes secrets/paths, rotates files, and summarizes health', () => {
@@ -119,6 +119,44 @@ test('Ring 2 telemetry miner clusters sandbox cache drops, edit mismatches, and 
       'utf8'
     );
 
+    const convOrchDirect = makeConvId('c', '3', '4', '8', '3');
+    writeFileSync(
+      makeTranscriptPath(appData, convOrchDirect),
+      `${JSON.stringify({
+        step_index: 1,
+        type: 'PLANNER_RESPONSE',
+        model: 'gemini-pro-orchestrator-neon',
+        input_tokens: 12000,
+        cache_read_tokens: 90000,
+        output_tokens: 300,
+      })}\n`,
+      'utf8'
+    );
+
+    const convLegacy = makeConvId('d', '4', '4', '8', '4');
+    writeFileSync(
+      makeTranscriptPath(appData, convLegacy),
+      `${JSON.stringify({
+        step_index: 1,
+        type: 'PLANNER_RESPONSE',
+        model: 'gemini-flash-worker-agy',
+        input_tokens: 20000,
+        cache_read_tokens: 40000,
+        output_tokens: 200,
+      })}\n`,
+      'utf8'
+    );
+
+    const parsedSpace = parseArgs(['--days', '3', '--max', '50', '--out', '/tmp/r.md', '--json']);
+    assert.equal(parsedSpace.days, 3);
+    assert.equal(parsedSpace.maxConversations, 50);
+    assert.equal(parsedSpace.out, '/tmp/r.md');
+    assert.equal(parsedSpace.json, true);
+
+    const parsedEq = parseArgs(['--days=5', '--max=30']);
+    assert.equal(parsedEq.days, 5);
+    assert.equal(parsedEq.maxConversations, 30);
+
     appendFlightEvent(dataDir, {
       level: 'error',
       source: 'sidecar',
@@ -127,10 +165,12 @@ test('Ring 2 telemetry miner clusters sandbox cache drops, edit mismatches, and 
     });
 
     const report = mineTelemetryAndLogs({ days: 7, appDataDir: appData, dataDir });
-    assert.equal(report.scannedConversations, 2);
-    assert.equal(report.totalPlannerSteps, 7);
+    assert.equal(report.scannedConversations, 4);
+    assert.equal(report.totalPlannerSteps, 9);
     assert.equal(report.editMismatchCount, 3);
     assert.equal(report.orchestratorComparison.customOrchestrator.sessions, 1);
+    assert.equal(report.orchestratorComparison.customOrchestratorDirect.sessions, 1);
+    assert.equal(report.orchestratorComparison.legacyOrchestrator.sessions, 1);
     const ids = report.proposals.map((p) => p.id);
     assert.ok(ids.includes('PROP-CACHE-SWITCH'), `Expected PROP-CACHE-SWITCH in ${ids.join(',')}`);
     assert.ok(ids.includes('PROP-EDIT-MISMATCH'), `Expected PROP-EDIT-MISMATCH in ${ids.join(',')}`);
@@ -139,6 +179,7 @@ test('Ring 2 telemetry miner clusters sandbox cache drops, edit mismatches, and 
     const md = formatMinerMarkdown(report);
     assert.ok(md.includes('Control Tower 遥测复盘与改进提案报告'));
     assert.ok(md.includes('新版 Orchestrator vs 纯单模型实测对比'));
+    assert.ok(md.includes('新版 Orchestrator (纯规划/直答)'));
     assert.ok(md.includes('PROP-CACHE-SWITCH'));
   } finally {
     sb.cleanup();

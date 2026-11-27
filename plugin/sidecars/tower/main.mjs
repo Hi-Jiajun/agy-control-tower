@@ -97,6 +97,7 @@ const PLUGIN_ROOT = resolve(__dirname, '..', '..');
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_CACHE_ENTRIES = 200;
+const MULTI_WS_CACHE_TTL_MS = 5000;
 const NO_STORE_HEADERS = Object.freeze({ 'Cache-Control': 'no-store, no-cache, must-revalidate' });
 
 const RPC_API_ROUTES = new Set([
@@ -155,7 +156,7 @@ function readPluginMeta() {
   return {
     name: raw?.name || 'control-tower',
     displayName: raw?.displayName || 'Control Tower',
-    version: raw?.version || '1.8.1',
+    version: raw?.version || '1.9.0',
   };
 }
 
@@ -187,6 +188,7 @@ class ControlTowerServer {
   #lastAuthRejectLogAt;
   #sseHub;
   #bundleCache;
+  #multiWsCache;
 
   constructor({
     port = Number.parseInt(process.env.ANTIGRAVITY_SIDECAR_WEB_PORT || '0', 10),
@@ -204,8 +206,10 @@ class ControlTowerServer {
     this.#workspaceMutexes = new Map();
     this.#lastAuthRejectLogAt = 0;
     this.#bundleCache = null;
+    this.#multiWsCache = null;
     this.#sseHub = new SseHub({
       onFsEvent: ({ workspace }) => {
+        this.#invalidateMultiWsCache();
         const targetWs = workspace || this.#activeWorkspace;
         if (targetWs) {
           void this.#flushDeferredReceiptForWorkspace(targetWs);
@@ -248,6 +252,31 @@ class ControlTowerServer {
     const a = createHash('sha256').update(raw, 'utf8').digest();
     const b = createHash('sha256').update(this.#token, 'utf8').digest();
     return timingSafeEqual(a, b);
+  }
+
+  #invalidateMultiWsCache() {
+    this.#multiWsCache = null;
+  }
+
+  #getMultiWorkspaceOverview({ currentWorkspace = '', recentWorkspaces = [], dataDir = '' } = {}) {
+    const recentList = Array.isArray(recentWorkspaces) ? recentWorkspaces : [];
+    const key = `${currentWorkspace}::${recentList.join('|')}::${dataDir}`;
+    const now = Date.now();
+    if (
+      this.#multiWsCache &&
+      this.#multiWsCache.key === key &&
+      now - this.#multiWsCache.ts < MULTI_WS_CACHE_TTL_MS
+    ) {
+      return this.#multiWsCache.data;
+    }
+    const data = buildMultiWorkspaceOverview({
+      currentWorkspace,
+      recentWorkspaces: recentList,
+      dataDir,
+      pluginRoot: PLUGIN_ROOT,
+    });
+    this.#multiWsCache = { key, ts: now, data };
+    return data;
   }
 
   #getClassicBundle() {
@@ -389,11 +418,10 @@ class ControlTowerServer {
     };
 
     if (!wsReal) {
-      const multiWorkspace = buildMultiWorkspaceOverview({
+      const multiWorkspace = this.#getMultiWorkspaceOverview({
         currentWorkspace: '',
         recentWorkspaces: recent,
         dataDir,
-        pluginRoot: PLUGIN_ROOT,
       });
       return {
         plugin,
@@ -425,11 +453,10 @@ class ControlTowerServer {
       dataDir,
       workspaceSettings: resolved.workspace,
     });
-    const multiWorkspace = buildMultiWorkspaceOverview({
+    const multiWorkspace = this.#getMultiWorkspaceOverview({
       currentWorkspace: wsReal,
       recentWorkspaces: recent,
       dataDir,
-      pluginRoot: PLUGIN_ROOT,
     });
 
     if (!found) {
@@ -599,6 +626,7 @@ class ControlTowerServer {
     await this.#flushDeferredReceiptForWorkspace(wsReal);
 
     if (sweep.detectedCount > 0) {
+      this.#invalidateMultiWsCache();
       this.#sseHub.notify({ workspace: wsReal, reason: 'sentinel_sweep' });
     }
     return sweep;
@@ -978,6 +1006,7 @@ class ControlTowerServer {
         ? normalizeWorkspaceInput(body.workspace, { throwOnInvalid: false })
         : '';
       this.#transcriptCache = {};
+      this.#invalidateMultiWsCache();
       clearMetadataCache();
       updatePluginState(dataDir, (state) => {
         state.transcriptCache = {};
@@ -1432,8 +1461,12 @@ class ControlTowerServer {
             ? SLOW_RPC_THRESHOLD_MS
             : SLOW_OP_THRESHOLD_MS;
           try {
+            if (req.method === 'POST') {
+              this.#invalidateMultiWsCache();
+            }
             await this.#handleApi(req, res, url);
             if (req.method === 'POST' && res.statusCode < 400) {
+              this.#invalidateMultiWsCache();
               this.#sseHub.notify({ workspace: this.#activeWorkspace, reason: url.pathname });
             }
             const elapsed = Date.now() - t0;
