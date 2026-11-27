@@ -8,7 +8,7 @@
 [![Node](https://img.shields.io/badge/node-%3E%3D20.0.0-339933)](package.json)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-8b5cf6)](plugin/plugin.json)
 
-A universal **Chief-of-Staff Control Tower** native plugin for **Google Antigravity**. It establishes a lightweight, persistent coordinator conversation in any workspace — keeping your main thread clean of heavy code/log dumps while orchestrating hidden execution surfaces (native `swarm`, `invoke_subagent`, `run_workflow`), a zero-token background sentinel with Foreground Focus Gate, single-slot exclusive resource leases, a 3-tier hybrid project roadmap DAG, and a real-time SSE Aux Pane dashboard.
+A universal **Chief-of-Staff Control Tower** native plugin for **Google Antigravity**. It establishes a lightweight, persistent coordinator conversation in any workspace — keeping your main thread free of heavy code/log dumps while orchestrating hidden execution surfaces (native `swarm`, `invoke_subagent`, `run_workflow`), a zero-token background sentinel with Foreground Focus Gate, single-slot exclusive resource leases, a 3-tier hybrid project roadmap DAG, and a native Antigravity real-time SSE Aux Pane dashboard.
 
 ---
 
@@ -79,10 +79,35 @@ agy plugin install ./plugin
 
 ### 3. Launch Your First Coordinator Session
 
-1. Open the **Control Tower** panel in the Antigravity right-hand **Aux Pane**.
-2. Start a new conversation (recommended L0 model: **`Gemini 4 Neon (XHigh)`**) and click one of the starter prompts or send:
+1. Open the **Control Tower** panel in the Antigravity right-hand **Aux Pane** and initialize your workspace in one click from the onboarding screen:
+   - **Standard Workspace Mode (Recommended)**: Creates `.agents/SESSION-REGISTRY.md` inside your project;
+   - **Zero-Intrusion Managed Mode (Clean Repo)**: Stores state under `<appData>/plugin_data/control-tower/`, leaving **zero untracked files** in shared team Git repositories (you can also switch anytime under **Settings -> Current Workspace**).
+2. Start a new coordinator conversation (recommended L0 model: **`Gemini 4 Neon (XHigh)`**) and click one of the starter prompts or send:
    > `Activate the control-tower skill, perform a read-only cold-start audit of this workspace, and initialize or verify SESSION-REGISTRY.md.`
-3. **Zero-Intrusion Managed Mode (Optional)**: Prefer leaving zero `.agents/` files in a shared team repository? Open **Settings Center -> Workspace Settings** in the Control Tower board and switch Registry Mode to **`PLUGIN_DATA Managed`** (stored cleanly under `<appData>/plugin_data/control-tower/`).
+
+---
+
+## Aux Pane Live Dashboard Tour
+
+Crafted in Google Antigravity's native monochrome design language with direct host theme token binding, a compact 2-row frosted sticky header (`<= 88px`), GPU-accelerated sliding tab & segmented indicators, grouped native `<select>` model pickers, and `stateSig` zero-payload silent poll short-circuiting:
+
+| Tab | What You Can Do in One Click |
+| --- | --- |
+| **Overview (`总览`)** | **Controller Health Card** (live online indicator, compaction counter, jump to chat, 1-click `/learn`, pre-authorized handover spawn); **Single-Slot Lease** (collapses quietly to 1 line when `IDLE`, expands with 1-click release when held); **Zero-Token Sentinel Inbox** (`P0/P1/P2` triage, auto-muted when `0` unread, batch deliver to coordinator when active) |
+| **Surfaces (`执行面`)** | Unified 2x2 Execution Surfaces grid (Swarm / Subagent / Workflow / Top-Level), live Native Swarm roster with worktree isolation badges & 1-click `waiting` member cleanup, allowlisted direct dispatch form, and inline bare-ID transcript tail probe |
+| **Roadmap (`路线图`)** | Optional `L1 ROADMAP.md` north-star editor + `L2 roadmap.json` dependency tree: semantic `READY` / `ACTIVE` / `BLOCKED` status borders, cycle rejection, parallel file ownership overlap alerts, `.agents/handoffs/` inline preview, and 1-click hidden-surface dispatch |
+| **Queue (`队列`)** | Collapsible task queue manager with curated `L1-L4` model route presets and WebView-safe inline 2-step delete confirmation |
+| **Registry (`台账`)** | 6 ready-to-copy orchestration & handover prompt templates above a SHA-256 optimistic-locked raw `SESSION-REGISTRY.md` editor |
+| **Settings (`设置`)** | Strictly isolated **Plugin / Global / Workspace** 3-tier configuration, 13 grouped `<select>` model pickers with dynamic `customAllowedModels` sync, online `model-routing.md` & `templates.md` overrides, and redacted flight-recorder diagnostics |
+
+---
+
+## Typical Daily Workflows
+
+1. **Read-Only Cold Start**: Run the starter prompt in a fresh conversation -> the coordinator audits repo rules & exclusive hardware constraints, registers its `conversationId`, and reports a concise workspace summary.
+2. **Hidden-Surface Feature Dispatch**: Ask the coordinator to build or debug a module -> it recommends the optimal hidden surface via `ask_question` (e.g., native `swarm` with `workspace: "share"` + `Orchestrator (Neon Extra High)`), keeping your left sidebar completely clean.
+3. **Uninterrupted Deep Planning + Milestone Unlocks**: Keep discussing architecture in the foreground while the zero-token Sentinel quietly files background completions into the Inbox; review & mark `W1` done in the Roadmap tab to automatically unlock downstream `W2`.
+4. **Smart `/learn` & Seamless Handover**: Distill reusable repo rules via `learning_proposal.md` at milestones, and spawn a pre-authorized successor coordinator in one click once compactions reach the configurable threshold (default `5`).
 
 ---
 
@@ -99,7 +124,7 @@ agy plugin install ./plugin
 
 ## Empirical L0-L4 Comfort-Zone Model Routing
 
-Calibrated against real multi-day session telemetry (prompt-cache hit rate, cold-input overhead, and edit mismatch rate). All tiers are customizable globally or per-workspace in the Aux Pane **Settings Center** (including a **Custom Allowlist** mode for additional models):
+Calibrated against real multi-day session telemetry (prompt-cache hit rate, cold-input overhead, and edit mismatch rate). All tiers are customizable globally or per-workspace under the **Settings** tab (including a **Custom Allowlist** mode that dynamically syncs custom model IDs across all 13 model pickers):
 
 | Tier | Typical Workload | Default Model | Explicit CLI / Swarm ID | Empirical Rationale |
 | --- | --- | --- | --- | --- |
@@ -119,10 +144,10 @@ Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) and [S
 # Install cross-platform local pre-commit hygiene & version-sync git hooks
 npm run setup-hooks
 
-# Run cross-platform CI suite (unit tests + 16 replays + 17 skill evals + offline validator; no agy CLI needed)
+# Run cross-platform CI suite (31 unit tests + 16 replays + 17 skill evals + offline validator; no agy CLI needed)
 npm run ci
 
-# Run full local 4D release gate (adds real headless Chrome CDP UI smoke + official agy --strict validation)
+# Run full local 4D release gate (adds 36-check real headless Chrome CDP UI smoke + official agy --strict validation)
 npm run gate
 
 # Check live local installation health or manage rollback snapshots

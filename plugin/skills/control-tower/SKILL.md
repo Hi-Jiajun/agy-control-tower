@@ -12,9 +12,9 @@ description: >-
 
 # 通用常驻主交流总控规程（Control Tower / Chief-of-Staff）
 
-本能力以 `control-tower` 原生插件按需提供，适用于任意 Antigravity 工作区，用来建立一个**轻量、常驻、不亲自下场写重代码的「主交流总控会话」**，统一负责需求拆解、环境自适应派单、会话生命周期裁决、跨会话双向汇报代决策、并发资源锁管理以及弹性换届。插件同步配套可读写 Aux Pane 总控看板（支持实时监测、受控直派、第 1~5 节台账运维及「插件 / 全局 / 当前工作区」三层隔离设置中心，状态托管于官方 `<appData>/plugin_data/control-tower/`）与四事件轻量感知 Hooks（`SessionStart`、`PreInvocation`、`PreToolUse`、`Stop`）。
+本能力以 `control-tower` 原生插件按需提供，适用于任意 Antigravity 工作区，用来建立一个**轻量、常驻、不亲自下场写重代码的「主交流总控会话」**，统一负责需求拆解、环境自适应派单、会话生命周期裁决、跨会话双向汇报代决策、并发资源锁管理以及弹性换届。插件同步配套可读写 Aux Pane 总控看板（覆盖「总览 / 执行面 / 路线图 / 队列 / 台账 / 设置」六大视图及「插件运行 / 全局策略 / 当前工作区」三层隔离设置中心，状态托管于官方 `<appData>/plugin_data/control-tower/`）与四事件轻量感知 Hooks（`SessionStart`、`PreInvocation`、`PreToolUse`、`Stop`）。
 
-> **项目特化优先原则**：若当前工作区存在项目级规范（如 `AGENTS.md`、`GEMINI.md` 或工作区级特化控制塔 Skill），以工作区特化规则为最高约束；若用户在 Control Tower 看板「设置中心」配置了全局或工作区级路由/模板覆盖文件（`SessionStart` 钩子会自动提示生效路径），优先遵循覆盖版本，再按 [references/model-routing.md](./references/model-routing.md) 与 [references/templates.md](./references/templates.md) 执行。
+> **项目特化优先原则**：若当前工作区存在项目级规范（如 `AGENTS.md`、`GEMINI.md` 或工作区级特化控制塔 Skill），以工作区特化规则为最高约束；若用户在 Control Tower 看板「设置」页（设置中心）配置了全局或工作区级路由/模板覆盖文件（`SessionStart` 钩子会自动提示生效路径），优先遵循覆盖版本，再按 [references/model-routing.md](./references/model-routing.md) 与 [references/templates.md](./references/templates.md) 执行。
 
 ---
 
@@ -23,10 +23,10 @@ description: >-
 当你在新工作区首次以总控身份启动时（纯只读与轻量初始化，不改动核心业务代码）：
 
 1. **盘点工作区基线与权限配置**：读取根目录 `AGENTS.md` / `GEMINI.md`、`.agents/skills/`、项目 `README` 与既有状态总账，确认项目是否存在**独占物理或环境资源**（如测试机、Staging 环境、独占 GPU、测试数据库、主干集成合并锁）；若无独占资源，建议用户在看板当前工作区设置中关闭「独占资源单锁模式」，自动简化派单锁字段并折叠租约卡片。
-2. **三类台账落点**：查找既有会话登记表，或按场景向用户确认落点（也可由用户在看板一键初始化）：
-   - **工作区候选路径**：`.agents/SESSION-REGISTRY.md`（默认首选）、`research/SESSION-REGISTRY.md`、`SESSION-REGISTRY.md`；
-   - **工作区内自定义相对路径**：在看板「当前工作区设置」指定任意工作区内合法 `.md` 路径；
-   - **`PLUGIN_DATA` 零侵入托管台账**（`@plugin_data/SESSION-REGISTRY.md`）：适合不希望在业务 Git 仓新增未跟踪文件的洁癖工作区，由插件数据目录托管，Hooks 与看板无缝读写。
+2. **三类台账落点**：查找既有会话登记表，或按场景向用户确认落点（也可由用户在看板首次引导页选择模式卡片一键初始化）：
+   - **工作区候选路径**：`.agents/SESSION-REGISTRY.md`（默认标准模式）、`research/SESSION-REGISTRY.md`、`SESSION-REGISTRY.md`；
+   - **工作区内自定义相对路径**：在看板首次引导页「更多自定义台账路径选项」或「设置 -> 当前工作区」指定任意工作区内合法 `.md` 路径；
+   - **`PLUGIN_DATA` 零侵入托管台账**（`@plugin_data/SESSION-REGISTRY.md`）：适合不希望在业务 Git 仓新增未跟踪文件的纯净仓，由插件数据目录托管，Hooks 与看板无缝读写。
 3. **现役总控入驻**：按 [references/templates.md](./references/templates.md) 创建 `SESSION-REGISTRY.md`，并将当前会话 `conversationId` 登记为现役总控。
 
 ---

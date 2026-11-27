@@ -38,9 +38,9 @@ npm run gate
 
 | 层级 | 命令 | 验证范围 |
 | --- | --- | --- |
-| **L1 单元与纯逻辑** | `npm test` | 核心共享库、四事件 Hooks、Sidecar 鉴权/并发锁/API、前端纯状态机 `ui-logic.mjs` |
-| **L2 事故轨迹回放** | `npm run replay` | 在隔离临时沙箱回放 `tests/replays/*.replay.json` 全部真实历史缺陷样本 |
-| **L3 真浏览器 UI 冒烟** | `npm run test:ui` | 基于内置 WebSocket + CDP 驱动无头浏览器检验窄栏/宽栏、亮暗双主题与零控制台报错 |
+| **L1 单元与纯逻辑** | `npm test` | 核心共享库、四事件 Hooks、Sidecar 鉴权/并发锁/`stateSig` 短路 API、前端纯状态与模型选择状态机 `ui-logic.mjs`（共 31 项） |
+| **L2 事故轨迹回放** | `npm run replay` | 在隔离临时沙箱回放 `tests/replays/*.replay.json` 全部 16 份真实历史缺陷样本 |
+| **L3 真浏览器 UI 冒烟** | `npm run test:ui` | 基于内置 WebSocket + CDP 驱动无头浏览器执行 36 项检查（`360px`/`390px`/`960px` 零横向溢出、亮暗主题、13 处分组模型选择、滑动指示条、DOM 记忆化与零控制台报错；支持附加 `--screenshot-dir=./.agents/ui-shots` 导出 10 张多状态截图） |
 | **L4 行为契约评测** | `npm run test:eval` | 校验 `SKILL.md`、路由护栏、双证换届闭环、缓存纪律与通知边界等 17 项黄金契约 |
 | **离线/官方包校验** | `npm run validate:offline` / `npm run validate` | 校验清单字段白名单、钩子与看板入口完整性，以及 `agy plugin validate --strict ./plugin` |
 

@@ -36,7 +36,7 @@
 - **环 4：四维立体自动化门禁**
   - **L1 单元与纯逻辑测试**：覆盖共享核心、Hooks、Sidecar API、以及从 `app.js` 抽离的纯前端状态逻辑模块 `plugin/sidecars/tower/ui-logic.mjs`。
   - **L2 事故回放回归集**：`tests/replays.test.mjs` 自动执行全部历史事故样本。
-  - **L3 真浏览器窄栏 UI 冒烟**：`scripts/ct-ui-smoke.mjs`（`npm run test:ui`）通过 Node 原生 WebSocket + CDP 驱动无头 Chrome/Chromium，实测 Aux Pane 窄栏（`390x844`）暗/亮双主题与宽栏（`960x844`），校验 0 Console Error、0 未捕获异常、0 横向溢出与诊断抽屉交互。
+  - **L3 真浏览器全功能与窄宽栏 UI 冒烟**：`scripts/ct-ui-smoke.mjs`（`npm run test:ui`）通过 Node 原生 WebSocket + CDP 驱动无头 Chrome/Chromium，实测 Aux Pane 超窄栏（`360x844`）、窄栏（`390x844`）暗/亮双主题与宽栏（`960x844`）共 36 项交互与几何检查，校验 0 Console Error、0 未捕获异常、0 横向溢出、13 处模型选择器、滑动指示条与 DOM 记忆化零重绘。
   - **L4 Skill 与 Prompt 行为契约评测**：`scripts/ct-skill-eval.mjs`（`npm run test:eval`）按 17 项黄金场景校验路由红线、新版 Orchestrator 配置、缓存与编辑纪律、写保护、WebView 异步非阻塞与端到端换届交接卡契约。
 - **环 5：发布前快照、实装体检与一键秒回滚**
   - `scripts/ct-doctor.mjs`（`npm run doctor`）：实装后健康探针（版本一致性、无旧散装 Skill 双重发现、无失效 Sidecar 进程、黑匣子 24h 健康度、快照库存）。
@@ -92,4 +92,4 @@
 
 - **经典单脚本打包兼容宿主鉴权网关（`v1.8.1`）**：服务端按需编译 `/app.bundle.js` 经典 IIFE 包并附加 `no-store` 防缓存头与 `boot-guard.js` 启动守卫，彻底规避宿主网关对 `<script type="module">` 子模块图的拦截。
 - **全通道 MCP 台账写保护与实证 `L0 / Swarm` 动静分流（`v1.9.0 ~ v1.9.1`）**：`PreToolUse` 扩展拦截 `apply_edits` / `call_mcp_tool`；修复双层 `Orchestrator` 压缩双计；基于 45h 遥测将 `L0` 常驻总控回调为单模型 `Gemini 4 Neon (XHigh)` 消除短对话切层损耗，保留 `Swarm` 与 `L2/L4` 使用 `Orchestrator (Neon Extra High)`。
-- **Antigravity 原生设计系统 UI 焕新、Sidecar 纵深安全加固与三端开源 CI（`v1.10.0`）**：看板 UI 与图标全面重构为 Google Antigravity 原生克制灰阶、宿主语义 Token 直绑与单行下划线标签风格；升级 `#validOrigin` URL 主机名精确匹配、新增 `#validHost` 防 DNS Rebinding 校验、`Sec-Fetch-Site: cross-site` 拦截及安全响应头；补齐 Windows 个人目录脱敏、无 `agy` 离线严格校验器 `ct-validate-offline.mjs`、中英双语开源文档与三操作系统 GitHub Actions CI。
+- **Antigravity 原生设计系统焕新、质感动效与渲染性能优化、Sidecar 纵深安全加固及三端开源 CI（`v1.10.0`）**：看板信息架构与视觉全面升级为双行磨砂吸顶顶栏（`<= 88px`）+ 单行 6 标签页（`总览 / 执行面 / 路线图 / 队列 / 台账 / 设置`）、双模式初始化引导卡、`IDLE` 静默降噪与 `<details>` 渐进式披露；重构全站 13 处模型字段为带职责分组的原生 `<select>` 并动态同步自定义白名单，引入 GPU `translate3d` 滑动指示条、`stateSig`/`sinceSig` 零载荷静默轮询短路、`dirtyTabs` 惰性渲染与 `setHtmlIfChanged` DOM 记忆化，并支持实装时自动回收旧驻留 Sidecar 进程；升级 `#validOrigin` URL 主机名精确匹配、新增 `#validHost` 防 DNS Rebinding、`Sec-Fetch-Site: cross-site` 拦截及安全响应头；补齐 Windows 个人目录脱敏、无 `agy` 离线严格校验器 `ct-validate-offline.mjs`、中英双语开源文档与三操作系统 GitHub Actions CI。

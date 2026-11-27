@@ -2,14 +2,14 @@
   "name": "control-tower",
   "displayName": "Control Tower",
   "version": "1.10.0",
-  "description": "Universal Chief-of-Staff Control Tower plugin for Antigravity: hidden-surface-first dispatch, 4-surface navigator, zero-token sentinel + Focus Gate inbox, isolation & collaboration contracts, 3-tier project roadmap DAG, and real-time SSE multi-workspace Aux Pane board.",
+  "description": "Universal Chief-of-Staff coordinator for Google Antigravity: hidden-surface-first multi-agent dispatch (Swarm / Subagent / Workflow), zero-token Sentinel & Focus Gate inbox, single-slot resource leases, 3-tier Roadmap DAG, and a native Antigravity real-time SSE Aux Pane.",
   "author": "Hi-Jiajun",
   "homepage": "https://github.com/Hi-Jiajun/agy-control-tower",
   "repository": "https://github.com/Hi-Jiajun/agy-control-tower",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [
-    "启用 control-tower 总控规程，对当前工作区执行纯只读冷启动盘点并初始化或核对 SESSION-REGISTRY.md。",
-    "按 control-tower 隐藏面优先规范评估新需求：通过 ask_question 推荐最优执行面（原生 swarm / invoke_subagent / run_workflow / 白名单顶层直派）与纯 Gemini 4 模型配置。",
-    "按 control-tower 换届规程同步最新会话台账与生效设置，生成交接卡或准备总控接班。"
+    "启用 control-tower 总控规程，对当前工作区执行纯只读冷启动盘点，并初始化或核对 SESSION-REGISTRY.md。",
+    "按 control-tower 隐藏面优先规范评估新需求：调用 ask_question 推荐最优执行面（原生 swarm / invoke_subagent / run_workflow / 白名单直派）与舒适区模型配比。",
+    "核查当前工作区后台优先级信箱、活跃执行面与路线图就绪分支，汇总阶段进展或生成总控换届交接卡。"
   ]
 }
