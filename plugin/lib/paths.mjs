@@ -181,7 +181,7 @@ export function sha256(text) {
 }
 
 function getHomeDir(env = process.env) {
-  return resolve(env.HOME || homedir());
+  return resolve(env.HOME || env.USERPROFILE || homedir());
 }
 
 function findAncestorParent(startPath, markerName) {
@@ -215,7 +215,7 @@ let appDirsCache = { key: '', expiresAt: 0, dirs: [] };
  * Resolve candidate Antigravity app data directories (<appDataDir> containing brain/).
  */
 export function resolveAppDataDirs({ env = process.env, hintPath = '' } = {}) {
-  const cacheKey = `${env.ANTIGRAVITY_APP_DATA_DIR || ''}|${env.ANTIGRAVITY_EXECUTABLE_DATA_DIR || ''}|${env.HOME || ''}|${hintPath || ''}`;
+  const cacheKey = `${env.ANTIGRAVITY_APP_DATA_DIR || ''}|${env.ANTIGRAVITY_EXECUTABLE_DATA_DIR || ''}|${env.HOME || ''}|${env.USERPROFILE || ''}|${hintPath || ''}`;
   const now = Date.now();
   if (appDirsCache.key === cacheKey && now < appDirsCache.expiresAt && appDirsCache.dirs.length > 0) {
     return [...appDirsCache.dirs];
@@ -321,7 +321,9 @@ export function normalizeWorkspaceInput(raw, { throwOnInvalid = false } = {}) {
 }
 
 export function isInsideDir(rootReal, targetReal) {
-  const rel = relative(rootReal, targetReal);
+  const normDrive = (p) =>
+    process.platform === 'win32' && /^[a-z]:/i.test(p) ? p[0].toUpperCase() + p.slice(1) : p;
+  const rel = relative(normDrive(rootReal), normDrive(targetReal));
   return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel));
 }
 

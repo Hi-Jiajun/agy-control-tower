@@ -1,7 +1,11 @@
 {
   "name": "control-tower-sidecar",
-  "version": "1.9.1",
+  "version": "1.10.0",
   "private": true,
   "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "description": "Control Tower auxiliary pane sidecar for Antigravity"
 }

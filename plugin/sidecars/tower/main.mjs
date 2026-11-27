@@ -98,7 +98,20 @@ const MAX_FILE_BYTES = 512 * 1024;
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_CACHE_ENTRIES = 200;
 const MULTI_WS_CACHE_TTL_MS = 5000;
-const NO_STORE_HEADERS = Object.freeze({ 'Cache-Control': 'no-store, no-cache, must-revalidate' });
+const SECURITY_HEADERS = Object.freeze({
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'no-referrer',
+  'Cross-Origin-Resource-Policy': 'same-origin',
+});
+const NO_STORE_HEADERS = Object.freeze({
+  'Cache-Control': 'no-store, no-cache, must-revalidate',
+  ...SECURITY_HEADERS,
+});
+
+function isLoopbackHostname(hostname) {
+  const h = String(hostname || '').toLowerCase();
+  return h === '127.0.0.1' || h === 'localhost' || h === '[::1]' || h === '::1';
+}
 
 const RPC_API_ROUTES = new Set([
   '/api/dispatch/create',
@@ -156,7 +169,7 @@ function readPluginMeta() {
   return {
     name: raw?.name || 'control-tower',
     displayName: raw?.displayName || 'Control Tower',
-    version: raw?.version || '1.9.1',
+    version: raw?.version || '1.10.0',
   };
 }
 
@@ -288,20 +301,33 @@ class ControlTowerServer {
     return this.#bundleCache;
   }
 
+  #validHost(req) {
+    const host = req.headers.host;
+    if (!host || typeof host !== 'string') return true;
+    try {
+      const parsed = new URL(`http://${host}`);
+      return isLoopbackHostname(parsed.hostname);
+    } catch {
+      return false;
+    }
+  }
+
   #validOrigin(req) {
+    const secFetchSite = String(req.headers['sec-fetch-site'] || '').toLowerCase();
+    if (secFetchSite === 'cross-site') return false;
     const origin = req.headers.origin;
     if (!origin || typeof origin !== 'string') return true;
-    return (
-      origin.startsWith('http://127.0.0.1') ||
-      origin.startsWith('https://127.0.0.1') ||
-      origin.startsWith('http://localhost') ||
-      origin.startsWith('https://localhost') ||
-      origin.startsWith('http://[::1]') ||
-      origin.startsWith('https://[::1]') ||
-      origin.startsWith('vscode-webview://') ||
-      origin === 'null' ||
-      origin.startsWith('file://')
-    );
+    if (origin.startsWith('vscode-webview://') || origin.startsWith('file://')) return true;
+    if (origin === 'null') {
+      return Boolean(this.#token) || secFetchSite === 'same-origin' || secFetchSite === 'none';
+    }
+    try {
+      const parsed = new URL(origin);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+      return isLoopbackHostname(parsed.hostname);
+    } catch {
+      return false;
+    }
   }
 
   #logFlightSafe(entry, { allowCreate = true } = {}) {
@@ -332,7 +358,11 @@ class ControlTowerServer {
 
   #sendJson(res, status, obj, extraHeaders = {}) {
     if (res.headersSent || res.writableEnded) return;
-    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...extraHeaders });
+    res.writeHead(status, {
+      'Content-Type': 'application/json; charset=utf-8',
+      ...SECURITY_HEADERS,
+      ...extraHeaders,
+    });
     res.end(JSON.stringify(obj));
   }
 
@@ -1310,10 +1340,18 @@ class ControlTowerServer {
           return this.#sendJson(res, 400, { error: 'bad_request', message: 'Malformed request URL' });
         }
 
+        if (!this.#validHost(req)) {
+          return this.#sendJson(res, 403, { error: 'forbidden_host' });
+        }
+
         const isProtectedRoute =
           url.pathname.startsWith('/api/') || url.pathname.startsWith('/_sidecar/');
 
-        if (isProtectedRoute && req.method === 'POST' && !this.#validOrigin(req)) {
+        const secFetchSite = String(req.headers['sec-fetch-site'] || '').toLowerCase();
+        if (
+          isProtectedRoute &&
+          (secFetchSite === 'cross-site' || (req.method === 'POST' && !this.#validOrigin(req)))
+        ) {
           return this.#sendJson(res, 403, { error: 'forbidden_origin' });
         }
 

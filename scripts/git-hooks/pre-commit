@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 本地 Git pre-commit 合规门禁：
-# 1) 全仓隐私脱敏、零间隔号、零危险递归删除命令检查
+# 1) 全仓隐私脱敏、零间隔号、零危险递归删除命令与离线包边界检查
 # 2) package.json / plugin/plugin.json / plugin/sidecars/tower/package.json 版本一致性校验
 # 3) 若存在 agy CLI，运行 agy plugin validate --strict ./plugin
 set -euo pipefail
@@ -14,112 +14,7 @@ if [ -z "$NODE_BIN" ]; then
   exit 1
 fi
 
-"$NODE_BIN" - <<'JS'
-import { spawnSync } from 'node:child_process';
-import { lstatSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
-
-const forbHome = '/' + 'home' + '/';
-const forbUsers = '/' + 'Users' + '/';
-const forbDot1 = String.fromCharCode(0x00b7);
-const forbDot2 = String.fromCharCode(0x30fb);
-const forbRm1 = 'rm ' + '-rf';
-const forbRm2 = 'rm ' + '-fr';
-const privateIpRe = new RegExp(
-  '\\b(?:10\\.\\d{1,3}|172\\.(?:1[6-9]|2\\d|3[01])|' + '192' + '\\.' + '168' + ')\\.\\d{1,3}\\.\\d{1,3}\\b'
-);
-const uuidRe = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
-
-function checkBuffer(buf, label) {
-  if (!buf || buf.includes(0)) return;
-  const txt = buf.toString('utf8');
-  if (txt.includes(forbHome)) throw new Error(`个人路径泄漏于 ${label}`);
-  if (txt.includes(forbUsers)) throw new Error(`个人路径泄漏于 ${label}`);
-  if (privateIpRe.test(txt)) throw new Error(`内网 IP 泄漏于 ${label}`);
-  if (uuidRe.test(txt)) throw new Error(`静态 UUID 泄漏于 ${label}`);
-  if (txt.includes(forbDot1) || txt.includes(forbDot2)) {
-    throw new Error(`非法间隔号字符出现在 ${label}`);
-  }
-  if (txt.includes(forbRm1) || txt.includes(forbRm2)) {
-    throw new Error(`禁止出现的删除命令字面量存在于 ${label}`);
-  }
-}
-
-function gitShowStaged(relPath) {
-  const r = spawnSync('git', ['show', `:${relPath}`], { maxBuffer: 16 * 1024 * 1024 });
-  if (r.status === 0 && r.stdout) return r.stdout;
-  return null;
-}
-
-const stagedRes = spawnSync(
-  'git',
-  ['diff', '--cached', '--name-only', '-z', '--diff-filter=ACMR'],
-  { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }
-);
-const hasGit = stagedRes.status === 0;
-const stagedFiles = hasGit ? stagedRes.stdout.split('\0').filter(Boolean) : [];
-
-function readManifestJson(relPath) {
-  if (stagedFiles.length > 0) {
-    const stagedBuf = gitShowStaged(relPath);
-    if (stagedBuf) return JSON.parse(stagedBuf.toString('utf8'));
-  }
-  return JSON.parse(readFileSync(relPath, 'utf8'));
-}
-
-const rootPkg = readManifestJson('package.json');
-const pluginJson = readManifestJson('plugin/plugin.json');
-const sidecarPkg = readManifestJson('plugin/sidecars/tower/package.json');
-
-if (rootPkg.version !== pluginJson.version || sidecarPkg.version !== pluginJson.version) {
-  console.error(
-    `版本不一致: root=${rootPkg.version}, plugin=${pluginJson.version}, sidecar=${sidecarPkg.version}`
-  );
-  process.exit(1);
-}
-
-if (stagedFiles.length > 0) {
-  for (const rel of stagedFiles) {
-    const buf = gitShowStaged(rel);
-    if (buf) checkBuffer(buf, `${rel} (staged)`);
-  }
-} else if (hasGit) {
-  const lsRes = spawnSync(
-    'git',
-    ['ls-files', '-z', '--cached', '--others', '--exclude-standard'],
-    { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }
-  );
-  const files = lsRes.status === 0 ? lsRes.stdout.split('\0').filter(Boolean) : [];
-  for (const rel of files) {
-    try {
-      const st = lstatSync(rel);
-      if (st.isSymbolicLink() || !st.isFile()) continue;
-      checkBuffer(readFileSync(rel), rel);
-    } catch (err) {
-      if (err?.code === 'ENOENT') continue;
-      throw err;
-    }
-  }
-} else {
-  const SKIP_DIRS = new Set(['.git', '.agents', 'node_modules', '__pycache__', 'tmp']);
-  function scan(dir) {
-    for (const ent of readdirSync(dir, { withFileTypes: true })) {
-      if (SKIP_DIRS.has(ent.name)) continue;
-      const full = join(dir, ent.name);
-      if (ent.isDirectory()) {
-        scan(full);
-        continue;
-      }
-      const st = lstatSync(full);
-      if (st.isSymbolicLink() || !st.isFile()) continue;
-      checkBuffer(readFileSync(full), full);
-    }
-  }
-  scan('.');
-}
-
-console.log(`OK: 隐私脱敏、零间隔号与版本一致性校验通过 (v${pluginJson.version})`);
-JS
+"$NODE_BIN" ./scripts/ct-precommit-check.mjs
 
 if command -v agy >/dev/null 2>&1; then
   agy plugin validate --strict ./plugin >/dev/null

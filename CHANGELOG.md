@@ -5,6 +5,24 @@ All notable changes to `control-tower` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] - 2026-11-28
+
+### Security
+- **Sidecar 本地跨站与防 DNS 重绑定纵深加固**：
+  - `plugin/sidecars/tower/main.mjs` 将 `#validOrigin` 从前缀匹配升级为 `new URL(origin)` 精确环回主机名比对，彻底阻断 `http://127.0.0.1.evil.example`、`http://localhost.evil.example` 等子域前缀伪造与未授权跨站沙箱 `Origin: null`。
+  - 新增 `#validHost` 环回主机名校验阻断 DNS Rebinding 攻击，在 `/api/*` 与 `/_sidecar/*` 全量拦截 `Sec-Fetch-Site: cross-site`，并为所有静态资源与 JSON 响应附加 `X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer` 与 `Cross-Origin-Resource-Policy: same-origin` 安全头。
+  - `plugin/lib/logger.mjs` 与 `scripts/ct-precommit-check.mjs` 补齐 Windows 个人主目录路径自动脱敏与提交门禁扫描。
+
+### Added
+- **开源社区治理、中英双语文档与三端 GitHub Actions CI**：
+  - 新增英文完整文档 `README.en.md`、开源贡献指南 `CONTRIBUTING.md`、安全威胁模型与私密披露说明 `SECURITY.md`、GitHub Issue/PR 模板及三操作系统（Ubuntu / macOS / Windows）GitHub Actions 流水线 `.github/workflows/ci.yml`（含 Ubuntu 无头 Chrome CDP 真浏览器 UI 冒烟）。
+  - 新增零依赖离线插件包严格校验器 `scripts/ct-validate-offline.mjs`（`npm run validate:offline`）与跨平台合规检查入口 `scripts/ct-precommit-check.mjs`（`npm run hygiene` / `npm run ci`），使无 `agy` CLI 的公共 CI 与外部贡献者环境也能 100% 校验插件清单、钩子、看板与纯净包边界。
+
+### Changed
+- **全平台（Linux / macOS / Windows）运行态与工具链兼容增强**：
+  - `plugin/lib/paths.mjs`、`plugin/lib/settings.mjs`、`plugin/scripts/ct-hook.mjs`、`plugin/sidecars/tower/lib/agentapi.mjs`、`scripts/ct-doctor.mjs`、`scripts/ct-release.mjs` 与 `scripts/ct-ui-smoke.mjs` 全面兼容 Windows `USERPROFILE`、盘符大小写归一化、跨平台 `PATH`/`PATHEXT` 命令探测、`.mjs` 桩脚本直接调用以及 macOS/Windows 下 Chrome/Edge/Playwright 浏览器路径自动发现；`package.json` `setup-hooks` 升级为跨平台 Node 实现。
+  - 重构升级中文主页 `README.md`（新增 Mermaid 系统架构图、3 分钟快速开始、零侵入 `PLUGIN_DATA` 托管指引与实证路由表），并同步更新 `plugin/README.md` 与 `docs/ARCHITECTURE-ROADMAP.md`。
+
 ## [1.9.1] - 2026-11-27
 
 ### Changed

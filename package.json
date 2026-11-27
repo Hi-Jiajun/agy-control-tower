@@ -1,9 +1,32 @@
 {
   "name": "control-tower-workspace",
-  "version": "1.9.1",
+  "version": "1.10.0",
   "private": true,
   "type": "module",
-  "description": "Development workspace for the control-tower Antigravity plugin",
+  "license": "MIT",
+  "author": "Hi-Jiajun",
+  "description": "Open-source development workspace and 5-ring quality gate for the Google Antigravity Control Tower native plugin",
+  "homepage": "https://github.com/Hi-Jiajun/agy-control-tower",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Hi-Jiajun/agy-control-tower.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Hi-Jiajun/agy-control-tower/issues"
+  },
+  "keywords": [
+    "antigravity",
+    "google-antigravity",
+    "agy-plugin",
+    "chief-of-staff",
+    "multi-agent",
+    "swarm",
+    "sidecar",
+    "orchestrator"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "test": "node --test tests/*.test.mjs",
     "test:ui": "node scripts/ct-ui-smoke.mjs --require-browser",
@@ -15,8 +38,11 @@
     "release:snapshot": "node scripts/ct-release.mjs snapshot",
     "release:rollback": "node scripts/ct-release.mjs rollback",
     "selftest": "bash scripts/selftest.sh",
-    "validate": "agy plugin validate --strict ./plugin",
+    "validate:offline": "node scripts/ct-validate-offline.mjs",
+    "hygiene": "node scripts/ct-precommit-check.mjs",
+    "validate": "node scripts/ct-validate-offline.mjs && agy plugin validate --strict ./plugin",
+    "ci": "npm test && npm run replay && npm run test:eval && npm run hygiene",
     "gate": "npm test && npm run test:ui && npm run test:eval && npm run validate",
-    "setup-hooks": "git config core.hooksPath scripts/git-hooks && chmod +x scripts/git-hooks/pre-commit"
+    "setup-hooks": "node -e \"const fs=require('node:fs'),cp=require('node:child_process');cp.execFileSync('git',['config','core.hooksPath','scripts/git-hooks'],{stdio:'inherit'});if(process.platform!=='win32')fs.chmodSync('scripts/git-hooks/pre-commit',0o755);\""
   }
 }

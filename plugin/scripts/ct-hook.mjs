@@ -106,9 +106,10 @@ function expandUserPath(raw) {
       return '';
     }
   }
-  if (t === '~') return resolve(homedir());
-  if (t.startsWith('~/')) {
-    return resolve(homedir(), t.slice(2));
+  const home = resolve(process.env.HOME || process.env.USERPROFILE || homedir());
+  if (t === '~') return home;
+  if (t.startsWith('~/') || t.startsWith('~\\')) {
+    return resolve(home, t.slice(2));
   }
   return t;
 }
@@ -189,10 +190,14 @@ function canInvokeAgentApiInHook(env = process.env) {
 
 function sendAgentApiMessage(recipientId, title, message) {
   const exe = process.env.ANTIGRAVITY_AGENTAPI_EXE;
-  const file = exe || 'agentapi';
-  const args = exe
-    ? ['agentapi', 'send-message', '--title', title, recipientId, message]
-    : ['send-message', '--title', title, recipientId, message];
+  const isNodeScript = Boolean(exe && /\.m?js$/i.test(exe));
+  const file = isNodeScript ? process.execPath : exe || 'agentapi';
+  const baseArgs = ['send-message', '--title', title, recipientId, message];
+  const args = isNodeScript
+    ? [exe, 'agentapi', ...baseArgs]
+    : exe
+      ? ['agentapi', ...baseArgs]
+      : baseArgs;
   execFileSync(file, args, {
     encoding: 'utf8',
     timeout: 3000,

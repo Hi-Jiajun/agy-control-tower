@@ -22,8 +22,13 @@ export function execAgentApiAsync(args, { projectId, timeoutMs = 15000 } = {}) {
     const env = { ...process.env };
     if (projectId) env.ANTIGRAVITY_PROJECT_ID = projectId;
     const exe = process.env.ANTIGRAVITY_AGENTAPI_EXE;
-    const file = exe || 'agentapi';
-    const execArgs = exe ? ['agentapi', ...args] : args;
+    const isNodeScript = Boolean(exe && /\.m?js$/i.test(exe));
+    const file = isNodeScript ? process.execPath : exe || 'agentapi';
+    const execArgs = isNodeScript
+      ? [exe, 'agentapi', ...args]
+      : exe
+        ? ['agentapi', ...args]
+        : args;
     let settled = false;
     let killEscalationTimer = null;
 

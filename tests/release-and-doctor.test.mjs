@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
-import { runDoctor } from '../scripts/ct-doctor.mjs';
+import { hasCommandInPath, runDoctor } from '../scripts/ct-doctor.mjs';
 import {
   createSnapshot,
   listSnapshots,
@@ -12,12 +12,33 @@ import {
 } from '../scripts/ct-release.mjs';
 import { makeSandbox } from './helpers.mjs';
 
-function hasAgy() {
-  return spawnSync('which', ['agy'], { encoding: 'utf8' }).status === 0;
-}
+test('Ring 5 offline: snapshot creation, pruning, and doctor checks work without agy CLI', () => {
+  const sb = makeSandbox('ct-release-offline-');
+  try {
+    const fakeHome = join(sb.dir, 'home');
+    const cfgDir = join(fakeHome, '.gemini', 'config');
+    const installedDir = join(cfgDir, 'plugins', 'control-tower');
+    const dataDir = join(fakeHome, '.gemini', 'antigravity', 'plugin_data', 'control-tower');
+    mkdirSync(installedDir, { recursive: true });
+    cpSync(join(process.cwd(), 'plugin'), installedDir, { recursive: true });
+    const env = { ...process.env, HOME: fakeHome, AGY_CONFIG_DIR: cfgDir, AGY_CONTROL_TOWER_DATA_DIR: dataDir };
+
+    for (let i = 1; i <= 4; i += 1) {
+      const snap = createSnapshot({ env, configDir: cfgDir, dataDir, keep: 3, tagSuffix: `off${i}` });
+      assert.equal(snap.created, true);
+    }
+    assert.equal(listSnapshots({ env, dataDir }).length, 3);
+
+    const docOk = runDoctor({ env, configDir: cfgDir, dataDir, checkAgyCli: false, checkProcesses: false });
+    assert.equal(docOk.ok, true);
+    assert.equal(docOk.failedCount, 0);
+  } finally {
+    sb.cleanup();
+  }
+});
 
 test('Ring 5: release snapshot pruning, doctor health detection, and isolated rollback work end-to-end', () => {
-  if (!hasAgy()) return;
+  if (!hasCommandInPath('agy')) return;
   const sb = makeSandbox('ct-release-');
   try {
     const fakeHome = join(sb.dir, 'home');

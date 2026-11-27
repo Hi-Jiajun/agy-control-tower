@@ -421,7 +421,7 @@ export function resetDocOverride(dataDir, scope, docName, wsReal = '') {
 }
 
 export function readHostPermissionPolicy({ env = process.env } = {}) {
-  const home = resolve(env.HOME || homedir());
+  const home = resolve(env.HOME || env.USERPROFILE || homedir());
   const cfgDir = env.AGY_CONFIG_DIR ? resolve(env.AGY_CONFIG_DIR) : join(home, '.gemini', 'config');
   const cfgPath = join(cfgDir, 'config.json');
   const raw = readJsonSafe(cfgPath, null);

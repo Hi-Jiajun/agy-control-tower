@@ -6,9 +6,9 @@
  * 24h flight-log health, and release rollback snapshot inventory.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, readlinkSync, statSync } from 'node:fs';
+import { accessSync, constants, existsSync, readdirSync, readFileSync, readlinkSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { summarizeFlightEvents } from '../plugin/lib/logger.mjs';
 import { readJsonSafe, resolvePluginDataDir } from '../plugin/lib/paths.mjs';
@@ -16,10 +16,31 @@ import { readJsonSafe, resolvePluginDataDir } from '../plugin/lib/paths.mjs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
 
+export function hasCommandInPath(cmd, env = process.env) {
+  const pathRaw = env.PATH || env.Path || env.path || '';
+  if (!pathRaw) return false;
+  const exts =
+    process.platform === 'win32'
+      ? (env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
+      : [''];
+  for (const dir of pathRaw.split(delimiter).filter(Boolean)) {
+    for (const ext of exts) {
+      const cand = join(dir, process.platform === 'win32' && !cmd.toLowerCase().endsWith(ext.toLowerCase()) ? `${cmd}${ext}` : cmd);
+      try {
+        accessSync(cand, process.platform === 'win32' ? constants.F_OK : constants.X_OK);
+        if (statSync(cand).isFile()) return true;
+      } catch {
+        // continue
+      }
+    }
+  }
+  return false;
+}
+
 function resolveConfigDir(env = process.env, explicit = '') {
   if (explicit) return resolve(explicit);
   if (env.AGY_CONFIG_DIR && env.AGY_CONFIG_DIR.trim()) return resolve(env.AGY_CONFIG_DIR.trim());
-  return join(resolve(env.HOME || homedir()), '.gemini', 'config');
+  return join(resolve(env.HOME || env.USERPROFILE || homedir()), '.gemini', 'config');
 }
 
 function buildAgyChildEnv(env, cfgDir) {
@@ -168,12 +189,12 @@ export function runDoctor({
 
   // 3) Official agy plugin list registration
   if (checkAgyCli) {
-    const which = spawnSync('which', ['agy'], { encoding: 'utf8' });
-    if (which.status === 0) {
+    if (hasCommandInPath('agy', env)) {
       const childEnv = buildAgyChildEnv(env, cfgDir);
       const listed = spawnSync('agy', ['plugin', 'list', '--json'], {
         encoding: 'utf8',
         env: childEnv,
+        shell: process.platform === 'win32',
       });
       if (listed.status === 0) {
         try {

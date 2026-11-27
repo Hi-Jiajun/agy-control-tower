@@ -37,7 +37,7 @@
   - **L1 单元与纯逻辑测试**：覆盖共享核心、Hooks、Sidecar API、以及从 `app.js` 抽离的纯前端状态逻辑模块 `plugin/sidecars/tower/ui-logic.mjs`。
   - **L2 事故回放回归集**：`tests/replays.test.mjs` 自动执行全部历史事故样本。
   - **L3 真浏览器窄栏 UI 冒烟**：`scripts/ct-ui-smoke.mjs`（`npm run test:ui`）通过 Node 原生 WebSocket + CDP 驱动无头 Chrome/Chromium，实测 Aux Pane 窄栏（`390x844`）暗/亮双主题与宽栏（`960x844`），校验 0 Console Error、0 未捕获异常、0 横向溢出与诊断抽屉交互。
-  - **L4 Skill 与 Prompt 行为契约评测**：`scripts/ct-skill-eval.mjs`（`npm run test:eval`）按 16 项黄金场景校验路由红线、新版 Orchestrator 配置、缓存与编辑纪律、写保护、WebView 异步非阻塞与端到端换届交接卡契约。
+  - **L4 Skill 与 Prompt 行为契约评测**：`scripts/ct-skill-eval.mjs`（`npm run test:eval`）按 17 项黄金场景校验路由红线、新版 Orchestrator 配置、缓存与编辑纪律、写保护、WebView 异步非阻塞与端到端换届交接卡契约。
 - **环 5：发布前快照、实装体检与一键秒回滚**
   - `scripts/ct-doctor.mjs`（`npm run doctor`）：实装后健康探针（版本一致性、无旧散装 Skill 双重发现、无失效 Sidecar 进程、黑匣子 24h 健康度、快照库存）。
   - `scripts/ct-release.mjs`（`release:snapshot` / `release:list` / `release:rollback`）：实装前自动备份运行态插件包至 `<PLUGIN_DATA>/releases/`（保留最近 3 版），异常时一键经官方 `agy plugin install` 回滚并复检。
@@ -83,7 +83,13 @@
 - **WebView 安全内联二次确认微交互**：所有破坏性删除与配置重置按钮统一接入 `confirmInline()` 两段式内联确认状态机（3 秒超时自动解除，挂起期间锁定列表重绘），100% 杜绝 `window.confirm` 阻塞风险。
 - **跨工作区全局概览抽屉（`routes/workspaces.mjs`）与双轨零错投递**：顶栏自动发现并汇总全部已建总控工作区状态与未读 `P0/P1` 告警；Hook 与 Sidecar 建立纯零 Token 双轨回执投递并升级 `version=2` 信箱自愈消解。
 
-### 第六阶段（`v1.8.0` — 当前版本）：全最高思考 `Orchestrator` 舒适区路由与智能双触发 `/learn` 闭环
+### 第六阶段（`v1.8.0` — 已完成交付）：全最高思考 `Orchestrator` 舒适区路由与智能双触发 `/learn` 闭环
 
-- **全最高思考舒适区路由与 `Swarm` 显式配模**：默认全面采用各自最高思考档位，由新版可自定义 `Orchestrator` 承担 `L0 / L2 / L3 / L4` 主力与 `Swarm` 编码/复合验证 worker，单模型专注 `L1` 纯只读扫描与含写盘 `run_workflow`；`ct-miner` 同步输出「新版 Orchestrator vs 纯单模型」实测对比表。
+- **全最高思考舒适区路由与 `Swarm` 显式配模**：默认全面采用各自最高思考档位，由新版可自定义 `Orchestrator` 承担 `Swarm` 编码/复合验证 worker 与常规开发主力，单模型专注 `L1` 纯只读扫描与含写盘 `run_workflow`；`ct-miner` 同步输出「新版 Orchestrator vs 纯单模型」实测对比表。
 - **智能双触发 `/learn` 审批闭环**：新增三层 `autoLearnMode` 开关（`smart_proposal` / `milestone_only` / `off`），专职会话只提炼候选且禁改规则/技能，总控在阶段收口、换届与纠偏信号（15 分钟节流）时按原生 `/learn` 契约产出 `learning_proposal.md` 供审批后落盘，并在看板提供一键「发送 `/learn`」按钮。
+
+### 第七阶段（`v1.8.1 ~ v1.10.0` — 当前版本）：宿主网关兼容、实证路由调优、本地纵深安全加固与三端开源就绪
+
+- **经典单脚本打包兼容宿主鉴权网关（`v1.8.1`）**：服务端按需编译 `/app.bundle.js` 经典 IIFE 包并附加 `no-store` 防缓存头与 `boot-guard.js` 启动守卫，彻底规避宿主网关对 `<script type="module">` 子模块图的拦截。
+- **全通道 MCP 台账写保护与实证 `L0 / Swarm` 动静分流（`v1.9.0 ~ v1.9.1`）**：`PreToolUse` 扩展拦截 `apply_edits` / `call_mcp_tool`；修复双层 `Orchestrator` 压缩双计；基于 45h 遥测将 `L0` 常驻总控回调为单模型 `Gemini 4 Neon (XHigh)` 消除短对话切层损耗，保留 `Swarm` 与 `L2/L4` 使用 `Orchestrator (Neon Extra High)`。
+- **Sidecar 跨站/DNS 重绑定纵深防护与 Linux/macOS/Windows 开源 CI（`v1.10.0`）**：升级 `#validOrigin` URL 主机名精确匹配、新增 `#validHost` 防 DNS Rebinding 校验、`Sec-Fetch-Site: cross-site` 拦截及安全响应头；补齐 Windows 个人目录脱敏、无 `agy` 离线严格校验器 `ct-validate-offline.mjs`、中英双语开源文档与三操作系统 GitHub Actions CI。

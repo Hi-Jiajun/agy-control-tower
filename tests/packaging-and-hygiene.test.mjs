@@ -3,14 +3,22 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
+import { hasCommandInPath } from '../scripts/ct-doctor.mjs';
+import { checkTextHygiene, runPrecommitCheck } from '../scripts/ct-precommit-check.mjs';
+import { validatePluginBundleOffline } from '../scripts/ct-validate-offline.mjs';
 import { makeSandbox } from './helpers.mjs';
 
 const REPO_ROOT = process.cwd();
 const PLUGIN_DIR = join(REPO_ROOT, 'plugin');
 
-function commandExists(cmd) {
-  const res = spawnSync('which', [cmd], { encoding: 'utf8' });
-  return res.status === 0;
+function hasWorkingBash() {
+  if (!hasCommandInPath('bash')) return false;
+  const probe = spawnSync('bash', ['-c', 'echo ct_bash_ok'], { encoding: 'utf8', timeout: 3000 });
+  return probe.status === 0 && (probe.stdout || '').includes('ct_bash_ok');
+}
+
+function toBashPath(p) {
+  return process.platform === 'win32' ? p.replace(/\\/g, '/') : p;
 }
 
 test('Version single source of truth & plugin package metadata hygiene', () => {
@@ -62,7 +70,11 @@ test('Version single source of truth & plugin package metadata hygiene', () => {
 });
 
 test('Official agy plugin validate --strict and isolated HOME install/list/uninstall pass', () => {
-  if (!commandExists('agy')) return;
+  const offline = validatePluginBundleOffline(PLUGIN_DIR);
+  assert.equal(offline.ok, true, JSON.stringify(offline.findings));
+  assert.equal(offline.name, 'control-tower');
+
+  if (!hasCommandInPath('agy')) return;
 
   const valOut = execFileSync('agy', ['plugin', 'validate', '--strict', '--json', PLUGIN_DIR], {
     encoding: 'utf8',
@@ -98,6 +110,7 @@ test('Official agy plugin validate --strict and isolated HOME install/list/unins
 });
 
 test('cleanup-legacy-skill.sh and check-legacy-refs.sh enforce ownership and read-only safety', () => {
+  if (!hasWorkingBash()) return;
   const sb = makeSandbox();
   try {
     const cfg = join(sb.dir, 'cfg');
@@ -107,7 +120,7 @@ test('cleanup-legacy-skill.sh and check-legacy-refs.sh enforce ownership and rea
     writeFileSync(join(legacyDir, 'custom.md'), 'extra', 'utf8');
 
     const env = { ...process.env, AGY_CONFIG_DIR: cfg };
-    const cleanupScript = join(REPO_ROOT, 'scripts', 'cleanup-legacy-skill.sh');
+    const cleanupScript = toBashPath(join(REPO_ROOT, 'scripts', 'cleanup-legacy-skill.sh'));
 
     // Blocks on extra unknown file unless --force
     const blocked = spawnSync('bash', [cleanupScript], { env, encoding: 'utf8' });
@@ -128,8 +141,8 @@ test('cleanup-legacy-skill.sh and check-legacy-refs.sh enforce ownership and rea
       'utf8'
     );
 
-    const checker = join(REPO_ROOT, 'scripts', 'check-legacy-refs.sh');
-    const r = spawnSync('bash', [checker, '--fail-on-match', fx], { encoding: 'utf8' });
+    const checker = toBashPath(join(REPO_ROOT, 'scripts', 'check-legacy-refs.sh'));
+    const r = spawnSync('bash', [checker, '--fail-on-match', toBashPath(fx)], { encoding: 'utf8' });
     assert.equal(r.status, 1);
     assert.ok(r.stdout.includes('old.md') && !r.stdout.includes('new.md'));
   } finally {
@@ -140,14 +153,6 @@ test('cleanup-legacy-skill.sh and check-legacy-refs.sh enforce ownership and rea
 test('Repository hygiene: privacy sanitized, zero middle dots, zero forbidden delete literals, and pre-commit passes', () => {
   const gi = readFileSync(join(REPO_ROOT, '.gitignore'), 'utf8');
   assert.ok(gi.split(/\r?\n/).some((line) => line.trim() === '.agents/'));
-
-  const forbHome = '/' + 'home' + '/';
-  const forbUsers = '/' + 'Users' + '/';
-  const forbIp = '192.' + '168.';
-  const forbDot = String.fromCharCode(0x00b7);
-  const forbRm1 = 'rm ' + '-rf';
-  const forbRm2 = 'rm ' + '-fr';
-  const uuidRe = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
   const SKIP = new Set(['.git', '.agents', 'node_modules', '__pycache__', 'tmp']);
   function walk(dir) {
@@ -160,21 +165,19 @@ test('Repository hygiene: privacy sanitized, zero middle dots, zero forbidden de
       }
       const st = lstatSync(full);
       if (st.isSymbolicLink() || !st.isFile()) continue;
-      const buf = readFileSync(full);
-      if (buf.includes(0)) continue;
-      const txt = buf.toString('utf8');
-      assert.equal(txt.includes(forbHome), false, `Personal home path in ${full}`);
-      assert.equal(txt.includes(forbUsers), false, `Personal Users path in ${full}`);
-      assert.equal(txt.includes(forbIp), false, `Private IP in ${full}`);
-      assert.equal(uuidRe.test(txt), false, `Static UUID in ${full}`);
-      assert.equal(txt.includes(forbDot), false, `Middle dot in ${full}`);
-      assert.equal(txt.includes(forbRm1) || txt.includes(forbRm2), false, `Forbidden delete literal in ${full}`);
+      checkTextHygiene(readFileSync(full), full);
     }
   }
   walk(REPO_ROOT);
 
-  const preCommit = execFileSync('bash', [join(REPO_ROOT, 'scripts', 'git-hooks', 'pre-commit')], {
+  // Verify checkTextHygiene catches Windows user paths as well
+  assert.throws(() => checkTextHygiene(Buffer.from('C:\\' + 'Us' + 'ers\\bob\\secret', 'utf8'), 'win-sample'));
+
+  const res = runPrecommitCheck(REPO_ROOT);
+  assert.equal(res.ok, true);
+
+  const cliOut = execFileSync(process.execPath, [join(REPO_ROOT, 'scripts', 'ct-precommit-check.mjs')], {
     encoding: 'utf8',
   });
-  assert.ok(preCommit.includes('OK:'));
+  assert.ok(cliOut.includes('OK:'));
 });

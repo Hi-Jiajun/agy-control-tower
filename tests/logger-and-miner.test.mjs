@@ -19,12 +19,14 @@ test('Flight recorder logger sanitizes secrets/paths, rotates files, and summari
   try {
     const dataDir = join(sb.dir, 'plugin_data');
     const fakeHomeSample = '/' + 'home' + '/alice/secret/project';
+    const fakeWinHomeSample = 'C:\\' + 'Us' + 'ers\\bob\\AppData\\Local\\secret';
     const fakeIpSample = '192.' + '168.10.25';
 
     const clean = sanitizeLogString(
-      `Failed at ${fakeHomeSample} via http://${fakeIpSample}:8080/?token=abc12345 Bearer supersecretkey999`
+      `Failed at ${fakeHomeSample} and ${fakeWinHomeSample} via http://${fakeIpSample}:8080/?token=abc12345 Bearer supersecretkey999`
     );
     assert.equal(clean.includes('alice'), false);
+    assert.equal(clean.includes('bob'), false);
     assert.equal(clean.includes(fakeIpSample), false);
     assert.equal(clean.includes('abc12345'), false);
     assert.equal(clean.includes('supersecretkey999'), false);

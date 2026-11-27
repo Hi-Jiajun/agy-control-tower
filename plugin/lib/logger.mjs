@@ -18,6 +18,10 @@ const HOME_DIR_RE = new RegExp(
   '/(?:(?:' + 'ho' + 'me|' + 'Us' + 'ers)/[^/\\s"\'`]+|root(?=/|\\s|$))',
   'g'
 );
+const WIN_HOME_DIR_RE = new RegExp(
+  '[A-Za-z]:[\\\\/](?:' + 'Us' + 'ers|Documents and Settings)[\\\\/][^\\\\/\\s"\'`]+',
+  'g'
+);
 const PRIVATE_IP_RE = new RegExp(
   '\\b(?:10\\.\\d{1,3}|172\\.(?:1[6-9]|2\\d|3[01])|' + '192' + '\\.' + '168' + ')\\.\\d{1,3}\\.\\d{1,3}\\b',
   'g'
@@ -39,6 +43,7 @@ export function sanitizeLogString(input, maxLen = 400) {
   let text = String(input)
     .replace(/\r?\n+/g, ' ')
     .replace(HOME_DIR_RE, '<HOME>')
+    .replace(WIN_HOME_DIR_RE, '<HOME>')
     .replace(PRIVATE_IP_RE, '<PRIVATE_IP>')
     .replace(BEARER_RE, '$1<REDACTED>')
     .replace(QUERY_TOKEN_RE, '$1<REDACTED>')

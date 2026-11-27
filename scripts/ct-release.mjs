@@ -20,7 +20,7 @@ export const MAX_RELEASE_SNAPSHOTS = 3;
 function resolveConfigDir(env = process.env, explicit = '') {
   if (explicit) return resolve(explicit);
   if (env.AGY_CONFIG_DIR && env.AGY_CONFIG_DIR.trim()) return resolve(env.AGY_CONFIG_DIR.trim());
-  return join(resolve(env.HOME || homedir()), '.gemini', 'config');
+  return join(resolve(env.HOME || env.USERPROFILE || homedir()), '.gemini', 'config');
 }
 
 function getReleasesDir(dataDir) {

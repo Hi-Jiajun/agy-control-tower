@@ -1,93 +1,188 @@
-# control-tower
+# Control Tower for Google Antigravity
 
-面向 **Google Antigravity** 的通用常驻主交流总控（Chief-of-Staff）原生插件，用于在任意工作区建立轻量、常驻、不亲自下场写重代码的调度主线，统一负责需求拆分、新建与续接会话裁决、独占资源单锁调度、纯 Gemini 4 与 Orchestrator 分层模型路由、裸 ID 秒登入账与总控换届。
+**[简体中文](README.md) | [English](README.en.md)**
 
-## 插件核心能力与架构边界
+[![CI](https://github.com/Hi-Jiajun/agy-control-tower/actions/workflows/ci.yml/badge.svg)](https://github.com/Hi-Jiajun/agy-control-tower/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/badge/version-1.10.0-0ea5e9)](CHANGELOG.md)
+[![License: MIT](https://img.shields.io/badge/License-MIT-22c55e.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D20.0.0-339933)](package.json)
+[![Zero Dependencies](https://img.shields.io/badge/dependencies-0-8b5cf6)](plugin/plugin.json)
 
-- **标准 `./plugin/` 纯净包布局**：运行态全部资产收拢在 [plugin/](plugin/) 子目录，仓储研发文档与测试放在仓根，直接通过 `agy plugin validate --strict ./plugin` 零警告校验，并支持原生 `agy plugin install ./plugin` 安装与卸载。
-- **纯零依赖 Node.js ESM 单栈**：`plugin/lib/`（`paths.mjs`、`logger.mjs`、`inbox.mjs`、`roadmap.mjs`、`registry.mjs`、`settings.mjs`、`transcript.mjs`）同时驱动 Hooks 与 Sidecar；`transcript.jsonl` 采用头 `32KB` + 尾 `64KB` 分片与增量扫描缓存；内置零侵入轮转脱敏黑匣子飞行日志（`<PLUGIN_DATA>/logs/ct-flight.jsonl`）。
-- **隐藏执行面优先、实时 SSE 推送与跨工作区全局导航**：默认通过原生 `swarm` / `invoke_subagent` / `run_workflow` 零左侧栏污染执行，`agentapi` 顶层会话实行白名单与固定槽位复用；看板基于零依赖 `fs.watch` + `/api/events` SSE 实时推送状态变更，内置跨工作区全局概览抽屉（顶栏汇总全部工作区 `P0/P1` 告警并支持一键切仓）与 WebView 安全内联二次确认微交互。
-- **冷热解耦双擎零 Token 哨兵与焦点防打扰门禁（Focus Gate）**：Sidecar 后台定时 + Hook 节流双引擎 0 Token 巡检报错、卡死与高压缩并写入单真源 `P0/P1/P2` 优先级信箱 `inbox.json`（自动裁剪卸任总控僵尸条目）；用户前台对话期间自动暂缓抢占式唤醒，总控任意 `Stop` 无条件释放焦点锁；超大型并发项目可按需拉起临时域分总控（单真源不裂脑）。
-- **四象限隔离协作与三层长期项目路线图**：支持 `inherit` / `share` / `branch` 隔离档位、Swarm 频道直聊 / Workflow 契约流水线 / `.agents/handoffs/` 契约文件自动发现与折叠预览、文件所有权冲突检测；大型长期项目可按需一键启用 L1 `ROADMAP.md` + L2 结构化依赖图 `roadmap.json` + L3 瘦身 `SESSION-REGISTRY.md`，支持路线图分支一键「交总控隐藏面派单」与 `[CT_REPORT:DONE]` 完成回执联动。
-- **五环自演化研发门禁体系（仓根 `scripts/` & `tests/`）**：涵盖黑匣子日志（区分本地接口与外部 RPC 慢调用阈值）、只读遥测复盘提案（`npm run mine`，含新版 `Orchestrator` vs 纯单模型横向实测对比）、15 份脱敏事故轨迹回放库（`npm run replay`）、四维自动化门禁（L1 单测与前端纯逻辑 / L2 事故回放 / L3 零依赖 Chrome CDP 交互式窄栏 UI 冒烟 `npm run test:ui` / L4 17 项 Skill 与 Sidecar 契约评测 `npm run test:eval`），以及实装健康体检 `npm run doctor` 与发布快照一键回滚。
-- **四事件定向感知 Hooks（`plugin/hooks.json` + `plugin/scripts/ct-hook.mjs`）**：覆盖 `SessionStart`（现役总控与已入账专职会话双角色注入）、`PreInvocation`（裸/多 ID 及汇报速查、节流兜底哨兵、`[CT_REPORT:DONE]` 路线图联动、智能双触发 `/learn` 自动学习检查点与弹性换届提醒）、`PreToolUse`（双证换届接班自动放行与非总控台账写保护）、与 `Stop`（总控焦点锁无条件释放与纯零 Token 双轨回执）；无关会话静音直通。
-- **官方数据目录隔离**：刻意不包含 `rules/AGENTS.md`（不向无关会话注入 always-on 全局规则）；运行状态与三层设置统一存于官方 `<appData>/plugin_data/control-tower/`（支持 `AGY_CONTROL_TOWER_DATA_DIR` / `PLUGIN_DATA` 覆盖）。
+面向 **Google Antigravity** 的通用常驻主交流总控（Chief-of-Staff）原生插件。它在任意工作区建立一条**轻量、常驻、不亲自啃大代码与大日志**的主对话指挥线，统一统筹需求拆解、隐藏执行面调度（原生 `swarm` / `invoke_subagent` / `run_workflow`）、冷热解耦零 Token 后台哨兵、独占资源单锁、三层长期路线图 DAG 与 Aux Pane 实时可视化总控看板。
 
-## 目录结构
+---
+
+## 为什么需要 Control Tower？
+
+在复杂或多天跨度的 Antigravity 项目中，单会话一竿子到底或多窗口混跑往往会遇到五大痛点：
+
+1. **主对话上下文迅速膨胀老化**：主会话既聊架构又亲自读几千行日志改代码，几轮压缩后开始遗忘红线。
+2. **左侧顶层会话栏无限膨胀**：频繁新开顶层窗口导致会话列表失控，难以追踪哪个窗口在干什么。
+3. **并行子代理互踩文件或抢占独占设备**：多个任务同时改同一批文件或争抢真机/测试端口，缺乏所有权与租约门禁。
+4. **后台完成通知打断前台深度讨论**：用户正与主会话推演方案时，后台任务抢占回合插嘴打断思路。
+5. **模型错配与频繁切层损耗缓存**：短对话总控频繁跨模型切层浪费冷输入，而并发 worker 又缺乏显式舒适区配模。
+
+**Control Tower** 通过「四事件定向感知 Hooks + 零依赖实时 SSE Aux Pane 看板 + 按需加载总控规程 Skill」提供开箱即用的工程化闭环，且对未启用控制塔的普通工作区保持 **100% 静音零干扰**（`components.rules === 0`）。
+
+---
+
+## 系统架构总览
+
+```mermaid
+flowchart TB
+  User["开发者 (单一主线对话 & Aux Pane 看板)"]
+  L0["L0 常驻主交流总控 (Neon XHigh 单模型稳态)"]
+  Board["Aux Pane 实时看板 (SSE 推送 / 跨工作区概览 / 三层设置)"]
+  Hooks["四事件生命周期 Hooks (SessionStart / PreInvocation / PreToolUse / Stop)"]
+  Sentinel["零 Token 双擎哨兵 & Focus Gate 优先级信箱 (P0 / P1 / P2)"]
+  Store["三层状态真源 (ROADMAP.md + roadmap.json + SESSION-REGISTRY.md)"]
+
+  subgraph Surfaces["四执行面统一调度 (隐藏面优先, 零左侧栏污染)"]
+    Swarm["原生 Swarm (Orchestrator Neon/Carbon + share/branch 隔离)"]
+    Subagent["Subagent (research / self 轻量单路深潜)"]
+    Workflow["Workflow (确定性多节点流水线)"]
+    TopLevel["白名单顶层会话 (人工盯屏实操 / 跨天史诗槽位复用)"]
+  end
+
+  User <--> L0
+  User <--> Board
+  L0 --> Surfaces
+  Board <--> Store
+  Hooks <--> Store
+  Surfaces --> Hooks
+  Hooks --> Sentinel
+  Sentinel --> Board
+  Sentinel -. "空闲态汇总唤醒 / 聚焦态静默摘要" .-> L0
+```
+
+---
+
+## 3 分钟快速开始
+
+### 1. 环境要求
+- **Google Antigravity**（IDE 客户端与官方 `agy` CLI）
+- **Node.js `>= 20.0.0`**（纯零第三方 npm 依赖，克隆即装，无需 `npm install`；运行仓根无头浏览器 UI 冒烟门禁推荐 Node `>= 22`）
+- 支持 **Linux / macOS / Windows**
+
+### 2. 安装插件
+
+```bash
+git clone https://github.com/Hi-Jiajun/agy-control-tower.git
+cd agy-control-tower
+
+# 可选：使用官方严格模式校验纯净插件包
+agy plugin validate --strict ./plugin
+
+# 使用 Antigravity 官方 CLI 安装插件
+agy plugin install ./plugin
+```
+
+> **提示**：若早期手动配置过旧版散装全局技能 `$HOME/.gemini/config/skills/control-tower`，安装前可先运行 `bash scripts/cleanup-legacy-skill.sh --status` 检查并清理，避免同名技能双重发现。
+
+### 3. 在任意项目启动总控与看板
+
+1. 在 Antigravity 右侧辅助面板（Aux Pane）打开 **Control Tower** 看板。
+2. 新建一个总控会话（默认推荐模型 **`Gemini 4 Neon (XHigh)`**），点击插件推荐提示词或直接发送：
+   > `启用 control-tower 总控规程，对当前工作区执行纯只读冷启动盘点并初始化或核对 SESSION-REGISTRY.md。`
+3. **团队仓库零侵入托管模式（可选）**：如果不希望在业务 Git 仓库中生成 `.agents/SESSION-REGISTRY.md`，可在看板「设置中心 -> 工作区设置」将台账存储位置切换为 **`PLUGIN_DATA 零侵入托管`**（自动存储于 `<appData>/plugin_data/control-tower/`，对业务仓零文件改动）。
+
+---
+
+## 核心特性一览
+
+- **隐藏执行面优先与四执行面统一导航**：80%+ 常规编码与验证优先走原生 `swarm`（支持 `workspace: "share" | "branch"` 工作树隔离与休眠唤醒）、`invoke_subagent` 与 `run_workflow`，彻底告别左侧会话栏爆炸；看板一屏聚合全部顶层与隐藏任务。
+- **冷热解耦零 Token 哨兵与焦点防打扰门禁（Focus Gate）**：Sidecar 后台与 Hook 节流双引擎 0 Token 巡检报错、卡死（Stuck）与高压缩老化，分级沉淀至 `inbox.json`（`P0` 紧急阻塞 / `P1` 阶段收口 / `P2` 例行）；用户前台连续对话期间自动暂缓抢占式唤醒。
+- **`PreToolUse` 全通道台账写保护与双证换届闭环**：同时拦截内置 `write_file` / `edit_file` 与 MCP 批量编辑工具（`apply_edits` / `call_mcp_tool`），防止并行 worker 误改台账；总控累计压缩达阈值（默认 `5` 次，可调可忽略）时支持看板一键生成预填交接卡并预授权新总控平滑接班。
+- **三层混合路线图 DAG 与文件所有权冲突预警**：大型项目可一键开启 `L1 ROADMAP.md` + `L2 roadmap.json` + `L3 SESSION-REGISTRY.md`，自动计算就绪（`ready`）分支、拦截循环依赖与并行文件所有权（Ownership）重叠，并支持看板一键派单与 `[CT_REPORT:DONE]` 自动联动。
+- **智能双触发 `/learn` 经验沉淀闭环**：专职会话严禁私改 `AGENTS.md` 或全局规则，仅在完工回执提炼可选经验候选；总控在阶段收口或识别纠偏信号（带 15 分钟冷却防刷屏）时按原生 `/learn` 规范生成审批提案。
+- **本地纵深安全防护**：Sidecar 仅监听 `127.0.0.1`，内置 `timingSafeEqual` 恒定时间鉴权、`Host` 防 DNS 重绑定校验、`Origin` 主机名精确解析与 `Sec-Fetch-Site: cross-site` 拦截；飞行日志自动脱敏三端个人路径、内网 IP 与敏感凭据。
+
+---
+
+## L0-L4 实证舒适区模型路由默认表
+
+基于大规模真实会话遥测（缓存命中率、跨模型切层冷输入开销与编辑失配率），内置默认采用**「全最高思考档位 + 动静分流」**策略（可在看板「设置中心」按全局或单工作区自由修改，或切换为「自定义白名单」接入其他模型）：
+
+| 层级 | 典型场景 | 默认首选模型 | CLI / Swarm 显式 ID | 设计依据 |
+| --- | --- | --- | --- | --- |
+| **L0 常驻总控** | 需求拆解、派单裁决、资源锁与台账维护、换届收口 | 单模型 **`Gemini 4 Neon (XHigh)`** | `gemini-4-neon-xhigh` | 短对话多轮交互零切层冷输入损耗、无 `[plan review]` 额外往返，长程稳健性最高 |
+| **L1 轻扫归档** | 多源只读检索、大日志筛查、合规审计、文档归档 | 单模型 **`Gemini 4 Hydrogen (XHigh)`** | `gemini-4-hydrogen-xhigh` | 单层极速直出，配额效率最优 |
+| **L2 常规开发** | 多文件功能实现、子系统排障、单测补齐、Swarm 主力 worker | **`Orchestrator (Neon Extra High)`** | `gemini-pro-orchestrator-neon` | 规划写透后高速执行；原生 `swarm` 下稳定高缓存命中且低编辑失配率 |
+| **L3 疑难攻坚** | 跨层死坑根因定位、复杂并发竞态、核心架构重构审查 | **`Orchestrator (Carbon)`** | `gemini-pro-orchestrator` | 旗舰 `Carbon (High)` 深度规划推理 + 高速执行落地（无 `Carbon` 时平滑替补 `Neon`） |
+| **L4 合流发布** | 多分支集成验收、全量门禁复核、里程碑发布 | **`Orchestrator (Neon Extra High)`** | `gemini-pro-orchestrator-neon` | 兼顾全局合流复核深度与多步验证执行速度 |
+
+---
+
+## 仓库目录结构
 
 ```text
 control-tower/
-├── AGENTS.md                        # 仓根独立工作区开发协作规则（不打入 ./plugin/ 运行包）
-├── CHANGELOG.md                     # 版本变更记录（Keep a Changelog）
-├── LICENSE                          # MIT 许可证
-├── README.md                        # 本仓库说明与官方安装/研发规范指南
-├── package.json                     # 仓根私有工程清单（npm test / selftest / validate / setup-hooks）
+├── .github/                         # 多系统 GitHub Actions CI (Ubuntu/macOS/Windows) 与 Issue/PR 模板
+├── AGENTS.md                        # 源码仓开发协作规范（不打入 ./plugin/ 安装包）
+├── CHANGELOG.md                     # 版本演进记录（Keep a Changelog）
+├── CONTRIBUTING.md                  # 开源贡献者开发与门禁指南
+├── LICENSE                          # MIT 开源许可证
+├── README.md / README.en.md         # 中英双语说明文档
+├── SECURITY.md                      # 安全威胁模型与漏洞披露策略
+├── docs/ARCHITECTURE-ROADMAP.md     # 架构不变量与演进蓝图
+├── package.json                     # 仓根工程脚本清单（零第三方依赖）
 ├── plugin/                          # Antigravity 官方标准原生插件纯净包
-│   ├── plugin.json                  # 唯一版本真源（SemVer）
-│   ├── hooks.json                   # 四事件钩子 -> node ./scripts/ct-hook.mjs
-│   ├── README.md
-│   ├── LICENSE
-│   ├── assets/logo.svg
-│   ├── lib/{paths,logger,inbox,roadmap,registry,settings,transcript}.mjs
-│   ├── scripts/ct-hook.mjs
-│   ├── sidecars/tower/              # 模块化看板（lib/agentapi.mjs, routes/, views/, ui-logic.mjs）
-│   └── skills/control-tower/
-├── scripts/
-│   ├── check-legacy-refs.sh         # 只读审计工作区残留旧全局路径脚本
-│   ├── cleanup-legacy-skill.sh      # 安全清理旧散装 ~/.gemini/config/skills/control-tower
-│   ├── git-hooks/pre-commit         # 提交前自动脱敏、版本一致性与严格校验门禁
-│   └── selftest.sh                  # 兼容自检入口
-└── tests/                           # 零外部依赖 node:test 分层单测与沙箱 E2E 套件
+│   ├── plugin.json                  # 插件清单与唯一 SemVer 版本真源
+│   ├── hooks.json                   # 四事件钩子配置 -> node ./scripts/ct-hook.mjs
+│   ├── README.md & LICENSE          # 随包说明与许可证
+│   ├── assets/logo.svg              # 插件矢量图标
+│   ├── lib/                         # 零依赖共享核心 (paths/logger/inbox/roadmap/registry/settings/transcript)
+│   ├── scripts/ct-hook.mjs          # 四事件统一生命周期钩子入口
+│   ├── sidecars/tower/              # Aux Pane 实时总控看板 (SSE 推送 / 经典单包兼容网关 / 模块化视图)
+│   └── skills/control-tower/        # 总控核心规程、路由手册与标准文本模板
+├── scripts/                         # 五环自演化研发与运维工具链
+│   ├── ct-validate-offline.mjs      # 无 agy CLI 环境的离线插件包严格校验器
+│   ├── ct-precommit-check.mjs       # 跨平台隐私脱敏、零间隔号与版本一致性门禁
+│   ├── ct-ui-smoke.mjs              # 零依赖无头浏览器 CDP 窄栏/宽栏亮暗双主题 UI 冒烟
+│   ├── ct-skill-eval.mjs            # 17 项黄金行为契约评测套件
+│   ├── ct-replay.mjs                # 脱敏事故轨迹沙箱回放与冻结器
+│   ├── ct-miner.mjs                 # 只读遥测与黑匣子聚类复盘工具
+│   ├── ct-doctor.mjs                # 实装健康探针（版本、残留、进程与快照体检）
+│   └── ct-release.mjs               # 发布前自动快照、安全实装与一键秒回滚
+└── tests/                           # 基于内置 node:test 的 30 项单测与 16 份脱敏事故回放库
 ```
 
-## 官方安装、升级、旧版清理与卸载
+---
 
-本插件严格遵循 Antigravity 官方 `agy plugin` 工具链安装与管理。
+## 升级、体检、快照回滚与卸载
 
 ```bash
-# 1. 官方严格模式校验纯净插件包
-agy plugin validate --strict ./plugin
+# 查看当前本机实装健康状态（版本对齐、旧散装残留、24h 黑匣子与可回滚快照）
+npm run doctor
 
-# 2. 若本机曾安装旧版散装全局 Skill（~/.gemini/config/skills/control-tower），先只读核查并安全清理防双重发现
-bash scripts/cleanup-legacy-skill.sh --status
-bash scripts/cleanup-legacy-skill.sh --dry-run
-bash scripts/cleanup-legacy-skill.sh
+# 自动备份旧版快照（保留最近 3 份）并安全实装当前源码版本
+node scripts/ct-release.mjs install --confirm
 
-# 3. 使用官方 CLI 安装或更新插件（需在符合工作区发布门禁许可后执行）
-agy plugin install ./plugin
+# 查看历史快照并在需要时一键秒级回滚
+npm run release:list
+npm run release:rollback
 
-# 4. 核验安装状态
-agy plugin list --json
-
-# 5. 卸载插件
+# 使用官方 CLI 卸载插件
 agy plugin uninstall control-tower
 ```
 
-### 旧路径引用迁移审计
+---
 
-若历史工作区文档仍显式引用旧全局 Skill 路径 `skills/control-tower`，可使用只读审计工具扫描：
+## 研发验证与开源贡献
 
-```bash
-bash scripts/check-legacy-refs.sh /path/to/workspace-a /path/to/workspace-b
-```
-
-## 规范化研发与质量门禁
+欢迎提交 Issue 或 Pull Request！完整开发约束请参阅 [CONTRIBUTING.md](CONTRIBUTING.md) 与 [SECURITY.md](SECURITY.md)。
 
 ```bash
-# 启用本地提交前脱敏、零间隔号、版本一致性与 agy strict 校验门禁
+# 启用跨平台本地 pre-commit 自动脱敏与包边界检查钩子
 npm run setup-hooks
 
-# 运行完整四维门禁（L1 单测 + L2 回放 + L3 真浏览器窄栏 UI 冒烟 + L4 Skill 评测 + agy 严格校验）
+# 跨平台 CI 核心门禁（无需本机安装 agy CLI）
+npm run ci
+
+# 完整本地四维发布门禁（含无头 Chrome UI 冒烟与官方 agy strict 校验）
 npm run gate
-
-# 或分别执行单项研发工具
-npm test              # L1 核心/Hooks/Sidecar/前端纯逻辑单测 + L2 回放 + L4 Skill 评测
-npm run test:ui       # L3 零依赖无头 Chrome CDP 窄栏暗/亮双主题 UI 冒烟
-npm run mine          # 环 2：只读扫描本机近期遥测与黑匣子日志，生成改进提案
-npm run replay        # 环 3：在孤立沙箱执行全部脱敏历史事故回放样本
-npm run doctor        # 环 5：实装健康体检（版本、无旧 Skill 残留、Sidecar 进程与黑匣子健康度）
-npm run release:list  # 环 5：查看可一键回滚的历史发布快照
-
-# 或运行兼容自检入口
-bash scripts/selftest.sh
 ```
+
+## 许可证
+
+本项目基于 [MIT License](LICENSE) 开源。

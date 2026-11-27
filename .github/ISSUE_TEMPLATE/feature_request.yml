@@ -1,0 +1,19 @@
+name: Feature Request / 功能建议
+description: 提议新的总控调度能力、看板交互改进或跨工作区增强 / Suggest an enhancement
+title: "[Feat]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 痛点场景 / Problem Statement
+      placeholder: "在多会话协作或长周期研发中遇到了什么具体摩擦？"
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望方案与边界 / Proposed Solution
+      placeholder: "期望的交互方式，以及如何保持零第三方依赖与隐藏面优先原则？"
+    validations:
+      required: true

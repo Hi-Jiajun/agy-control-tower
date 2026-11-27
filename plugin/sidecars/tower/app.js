@@ -428,7 +428,7 @@ function render(snap) {
     state.workspace = snap.workspace;
   }
   state.snap = snap;
-  $('version-badge').textContent = `v${snap.plugin?.version || '1.9.1'}`;
+  $('version-badge').textContent = `v${snap.plugin?.version || '1.10.0'}`;
   applyMotionSetting(snap);
   renderWorkspaces(snap);
   renderGlobalWorkspacesDrawer(ctx, snap);

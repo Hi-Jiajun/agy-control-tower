@@ -1,0 +1,40 @@
+name: Bug Report / 缺陷反馈
+description: 反馈插件功能异常、看板渲染问题或 Hook 行为缺陷 / Report a bug in Control Tower
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！提交前请确保已抹除本地用户名路径、真实完整会话 ID、内网 IP 与任何鉴权凭据。
+        *(Please redact personal paths, full session IDs, private IPs, and tokens before submitting.)*
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统 / Operating System
+      options:
+        - Linux
+        - macOS
+        - Windows
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: 版本信息 / Versions (Control Tower, Antigravity, Node.js)
+      placeholder: "control-tower v1.10.0, Antigravity 2.35+, Node v22.x"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: 复现步骤与实际表现 / Steps to Reproduce & Actual Behavior
+      placeholder: "1. 打开 Control Tower 看板...\n2. 点击...\n3. 实际出现..."
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 脱敏诊断输出 / Sanitized Diagnostics (npm run doctor)
+      render: shell
+      placeholder: "粘贴 npm run doctor 或看板黑匣子脱敏日志片段"

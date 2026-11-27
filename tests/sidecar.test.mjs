@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { join } from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
@@ -102,8 +103,12 @@ if (args.includes('new-conversation')) {
       return { status: res.status, data };
     }
 
-    // 1) Static assets accessible without token
-    assert.equal((await req('GET', '/', undefined, false)).status, 200);
+    // 1) Static assets accessible without token + include defense-in-depth security headers
+    const rootAssetRes = await fetch(`${base}/`);
+    assert.equal(rootAssetRes.status, 200);
+    assert.equal(rootAssetRes.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(rootAssetRes.headers.get('referrer-policy'), 'no-referrer');
+    await rootAssetRes.text();
     assert.equal((await req('GET', '/styles.css', undefined, false)).status, 200);
     assert.equal((await req('GET', '/app.js', undefined, false)).status, 200);
     assert.equal((await req('GET', '/preload.js', undefined, false)).status, 200);
@@ -114,6 +119,67 @@ if (args.includes('new-conversation')) {
     assert.equal((await req('GET', `/api/session/inspect?id=${workerId.slice(0, 8)}`, undefined, false)).status, 401);
     assert.equal((await req('POST', '/api/registry/init', { workspace: ws }, false)).status, 401);
     assert.equal((await req('POST', '/_sidecar/send-message', { conversationId: ctrlId, message: 'hi' }, false)).status, 401);
+
+    // 2b) Strict Origin, Sec-Fetch-Site, and DNS-rebinding Host guards block subdomain/rebind attacks
+    async function rawHttpStatus(path, { method = 'GET', headers = {}, body = '' } = {}) {
+      return await new Promise((resolveStatus, rejectErr) => {
+        const r = httpRequest(
+          { hostname: '127.0.0.1', port, path, method, headers },
+          (resp) => {
+            resp.resume();
+            resp.on('end', () => resolveStatus(resp.statusCode));
+          }
+        );
+        r.on('error', rejectErr);
+        if (body) r.write(body);
+        r.end();
+      });
+    }
+    assert.equal(
+      await rawHttpStatus('/api/registry/init', {
+        method: 'POST',
+        headers: {
+          'x-sidecar-token': token,
+          Origin: 'http://127.0.0.1.evil.example',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ workspace: ws }),
+      }),
+      403
+    );
+    assert.equal(
+      await rawHttpStatus('/api/registry/init', {
+        method: 'POST',
+        headers: {
+          'x-sidecar-token': token,
+          Origin: 'http://localhost.evil.example:8080',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ workspace: ws }),
+      }),
+      403
+    );
+    assert.equal(
+      await rawHttpStatus(`/api/snapshot?workspace=${encodeURIComponent(ws)}`, {
+        method: 'GET',
+        headers: { 'x-sidecar-token': token, 'Sec-Fetch-Site': 'cross-site' },
+      }),
+      403
+    );
+    assert.equal(
+      await rawHttpStatus(`/api/snapshot?workspace=${encodeURIComponent(ws)}`, {
+        method: 'GET',
+        headers: { Host: 'rebind.evil.example', 'x-sidecar-token': token },
+      }),
+      403
+    );
+    assert.equal(
+      await rawHttpStatus(`/api/snapshot?workspace=${encodeURIComponent(ws)}`, {
+        method: 'GET',
+        headers: { 'x-sidecar-token': token, Origin: 'vscode-webview://aux-pane' },
+      }),
+      200
+    );
 
     // 3) GET /api/snapshot & GET /api/settings are strictly read-only (zero disk writes)
     const snapBefore = await req('GET', `/api/snapshot?workspace=${encodeURIComponent(ws)}`);

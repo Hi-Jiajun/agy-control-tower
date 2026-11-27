@@ -6,19 +6,21 @@
 
 | 路径 | 职责说明 |
 | --- | --- |
-| `package.json` | 仓根私有工程清单（定义 `test` / `test:ui` / `test:eval` / `replay` / `mine` / `doctor` / `gate` / `selftest` / `validate` / `setup-hooks`，零第三方依赖） |
-| `docs/ARCHITECTURE-ROADMAP.md` | 本仓三阶段演进战略蓝图与架构不变量（不打入 `./plugin/`） |
+| `.github/` | 开源社区治理模板与三操作系统（Ubuntu / macOS / Windows）GitHub Actions CI 流水线（不打入 `./plugin/`） |
+| `README.md` / `README.en.md` / `CONTRIBUTING.md` / `SECURITY.md` | 中英双语开源说明、贡献指南与安全披露策略（不打入 `./plugin/`） |
+| `package.json` | 仓根私有工程清单（定义 `test` / `test:ui` / `test:eval` / `replay` / `mine` / `doctor` / `ci` / `gate` / `selftest` / `validate` / `validate:offline` / `setup-hooks`，零第三方依赖） |
+| `docs/ARCHITECTURE-ROADMAP.md` | 本仓演进战略蓝图与架构不变量（不打入 `./plugin/`） |
 | `plugin/` | Antigravity 官方标准原生插件纯净包（`agy plugin validate --strict ./plugin` 零警告通过） |
 | `plugin/plugin.json` | Antigravity 原生插件清单与唯一 SemVer 版本真源（仅使用官方白名单字段） |
 | `plugin/hooks.json` | 四事件生命周期钩子配置（`SessionStart`、`PreInvocation`、`PreToolUse`、`Stop` -> `node ./scripts/ct-hook.mjs`） |
 | `plugin/lib/` | 零依赖共享核心（`paths.mjs`、`logger.mjs`、`inbox.mjs`、`roadmap.mjs`、`registry.mjs`、`settings.mjs`、`transcript.mjs`），供 Hooks 与 Sidecar 共用 |
 | `plugin/scripts/ct-hook.mjs` | 四事件统一钩子入口（双角色感知与路线图北极星摘要、`PreToolUse` 双证换届放行与台账写保护、裸/多 ID 速查、节流兜底哨兵与 `[CT_REPORT:DONE]` 路线图联动、双触发 `/learn` 自动学习检查点、`Stop` 无条件释放焦点锁与纯零 Token 双轨回执、弹性换届与静默版本戳） |
-| `plugin/sidecars/tower/` | 零依赖模块化 Aux Pane 总控看板（后端 `main.mjs` + `lib/{agentapi,sse-hub}.mjs` + `routes/{roadmap,inbox,workspaces}.mjs`；前端 `app.js` + `views/{overview,sessions,roadmap,settings}.mjs` + `ui-logic.mjs`；SSE 实时流推送、跨工作区全局概览抽屉、内联二次确认、四执行面统一导航、单真源 `inbox.json` 横幅与零 Token 哨兵、三层路线图隐藏面派单与三层设置中心） |
+| `plugin/sidecars/tower/` | 零依赖模块化 Aux Pane 总控看板（后端 `main.mjs` + `lib/{agentapi,bundle,sse-hub}.mjs` + `routes/{roadmap,inbox,workspaces}.mjs`；前端 `app.js` + `views/{overview,sessions,roadmap,settings}.mjs` + `ui-logic.mjs`） |
 | `plugin/skills/control-tower/` | 总控核心规程、`model-routing.md` 路由手册（含新版 Orchestrator 双层自定义）与去硬编码 `templates.md` |
-| `scripts/ct-{miner,replay,ui-smoke,skill-eval,doctor,release}.mjs` | 五环自演化研发工具链（遥测复盘提案、事故回放、无头浏览器 CDP 冒烟、Skill 契约评测、实装体检与快照秒回滚） |
+| `scripts/ct-{miner,replay,ui-smoke,skill-eval,doctor,release,validate-offline,precommit-check}.mjs` | 五环自演化研发与跨平台合规工具链（遥测复盘提案、事故回放、无头浏览器 CDP 冒烟、Skill 契约评测、实装体检、快照秒回滚、离线包严格校验与跨平台脱敏检查） |
 | `scripts/cleanup-legacy-skill.sh` | 安全核查与清理旧散装 `$AGY_CONFIG_DIR/skills/control-tower`（消除双重发现） |
 | `scripts/check-legacy-refs.sh` | 源码仓专用只读工具：审计业务工作区残留旧全局路径引用 |
-| `scripts/git-hooks/pre-commit` | 本地提交前合规门禁（脱敏、零间隔号、版本一致性、`agy plugin validate --strict ./plugin`） |
+| `scripts/git-hooks/pre-commit` | 本地提交前合规门禁（调用 `ct-precommit-check.mjs` 与 `agy plugin validate --strict ./plugin`） |
 | `scripts/selftest.sh` & `tests/` | 基于内置 `node:test` 的模块化单测、脱敏事故回放库（`tests/replays/`）与孤立临时沙箱 E2E 验证套件 |
 
 ## 开发态与运行态严格隔离（核心红线）

@@ -28,21 +28,55 @@ function findChromeBinary() {
     '/usr/bin/google-chrome',
     '/usr/bin/chromium',
     '/usr/bin/chromium-browser',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
   ];
+  if (process.platform === 'win32') {
+    const winRoots = [
+      process.env.PROGRAMFILES,
+      process.env['PROGRAMFILES(X86)'],
+      process.env.LOCALAPPDATA,
+    ].filter(Boolean);
+    for (const root of winRoots) {
+      fixed.push(
+        join(root, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+        join(root, 'Chromium', 'Application', 'chrome.exe'),
+        join(root, 'Microsoft', 'Edge', 'Application', 'msedge.exe')
+      );
+    }
+  }
   for (const p of fixed) {
-    if (existsSync(p)) return p;
+    if (p && existsSync(p)) return p;
   }
 
-  const pwCache = join(homedir(), '.cache', 'ms-playwright');
-  if (existsSync(pwCache)) {
+  const pwCaches = [
+    join(homedir(), '.cache', 'ms-playwright'),
+    join(homedir(), 'Library', 'Caches', 'ms-playwright'),
+    process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'ms-playwright') : '',
+  ].filter(Boolean);
+
+  const pwRelCandidates = [
+    ['chrome-linux64', 'chrome'],
+    ['chrome-linux', 'chrome'],
+    ['chrome-mac-arm64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'],
+    ['chrome-mac', 'Chromium.app', 'Contents', 'MacOS', 'Chromium'],
+    ['chrome-win64', 'chrome.exe'],
+    ['chrome-win', 'chrome.exe'],
+  ];
+
+  for (const pwCache of pwCaches) {
+    if (!existsSync(pwCache)) continue;
     try {
       const dirs = readdirSync(pwCache)
         .filter((d) => d.startsWith('chromium-'))
         .sort()
         .reverse();
       for (const d of dirs) {
-        const cand = join(pwCache, d, 'chrome-linux64', 'chrome');
-        if (existsSync(cand)) return cand;
+        for (const relParts of pwRelCandidates) {
+          const cand = join(pwCache, d, ...relParts);
+          if (existsSync(cand)) return cand;
+        }
       }
     } catch {
       // ignore

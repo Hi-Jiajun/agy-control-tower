@@ -10,7 +10,7 @@
 
 - **禁用模型**：严禁推荐或调度 **`Gemini 4 Argon`**（含 `Orchestrator (Argon)` / `gemini-pro-orchestrator-argon`）以及 **`Gemini 3.8 Flash` 及以前所有旧代模型**，严禁使用默认低档快捷词 `flash` / `flash_lite`。
 - **默认不用外部模型**：默认不调度 Anthropic（`Claude`）与 OpenAI（`GPT-OSS`）系列模型（若特定工作区通过项目级 `AGENTS.md` 显式授权，则以工作区规定为准）。
-- **配额查验边界**：严禁引用 `magpie-quota` 判断 Antigravity 模型额度；Antigravity 配额与限流状态一律以 Antigravity 客户端面板或 `swarm{action:"models"}` 实时返回为准。
+- **配额查验边界**：严禁引用第三方或外部中转配额工具（如 `magpie-quota` 等）判断 Antigravity 模型额度；Antigravity 配额与限流状态一律以 Antigravity 客户端面板或 `swarm{action:"models"}` 实时返回为准。
 
 ---
 
