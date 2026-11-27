@@ -8,11 +8,12 @@
  */
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { appendFlightEvent } from '../plugin/lib/logger.mjs';
+import { upsertInboxItem } from '../plugin/lib/inbox.mjs';
 import { ControlTowerServer } from '../plugin/sidecars/tower/main.mjs';
 import { makeConvId, makeSandbox, makeTranscriptPath } from '../tests/helpers.mjs';
 
@@ -242,7 +243,7 @@ async function launchChrome(chromeBin, profileDir) {
   }
 }
 
-export async function runUiSmoke({ requireBrowser = false } = {}) {
+export async function runUiSmoke({ requireBrowser = false, screenshotDir = '' } = {}) {
   const chromeBin = findChromeBinary();
   if (!chromeBin) {
     if (requireBrowser) {
@@ -257,6 +258,7 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
     ANTIGRAVITY_APP_DATA_DIR: process.env.ANTIGRAVITY_APP_DATA_DIR,
     AGY_CONTROL_TOWER_DATA_DIR: process.env.AGY_CONTROL_TOWER_DATA_DIR,
     AGY_CONFIG_DIR: process.env.AGY_CONFIG_DIR,
+    ANTIGRAVITY_AGENTAPI_EXE: process.env.ANTIGRAVITY_AGENTAPI_EXE,
   };
 
   let serverInstance = null;
@@ -264,11 +266,13 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
   let cdp = null;
 
   try {
-    const ws = join(sb.dir, 'ws');
+    const wsClean = join(sb.dir, 'projects', 'alpha-app');
+    const ws = join(sb.dir, 'projects', 'control-tower');
     const appData = join(sb.dir, 'app_data');
     const dataDir = join(sb.dir, 'plugin_data');
     const cfgDir = join(sb.dir, 'cfg');
     const profileDir = join(sb.dir, 'chrome-profile');
+    mkdirSync(wsClean, { recursive: true });
     mkdirSync(join(ws, '.agents', 'handoffs'), { recursive: true });
     mkdirSync(appData, { recursive: true });
     mkdirSync(cfgDir, { recursive: true });
@@ -282,6 +286,30 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
 
     const ctrlId = makeConvId('c', '1', '4', '8', 'a');
     const workerId = makeConvId('a', '2', '4', '8', 'b');
+    const swarmImplId = makeConvId('b', '3', '4', '8', 'c');
+    const swarmVerifyId = makeConvId('d', '4', '4', '8', 'e');
+    const dispatchedConvId = makeConvId('e', '5', '4', '8', 'f');
+    const manualConvId = makeConvId('f', '6', '4', '8', '1');
+
+    const mockAgentApi = join(sb.dir, 'mock-agentapi.mjs');
+    const mockCallsFile = join(sb.dir, 'agentapi-calls.jsonl');
+    writeFileSync(
+      mockAgentApi,
+      `#!/usr/bin/env node
+import { appendFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(mockCallsFile)}, JSON.stringify(args) + '\\n', 'utf8');
+if (args.includes('get-conversation-metadata')) {
+  process.stdout.write(JSON.stringify({ response: { conversationMetadata: { metadata: { projectId: 'proj-smoke-1' } } } }));
+} else if (args.includes('new-conversation')) {
+  process.stdout.write(JSON.stringify({ ok: true, conversationId: ${JSON.stringify(dispatchedConvId)}, forwarded: args }));
+} else {
+  process.stdout.write(JSON.stringify({ ok: true, forwarded: args }));
+}
+`,
+      'utf8'
+    );
+    chmodSync(mockAgentApi, 0o755);
 
     writeFileSync(
       join(ws, '.agents', 'SESSION-REGISTRY.md'),
@@ -299,12 +327,12 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
 
 ## 二、常驻主交流总控会话
 - **当前现役总控会话**：\`${ctrlId}\`（状态：\`ONLINE\`）
-- **常驻模型配置**：\`Gemini 4 Neon (High)\`
+- **常驻模型配置**：\`Gemini 4 Neon (XHigh)\`
 
 ## 三、活跃 / 挂起专职会话台账
 | 会话链接与 ID | 任务编号 / 主题 | 模型与工具 | 资源锁状态 | 当前状态 | 工作目录与日志回查路径 |
 | --- | --- | --- | --- | --- | --- |
-| [\`${workerId.slice(0, 8)}\`](conversation://${workerId}) | UI 冒烟示例任务 | Gemini 4 Neon (High) | 纯离线无锁 | \`ACTIVE\` | - |
+| [\`${workerId.slice(0, 8)}\`](conversation://${workerId}) | UI 冒烟示例任务 | Orchestrator (Neon Extra High) | 纯离线无锁 | \`ACTIVE\` | - |
 
 ## 四、近期已归档里程碑会话索引
 | 会话链接与 ID | 负责任务 / 里程碑 | 核心产出、验证锚点与文档位置 |
@@ -314,19 +342,60 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
 ## 五、待调度任务队列快照
 | 编号 | 模块 / 问题简述 | 调度状态 | 建议路线与模型 |
 | --- | --- | --- | --- |
-| \`T1\` | 窄栏渲染验收 | \`QUEUED\` | L2 Gemini 4 Neon (High) |
+| \`T1\` | 窄栏渲染验收 | \`QUEUED\` | L2 Orchestrator (Neon Extra High) |
 `,
       'utf8'
     );
 
     writeFileSync(
       makeTranscriptPath(appData, ctrlId),
-      `${JSON.stringify({ step_index: 1, type: 'PLANNER_RESPONSE', model: 'gemini-4-neon-high', status: 'DONE' })}\n`,
+      `${JSON.stringify({ step_index: 1, type: 'PLANNER_RESPONSE', model: 'gemini-4-neon-xhigh', status: 'DONE' })}\n`,
       'utf8'
     );
     writeFileSync(
       makeTranscriptPath(appData, workerId),
-      `${JSON.stringify({ step_index: 2, type: 'PLANNER_RESPONSE', model: 'gemini-4-neon-high', status: 'DONE' })}\n`,
+      `${JSON.stringify({ step_index: 4, type: 'PLANNER_RESPONSE', model: 'orchestrator-neon-xhigh', status: 'DONE', goal: '窄栏信息架构验收' })}\n`,
+      'utf8'
+    );
+    writeFileSync(
+      makeTranscriptPath(appData, swarmImplId),
+      `${JSON.stringify({ step_index: 6, type: 'PLANNER_RESPONSE', model: 'orchestrator-neon-xhigh', status: 'RUNNING' })}\n`,
+      'utf8'
+    );
+    writeFileSync(
+      makeTranscriptPath(appData, swarmVerifyId),
+      `${JSON.stringify({ step_index: 3, type: 'PLANNER_RESPONSE', model: 'gemini-4-neon-high', status: 'DONE' })}\n`,
+      'utf8'
+    );
+
+    // Seed an active Native Swarm under controller's brain directory
+    const swarmDir = join(appData, 'brain', ctrlId, '.system_generated', 'swarm');
+    mkdirSync(swarmDir, { recursive: true });
+    writeFileSync(
+      join(swarmDir, 'members.json'),
+      JSON.stringify({
+        title: 'Control Tower UI Polish Swarm',
+        members: {
+          'impl-ui': {
+            role: 'worker',
+            conversation_id: swarmImplId,
+            model: 'Orchestrator (Neon Extra High)',
+            workspace: 'share',
+          },
+          verifier: {
+            role: 'worker',
+            conversation_id: swarmVerifyId,
+            model: 'Gemini 4 Neon (High)',
+            workspace: 'inherit',
+          },
+        },
+      }),
+      'utf8'
+    );
+    writeFileSync(
+      join(swarmDir, 'board.jsonl'),
+      `${JSON.stringify({ seq: 1, agent: 'coordinator', text: '@impl-ui 完成双行紧凑顶栏与折叠渐进披露', time: '04:30' })}\n` +
+        `${JSON.stringify({ seq: 2, agent: 'impl-ui', text: '已完成 360px/390px 几何零溢出对齐，提交验收', time: '04:35' })}\n`,
       'utf8'
     );
 
@@ -349,6 +418,7 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
     process.env.ANTIGRAVITY_APP_DATA_DIR = appData;
     process.env.AGY_CONTROL_TOWER_DATA_DIR = dataDir;
     process.env.AGY_CONFIG_DIR = cfgDir;
+    process.env.ANTIGRAVITY_AGENTAPI_EXE = mockAgentApi;
 
     const token = 'ct-smoke-token';
     serverInstance = new ControlTowerServer({ port: 0, token });
@@ -389,13 +459,58 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
       pageExceptions.push(p.exceptionDetails?.text || JSON.stringify(p.exceptionDetails));
     });
 
+    if (screenshotDir) {
+      mkdirSync(screenshotDir, { recursive: true });
+    }
+    const saveShot = async (name) => {
+      if (!screenshotDir) return;
+      await new Promise((r) => setTimeout(r, 140));
+      const shot = await cdp.send('Page.captureScreenshot', { format: 'png' });
+      writeFileSync(join(screenshotDir, name), Buffer.from(shot.data, 'base64'));
+    };
+
+    const trustedClick = async (selector) => {
+      const pt = await cdp.evaluate(`(() => {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) return null;
+        el.scrollIntoView({ block: 'center', inline: 'center' });
+        const r = el.getBoundingClientRect();
+        return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+      })()`);
+      assert.ok(pt, `trustedClick target not found: ${selector}`);
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pt.x, y: pt.y });
+      await cdp.send('Input.dispatchMouseEvent', {
+        type: 'mousePressed',
+        x: pt.x,
+        y: pt.y,
+        button: 'left',
+        clickCount: 1,
+      });
+      await cdp.send('Input.dispatchMouseEvent', {
+        type: 'mouseReleased',
+        x: pt.x,
+        y: pt.y,
+        button: 'left',
+        clickCount: 1,
+      });
+    };
+
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
       source: `
         (() => {
+          const listeners = [];
+          window.__ctWsUris = [];
+          window.__ctEmitWsChange = (uris) => {
+            window.__ctWsUris = Array.isArray(uris) ? uris : [];
+            listeners.forEach((cb) => cb(window.__ctWsUris));
+          };
           const mockSidecar = {
             conversationId: ${JSON.stringify(ctrlId)},
-            getWorkspaceUris: async () => [${JSON.stringify(ws)}],
-            onWorkspaceChange: (cb) => { setTimeout(() => cb([${JSON.stringify(ws)}]), 20); return () => {}; },
+            getWorkspaceUris: async () => window.__ctWsUris,
+            onWorkspaceChange: (cb) => {
+              listeners.push(cb);
+              return () => {};
+            },
             ui: { toggleConversation: () => {} },
           };
           Object.defineProperty(window, 'sidecar', {
@@ -409,22 +524,23 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
 
     await cdp.send('Page.navigate', { url: `http://127.0.0.1:${port}/?token=${token}` });
 
+    // Phase A: Unbound workspace guidance (zero blank screen) + compact 2-row geometry
     await waitForCondition(
       async () =>
         Boolean(
-          await cdp.evaluate(
-            `document.getElementById('ctrl-view')?.textContent?.includes(${JSON.stringify(ctrlId.slice(0, 8))})`
-          )
+          await cdp.evaluate(`(() => {
+            const skel = document.getElementById('boot-skeleton');
+            const unb = document.getElementById('unbound-state');
+            return skel?.classList.contains('hidden') && unb && !unb.classList.contains('hidden');
+          })()`)
         ),
       {
-        label: 'Control Tower snapshot render',
+        label: 'Unbound workspace state render',
         getDebugInfo: async () =>
           JSON.stringify({
             consoleErrors,
             pageExceptions,
             toast: await cdp.evaluate(`document.getElementById('toast')?.textContent || ''`),
-            wsSelect: await cdp.evaluate(`document.getElementById('ws-select')?.value || ''`),
-            ctrlView: await cdp.evaluate(`document.getElementById('ctrl-view')?.textContent || ''`),
           }),
       }
     );
@@ -434,15 +550,37 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
 
     const checks = [];
 
-    // 0) Verify classic non-module boot guard, zero <script type="module">, and zero .mjs/views/ network requests
+    // 0) Verify zero <datalist> and all 13 grouped <select class="model-select"> pickers work natively
+    const pickerBootMeta = await cdp.evaluate(`(() => {
+      const datalists = document.querySelectorAll('datalist').length;
+      const listInputs = document.querySelectorAll('[list]').length;
+      const selects = [...document.querySelectorAll('select.model-select')];
+      const allPopulated = selects.every((s) => s.options.length >= 7 && s.querySelectorAll('optgroup').length >= 2);
+      return { datalists, listInputs, selectCount: selects.length, allPopulated };
+    })()`);
+    assert.equal(pickerBootMeta.datalists, 0, 'Zero broken <datalist> elements may remain');
+    assert.equal(pickerBootMeta.listInputs, 0, 'Zero [list] attributes may remain');
+    assert.equal(pickerBootMeta.selectCount, 13, 'All 13 model fields must use native grouped <select>');
+    assert.equal(pickerBootMeta.allPopulated, true, 'Every model <select> must populate full optgroups on boot');
+    checks.push('all-13-grouped-model-selects');
+
+    // 0) Verify classic non-module boot guard, preload inline style immunity, and compact 2-row topbar geometry
     const bootMeta = await cdp.evaluate(`({
       booted: window.__CT_BOOTED__ === true,
       fallbackHidden: document.getElementById('boot-fallback')?.classList.contains('hidden') === true,
       moduleScriptCount: document.querySelectorAll('script[type="module"]').length,
+      darkTheme: document.documentElement.dataset.theme,
+      darkBodyBg: getComputedStyle(document.body).backgroundColor,
+      topbarHeight: Math.round(document.querySelector('.topbar')?.getBoundingClientRect().height || 0),
+      tabRows390: new Set([...document.querySelectorAll('.tab')].map((b) => b.offsetTop)).size,
     })`);
     assert.equal(bootMeta.booted, true, 'window.__CT_BOOTED__ should be true');
     assert.equal(bootMeta.fallbackHidden, true, '#boot-fallback banner should stay hidden');
     assert.equal(bootMeta.moduleScriptCount, 0, 'Zero <script type="module"> elements should exist');
+    assert.equal(bootMeta.darkTheme, 'dark', 'Initial dark color-scheme should set dataset.theme=dark');
+    assert.equal(bootMeta.darkBodyBg, 'rgb(22, 23, 25)', 'Dark body background must not be overridden by preload inline white');
+    assert.ok(bootMeta.topbarHeight > 0 && bootMeta.topbarHeight <= 92, `Topbar should stay compact (<=92px), got ${bootMeta.topbarHeight}px`);
+    assert.equal(bootMeta.tabRows390, 1, 'All 6 tabs must sit on a single horizontal row at 390px');
     const esmRequests = requestedUrls.filter((u) => {
       try {
         const p = new URL(u).pathname;
@@ -461,13 +599,194 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
       'Expected browser to fetch classic /boot-guard.js'
     );
     checks.push('classic-bundle-boot');
+    checks.push('unbound-state-and-compact-topbar');
 
-    // 0a) Verify SSE real-time stream connects and updates topbar poll indicator
+    // Verify ultra-narrow 360px Aux Pane geometry (single-row tabs + zero horizontal overflow)
+    await cdp.send('Emulation.setDeviceMetricsOverride', {
+      width: 360,
+      height: 844,
+      deviceScaleFactor: 2,
+      mobile: false,
+    });
+    await new Promise((r) => setTimeout(r, 60));
+    const ultraNarrowMeta = await cdp.evaluate(`({
+      tabRows360: new Set([...document.querySelectorAll('.tab')].map((b) => b.offsetTop)).size,
+      noOverflow360: document.documentElement.scrollWidth <= window.innerWidth + 2,
+    })`);
+    assert.equal(ultraNarrowMeta.tabRows360, 1, 'All 6 2-char tabs must remain on 1 row at 360px');
+    assert.equal(ultraNarrowMeta.noOverflow360, true, 'Zero horizontal overflow at 360px width');
+    checks.push('ultra-narrow-360-geometry');
+
+    await cdp.send('Emulation.setDeviceMetricsOverride', {
+      width: 390,
+      height: 844,
+      deviceScaleFactor: 2,
+      mobile: false,
+    });
+    await saveShot('01-unbound-dark.png');
+
+    // Phase B: Uninitialized workspace onboarding + mode-card switch + live registry init
+    await cdp.evaluate(`window.__ctEmitWsChange([${JSON.stringify(wsClean)}])`);
+    await waitForCondition(
+      async () =>
+        Boolean(
+          await cdp.evaluate(`(() => {
+            const emp = document.getElementById('empty-state');
+            const unb = document.getElementById('unbound-state');
+            return emp && !emp.classList.contains('hidden') && unb?.classList.contains('hidden');
+          })()`)
+        ),
+      { label: 'Empty uninitialized workspace onboarding render' }
+    );
+    const onboardingMeta = await cdp.evaluate(`(() => {
+      const selOpt = document.getElementById('ws-select')?.selectedOptions?.[0]?.textContent || '';
+      const needsInit = [...document.querySelectorAll('.tab.needs-init')].map((b) => b.dataset.tab);
+      document.querySelector('.mode-card[data-relpath="@plugin_data/SESSION-REGISTRY.md"]')?.click();
+      const managedVal = document.getElementById('init-relpath')?.value || '';
+      document.querySelector('.mode-card[data-relpath=".agents/SESSION-REGISTRY.md"]')?.click();
+      const stdVal = document.getElementById('init-relpath')?.value || '';
+      document.querySelector('.tab[data-tab="sessions"]')?.click();
+      const hintShown = !document.getElementById('empty-tab-hint')?.classList.contains('hidden');
+      document.querySelector('.tab[data-tab="overview"]')?.click();
+      return { selOpt, needsInit, managedVal, stdVal, hintShown };
+    })()`);
+    assert.equal(onboardingMeta.selOpt, 'alpha-app  (projects)', 'Workspace select should format short label');
+    assert.deepEqual(onboardingMeta.needsInit, ['sessions', 'queue', 'raw'], 'Uninitialized tabs should carry .needs-init');
+    assert.equal(onboardingMeta.managedVal, '@plugin_data/SESSION-REGISTRY.md', 'Managed mode card should sync select');
+    assert.equal(onboardingMeta.stdVal, '.agents/SESSION-REGISTRY.md', 'Standard mode card should sync select');
+    assert.equal(onboardingMeta.hintShown, true, 'Clicking uninitialized tab should display contextual unlock hint');
+    await saveShot('02-empty-onboarding-dark.png');
+
+    await cdp.evaluate(`document.getElementById('init-registry-btn')?.click()`);
+    await waitForCondition(
+      async () =>
+        Boolean(
+          await cdp.evaluate(`!document.getElementById('tab-overview')?.classList.contains('hidden') && document.querySelectorAll('.tab.needs-init').length === 0`)
+        ),
+      { label: 'Live registry init from onboarding card' }
+    );
+    const freshInitHygiene = await cdp.evaluate(`({
+      leaseText: document.getElementById('lease-status-pill')?.textContent || '',
+      queuePill: document.getElementById('tab-count-queue')?.textContent?.trim() || '',
+    })`);
+    assert.equal(freshInitHygiene.leaseText.includes('\`'), false, 'Fresh init lease pill must have zero stray backticks');
+    assert.equal(freshInitHygiene.queuePill, '', 'Fresh init must not treat skeleton <T1> as a real queued task');
+    checks.push('empty-onboarding-mode-cards-and-init');
+
+    // Phase C: Switch to populated workspace (ws)
+    await cdp.evaluate(`window.__ctEmitWsChange([${JSON.stringify(ws)}])`);
+    await waitForCondition(
+      async () =>
+        Boolean(
+          await cdp.evaluate(
+            `document.getElementById('ctrl-view')?.textContent?.includes(${JSON.stringify(ctrlId.slice(0, 8))})`
+          )
+        ),
+      { label: 'Populated Control Tower snapshot render' }
+    );
+
+    // 0a) Verify SSE real-time stream connects and Overview quiet restraint holds when IDLE & unread===0
     await waitForCondition(
       async () => (await cdp.evaluate(`document.getElementById('poll-toggle-btn')?.textContent?.trim()`)) === 'SSE 实时',
       { label: 'SSE live stream connected' }
     );
+    const overviewRestraint = await cdp.evaluate(`(() => {
+      const ctrlTop = document.getElementById('ctrl-card')?.getBoundingClientRect().top || 0;
+      const leaseTop = document.getElementById('lease-card')?.getBoundingClientRect().top || 0;
+      return {
+        ctrlBeforeLease: ctrlTop < leaseTop,
+        releaseBtnHidden: document.getElementById('release-lease-btn')?.classList.contains('hidden') === true,
+        idleSummaryVisible: document.getElementById('lease-idle-summary')?.classList.contains('hidden') === false,
+        leaseGridHidden: document.getElementById('lease-view')?.classList.contains('hidden') === true,
+        deliverDisabled: document.getElementById('inbox-deliver-all-btn')?.disabled === true,
+        ackAllHidden: document.getElementById('inbox-ack-all-btn')?.classList.contains('hidden') === true,
+      };
+    })()`);
+    assert.equal(overviewRestraint.ctrlBeforeLease, true, 'Controller card should appear above Lease card');
+    assert.equal(overviewRestraint.releaseBtnHidden, true, 'Release button should hide when lease is already IDLE');
+    assert.equal(overviewRestraint.idleSummaryVisible, true, 'Idle 1-line summary should show when lease is IDLE');
+    assert.equal(overviewRestraint.leaseGridHidden, true, '6-row placeholder kv-grid should hide when lease is IDLE');
+    assert.equal(overviewRestraint.deliverDisabled, true, 'Deliver-all button should disable when unread === 0');
+    assert.equal(overviewRestraint.ackAllHidden, true, 'Ack-all button should hide when unread === 0');
+    await saveShot('03-overview-idle-dark.png');
     checks.push('sse-realtime-connected');
+    checks.push('overview-idle-restraint');
+
+    // 0a-2) Exercise Overview interactive controls via real coordinate clicks: controller model select save, lease hold -> release, /learn RPC, cross-origin copy fallback, sentinel sweep
+    await cdp.evaluate(`(() => {
+      Object.defineProperty(navigator, 'clipboard', {
+        value: { writeText: async () => { throw new Error('Cross-origin iframe clipboard denied'); } },
+        configurable: true,
+      });
+    })()`);
+    await trustedClick('#copy-ctrl-id-btn');
+    await waitForCondition(
+      async () => Boolean(await cdp.evaluate(`document.getElementById('toast')?.textContent?.includes('已复制总控 ID')`)),
+      { label: 'cross-origin execCommand copy fallback on controller ID' }
+    );
+    await trustedClick('#ctrl-learn-btn');
+    await waitForCondition(
+      async () => Boolean(await cdp.evaluate(`document.getElementById('toast')?.textContent?.includes('已向现役总控发送 /learn')`)),
+      { label: 'controller /learn RPC button' }
+    );
+    await cdp.evaluate(`(() => {
+      document.getElementById('edit-ctrl-btn')?.click();
+      const sel = document.getElementById('cf-defaultModel');
+      sel.value = 'Orchestrator (Neon Extra High)';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      document.getElementById('cf-appendHistory').checked = true;
+      document.getElementById('cf-summary').value = 'UI 冒烟模型切换校验';
+      document.getElementById('ctrl-form')?.requestSubmit();
+    })()`);
+    await waitForCondition(
+      async () => Boolean(await cdp.evaluate(`document.getElementById('ctrl-view')?.textContent?.includes('Orchestrator (Neon Extra High)')`)),
+      { label: 'controller model select update' }
+    );
+    // Restore controller default model to Gemini 4 Neon (XHigh)
+    await cdp.evaluate(`(() => {
+      document.getElementById('edit-ctrl-btn')?.click();
+      const sel = document.getElementById('cf-defaultModel');
+      sel.value = 'Gemini 4 Neon (XHigh)';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      document.getElementById('ctrl-form')?.requestSubmit();
+    })()`);
+    await waitForCondition(
+      async () => Boolean(await cdp.evaluate(`document.getElementById('ctrl-view')?.textContent?.includes('Gemini 4 Neon (XHigh)')`)),
+      { label: 'controller model select restore' }
+    );
+
+    // Lease hold -> full grid + release button shown -> 1-click release back to IDLE restraint
+    await cdp.evaluate(`(() => {
+      document.getElementById('edit-lease-btn')?.click();
+      document.getElementById('lf-lockStatus').value = 'LOCKED (独占测试中)';
+      document.getElementById('lf-holder').value = ${JSON.stringify(workerId)};
+      document.getElementById('lease-form')?.requestSubmit();
+    })()`);
+    await waitForCondition(
+      async () =>
+        Boolean(
+          await cdp.evaluate(
+            `!document.getElementById('release-lease-btn')?.classList.contains('hidden') && !document.getElementById('lease-view')?.classList.contains('hidden')`
+          )
+        ),
+      { label: 'held lease reveals full kv-grid and release button' }
+    );
+    await cdp.evaluate(`document.getElementById('release-lease-btn')?.click()`);
+    await waitForCondition(
+      async () =>
+        Boolean(
+          await cdp.evaluate(
+            `document.getElementById('release-lease-btn')?.classList.contains('hidden') && !document.getElementById('lease-idle-summary')?.classList.contains('hidden')`
+          )
+        ),
+      { label: '1-click lease release restores IDLE summary' }
+    );
+    await cdp.evaluate(`document.getElementById('sentinel-sweep-btn')?.click()`);
+    await waitForCondition(
+      async () => Boolean(await cdp.evaluate(`document.getElementById('toast')?.textContent?.includes('哨兵巡检完成')`)),
+      { label: 'manual sentinel sweep button' }
+    );
+    checks.push('overview-ctrl-model-lease-copy-learn-sweep');
 
     // 0b) Verify cross-workspace global overview drawer & 1-click /learn trigger exist cleanly in 390px
     const hasLearnControls = await cdp.evaluate(`Boolean(document.getElementById('ctrl-learn-btn')) && Boolean(document.querySelector('.send-learn-btn')) && Boolean(document.getElementById('gs-autoLearnMode'))`);
@@ -496,7 +815,8 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
     );
     checks.push('global-workspaces-drawer');
 
-    // 1) Check all 6 tabs in narrow 390px dark theme (zero overflow)
+    // 1) Check all 6 tabs in narrow 390px dark theme (zero overflow + sliding #tab-ink-bar tracking)
+    const inkPositions = new Set();
     for (const tab of ['overview', 'sessions', 'roadmap', 'queue', 'raw', 'settings']) {
       await cdp.evaluate(`document.querySelector('.tab[data-tab="${tab}"]')?.click()`);
       await new Promise((r) => setTimeout(r, 80));
@@ -504,14 +824,49 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
         scrollWidth: document.documentElement.scrollWidth,
         innerWidth: window.innerWidth,
         panelVisible: !document.getElementById('tab-${tab}')?.classList.contains('hidden'),
+        inkTransform: document.getElementById('tab-ink-bar')?.style.transform || '',
+        inkWidth: parseFloat(document.getElementById('tab-ink-bar')?.style.width || '0'),
       })`);
       assert.equal(metrics.panelVisible, true, `Tab ${tab} should be visible`);
+      assert.ok(metrics.inkWidth > 16, `Sliding #tab-ink-bar width should track active tab ${tab}`);
+      inkPositions.add(metrics.inkTransform);
       assert.ok(
         metrics.scrollWidth <= metrics.innerWidth + 2,
         `Narrow 390px overflow on tab ${tab}: scrollWidth=${metrics.scrollWidth} > innerWidth=${metrics.innerWidth}`
       );
       checks.push(`narrow-dark:${tab}`);
     }
+    assert.equal(inkPositions.size, 6, 'Sliding #tab-ink-bar must move to 6 distinct x-positions across 6 tabs');
+    checks.push('sliding-tab-ink-bar');
+
+    // 1a) Verify live Native Swarm card + inline bare-ID search bar in sessions tab
+    await cdp.evaluate(`document.querySelector('.tab[data-tab="sessions"]')?.click()`);
+    await new Promise((r) => setTimeout(r, 80));
+    const swarmMeta = await cdp.evaluate(`({
+      swarmVisible: !document.getElementById('swarm-card')?.classList.contains('hidden'),
+      swarmText: document.getElementById('swarm-card')?.textContent || '',
+      sessionsCountPill: document.getElementById('tab-count-sessions')?.textContent?.trim() || '',
+    })`);
+    assert.equal(swarmMeta.swarmVisible, true, 'Active native Swarm card should be visible');
+    assert.ok(swarmMeta.swarmText.includes('impl-ui'), 'Swarm member impl-ui should render');
+    assert.equal(swarmMeta.sessionsCountPill, '3', 'Tab count should reflect 2 swarm + 1 top-level session');
+    await saveShot('04-sessions-swarm-dark.png');
+
+    await cdp.evaluate(`(() => {
+      const inp = document.getElementById('probe-id-input');
+      inp.value = ${JSON.stringify(workerId.slice(0, 8))};
+      document.getElementById('probe-btn').click();
+    })()`);
+    await waitForCondition(
+      async () =>
+        Boolean(
+          await cdp.evaluate(
+            `document.getElementById('probe-result')?.textContent?.includes(${JSON.stringify(workerId)})`
+          )
+        ),
+      { label: 'inline bare-ID probe result' }
+    );
+    checks.push('sessions-swarm-and-inline-probe');
 
     // 1b) Interactive Roadmap init, node creation, handoff preview, cycle error guard, and fill-dispatch bridge
     await cdp.evaluate(`document.querySelector('.tab[data-tab="roadmap"]')?.click()`);
@@ -544,6 +899,16 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
       async () => Boolean(await cdp.evaluate(`document.getElementById('rm-nodes-list')?.textContent?.includes('W2')`)),
       { label: 'roadmap node W2 rendered' }
     );
+    const rmStatusMeta = await cdp.evaluate(`({
+      readyCount: document.querySelectorAll('#rm-nodes-list .item-box[data-node-status="ready"]').length,
+      blockedCount: document.querySelectorAll('#rm-nodes-list .item-box[data-node-status="blocked"]').length,
+      roadmapPill: document.getElementById('tab-count-roadmap')?.textContent?.trim() || '',
+    })`);
+    assert.equal(rmStatusMeta.readyCount, 1, 'W1 should carry data-node-status=ready');
+    assert.equal(rmStatusMeta.blockedCount, 1, 'W2 should carry data-node-status=blocked');
+    assert.equal(rmStatusMeta.roadmapPill, '0/2', 'Roadmap tab count should show 0/2');
+    await saveShot('05-roadmap-dag-dark.png');
+
     // Attempt cyclic dependency W1 -> W2 and verify error toast without uncaught exception
     await cdp.evaluate(`(() => {
       document.querySelector('.rm-edit-node-btn[data-id="W1"]').click();
@@ -567,7 +932,56 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
     );
     checks.push('roadmap-fill-dispatch');
 
-    // 1c) Native inline archive form (zero window.prompt) in sessions tab
+    // 1c) Swarm cleanup RPC, manual session custom model, direct dispatch RPC, and inline archive
+    await cdp.evaluate(`(() => {
+      const sel = document.getElementById('df-model');
+      sel.value = 'Orchestrator (Carbon)';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      document.getElementById('df-slash').value = '/plan';
+      document.getElementById('df-topic').value = 'W1 直派全链路测试';
+      document.getElementById('df-prompt').value = '验证直派模型选择与入账';
+      document.getElementById('dispatch-form')?.requestSubmit();
+    })()`);
+    await waitForCondition(
+      async () =>
+        Boolean(
+          await cdp.evaluate(
+            `document.getElementById('active-sessions-list')?.textContent?.includes(${JSON.stringify(dispatchedConvId.slice(0, 8))})`
+          )
+        ),
+      { label: 'direct dispatch via df-model select and mock agentapi' }
+    );
+    await cdp.evaluate(`document.getElementById('toggle-dispatch-btn')?.click()`);
+
+    await cdp.evaluate(`document.getElementById('swarm-cleanup-btn')?.click()`);
+    await waitForCondition(
+      async () => Boolean(await cdp.evaluate(`document.getElementById('toast')?.textContent?.includes('回收 1 个休眠成员')`)),
+      { label: 'swarm waiting cleanup request RPC' }
+    );
+
+    // Test manual session form with __custom__ model input reveal
+    await cdp.evaluate(`(() => {
+      document.getElementById('toggle-session-form-btn')?.click();
+      document.getElementById('sf-id').value = ${JSON.stringify(manualConvId)};
+      document.getElementById('sf-topic').value = '手动登记自定义模型验证';
+      const sel = document.getElementById('sf-modelTool');
+      sel.value = '__custom__';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      const cust = document.getElementById('sf-modelTool-custom');
+      cust.value = 'Orchestrator (Neon Extra High) + /plan';
+      document.getElementById('session-form')?.requestSubmit();
+    })()`);
+    await waitForCondition(
+      async () =>
+        Boolean(
+          await cdp.evaluate(
+            `document.getElementById('active-sessions-list')?.textContent?.includes('手动登记自定义模型验证')`
+          )
+        ),
+      { label: 'manual session enrollment with __custom__ modelTool' }
+    );
+    checks.push('sessions-dispatch-swarm-and-custom-model');
+
     await cdp.evaluate(`document.querySelector('.archive-conv-btn')?.click()`);
     await waitForCondition(
       async () => Boolean(await cdp.evaluate(`!document.getElementById('archive-form')?.classList.contains('hidden')`)),
@@ -578,17 +992,87 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
       document.getElementById('archive-form').requestSubmit();
     })()`);
     await waitForCondition(
-      async () => (await cdp.evaluate(`document.getElementById('archived-count-badge')?.textContent?.trim()`)) === '1',
-      { label: 'inline archive completed' }
+      async () =>
+        Boolean(
+          await cdp.evaluate(
+            `document.getElementById('archived-count-badge')?.textContent?.trim() === '1' && document.getElementById('archived-fold')?.open === true`
+          )
+        ),
+      { label: 'inline archive completed and fold opened' }
     );
     checks.push('inline-archive-form');
 
-    // 1d) Native inline 2-step destructive confirmation (zero window.confirm) on queue delete
+    // Roadmap hidden dispatch + mark done unlock propagation
+    await cdp.evaluate(`document.querySelector('.tab[data-tab="roadmap"]')?.click()`);
+    await new Promise((r) => setTimeout(r, 60));
+    await cdp.evaluate(`document.querySelector('.rm-dispatch-hidden-btn[data-id="W1"]')?.click()`);
+    await waitForCondition(
+      async () =>
+        Boolean(
+          await cdp.evaluate(
+            `document.querySelectorAll('#rm-nodes-list .item-box[data-node-status="active"]').length === 1`
+          )
+        ),
+      { label: 'roadmap hidden dispatch marks W1 active' }
+    );
+    await cdp.evaluate(`document.querySelector('.rm-mark-done-btn[data-id="W1"]')?.click()`);
+    await waitForCondition(
+      async () =>
+        Boolean(
+          await cdp.evaluate(
+            `document.querySelectorAll('#rm-nodes-list .item-box[data-node-status="ready"]').length === 1 && document.getElementById('tab-count-roadmap')?.textContent?.trim() === '1/2'`
+          )
+        ),
+      { label: 'marking W1 done unlocks W2 to ready and updates tab count to 1/2' }
+    );
+    checks.push('roadmap-hidden-dispatch-and-unlock');
+
+    // 1d) Collapsible queue form + route select create/edit + 2-step delete + raw templates/save
     await cdp.evaluate(`document.querySelector('.tab[data-tab="queue"]')?.click()`);
     await waitForCondition(
       async () => (await cdp.evaluate(`document.getElementById('queue-count-badge')?.textContent?.trim()`)) === '1',
       { label: 'queue tab shows initial T1 item' }
     );
+    const queueProgressive = await cdp.evaluate(`(() => {
+      const initiallyHidden = document.getElementById('queue-form')?.classList.contains('hidden') === true;
+      document.getElementById('toggle-queue-form-btn')?.click();
+      const opened = document.getElementById('queue-form')?.classList.contains('hidden') === false;
+      document.getElementById('qf-id').value = 'T2';
+      document.getElementById('qf-summary').value = '队列模型路线下拉保存验证';
+      const rSel = document.getElementById('qf-route');
+      rSel.value = 'L3 Orchestrator (Carbon)';
+      rSel.dispatchEvent(new Event('change', { bubbles: true }));
+      document.getElementById('queue-form')?.requestSubmit();
+      return { initiallyHidden, opened };
+    })()`);
+    assert.deepEqual(queueProgressive, { initiallyHidden: true, opened: true });
+    await waitForCondition(
+      async () => (await cdp.evaluate(`document.getElementById('queue-count-badge')?.textContent?.trim()`)) === '2',
+      { label: 'queue upsert T2 with selected L3 route' }
+    );
+    const qEditSelected = await cdp.evaluate(`(() => {
+      document.querySelector('.q-edit-btn[data-id="T2"]')?.click();
+      const v = document.getElementById('qf-route')?.value || '';
+      document.getElementById('qf-reset-btn')?.click();
+      return v;
+    })()`);
+    assert.equal(qEditSelected, 'L3 Orchestrator (Carbon)', 'Editing T2 must select L3 Orchestrator (Carbon) in qf-route');
+
+    await cdp.evaluate(`document.querySelector('.tab[data-tab="raw"]')?.click()`);
+    await saveShot('06-queue-and-raw-dark.png');
+    await trustedClick('.copy-tpl[data-tpl="bootstrapPrompt"]');
+    await waitForCondition(
+      async () => Boolean(await cdp.evaluate(`document.getElementById('toast')?.textContent?.includes('已复制模板')`)),
+      { label: 'raw tab copy bootstrap template' }
+    );
+    await cdp.evaluate(`document.getElementById('save-raw-btn')?.click()`);
+    await waitForCondition(
+      async () => Boolean(await cdp.evaluate(`document.getElementById('toast')?.textContent?.includes('台账已保存')`)),
+      { label: 'raw markdown editor save' }
+    );
+    checks.push('queue-route-select-and-raw-save');
+
+    await cdp.evaluate(`document.querySelector('.tab[data-tab="queue"]')?.click()`);
     await cdp.evaluate(`document.querySelector('.q-del-btn[data-id="T1"]')?.click()`);
     const armedState = await cdp.evaluate(`(() => {
       const btn = document.querySelector('.q-del-btn[data-id="T1"]');
@@ -600,10 +1084,10 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
     })()`);
     assert.equal(armedState.text, '确认删除?', 'First click should arm inline confirm label');
     assert.equal(armedState.armed, true, 'First click should add btn-confirm-armed class');
-    assert.equal(armedState.count, '1', 'First click must not immediately delete queue item');
+    assert.equal(armedState.count, '2', 'First click must not immediately delete queue item');
     await cdp.evaluate(`document.querySelector('.q-del-btn[data-id="T1"]')?.click()`);
     await waitForCondition(
-      async () => (await cdp.evaluate(`document.getElementById('queue-count-badge')?.textContent?.trim()`)) === '0',
+      async () => (await cdp.evaluate(`document.getElementById('queue-count-badge')?.textContent?.trim()`)) === '1',
       { label: 'second click confirms queue deletion' }
     );
     checks.push('inline-2step-confirm');
@@ -644,16 +1128,18 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
     );
     checks.push('diagnostics-filter');
 
-    // 3) Check all 3 settings scopes in narrow width
-    for (const scope of ['plugin', 'global', 'workspace']) {
+    // 3) Check all 3 settings scopes in narrow width + sliding segmented pill index
+    for (const [idx, scope] of ['plugin', 'global', 'workspace'].entries()) {
       await cdp.evaluate(`document.querySelector('.seg-btn[data-scope="${scope}"]')?.click()`);
       await new Promise((r) => setTimeout(r, 60));
       const metrics = await cdp.evaluate(`({
         scrollWidth: document.documentElement.scrollWidth,
         innerWidth: window.innerWidth,
         visible: !document.getElementById('settings-scope-${scope}')?.classList.contains('hidden'),
+        segIdx: document.querySelector('.segmented')?.dataset.activeIdx || '',
       })`);
       assert.equal(metrics.visible, true, `Settings scope ${scope} should be visible`);
+      assert.equal(metrics.segIdx, String(idx), `Segmented pill data-active-idx should equal ${idx} for ${scope}`);
       assert.ok(
         metrics.scrollWidth <= metrics.innerWidth + 2,
         `Narrow 390px overflow on settings scope ${scope}: ${metrics.scrollWidth} > ${metrics.innerWidth}`
@@ -661,15 +1147,147 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
       checks.push(`narrow-settings:${scope}`);
     }
 
-    // 4) Switch to Light theme and verify theme sync
+    // 3b) Deep Settings interactive test: Global model guard + custom allowlist sync + Workspace model override & clear while dirty
+    await cdp.evaluate(`document.querySelector('.seg-btn[data-scope="global"]')?.click()`);
+    await cdp.evaluate(`(() => {
+      const sel = document.getElementById('gs-l2StandardModel');
+      sel.value = '__custom__';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      document.getElementById('gs-l2StandardModel-custom').value = 'Gemini 4 Argon';
+      document.getElementById('global-settings-form')?.requestSubmit();
+    })()`);
+    await waitForCondition(
+      async () => Boolean(await cdp.evaluate(`document.getElementById('toast')?.textContent?.includes('禁用 Argon')`)),
+      { label: 'global settings blocks forbidden Argon model with toast' }
+    );
+    await cdp.evaluate(`(() => {
+      document.querySelector('#settings-scope-global details.adv-fold').open = true;
+      document.getElementById('gs-modelGuardPolicy').value = 'custom_allowlist';
+      document.getElementById('gs-customAllowedModels').value = 'custom-corp-v4';
+      document.getElementById('gs-l2StandardModel-custom').value = 'custom-corp-v4';
+      document.getElementById('gs-l0ControllerModel').value = 'Gemini 4 Neon (XHigh)';
+      document.getElementById('global-settings-form')?.requestSubmit();
+    })()`);
+    await waitForCondition(
+      async () => Boolean(await cdp.evaluate(`document.getElementById('toast')?.textContent?.includes('已保存全局设置')`)),
+      { label: 'global settings saves allowlisted custom-corp-v4' }
+    );
+    const customPropagated = await cdp.evaluate(`(() => {
+      const dfHas = [...document.getElementById('df-model').options].some((o) => o.value === 'custom-corp-v4');
+      const wsHas = [...document.getElementById('ws-ov-l2StandardModel').options].some((o) => o.value === 'custom-corp-v4');
+      return dfHas && wsHas;
+    })()`);
+    assert.equal(customPropagated, true, 'Saved customAllowedModels must sync dynamically into all model <select> pickers');
+    await saveShot('09-settings-global-models-dark.png');
+
+    // Workspace override select + clear-override while form is dirty
+    await cdp.evaluate(`document.querySelector('.seg-btn[data-scope="workspace"]')?.click()`);
+    await cdp.evaluate(`(() => {
+      document.querySelector('#settings-scope-workspace details.adv-fold').open = true;
+      const sel = document.getElementById('ws-ov-l2StandardModel');
+      sel.value = 'Orchestrator (Carbon)';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      document.getElementById('ws-settings-form')?.requestSubmit();
+    })()`);
+    await waitForCondition(
+      async () =>
+        Boolean(
+          await cdp.evaluate(
+            `document.getElementById('ov-tag-l2StandardModel')?.textContent?.trim() === '工作区覆盖'`
+          )
+        ),
+      { label: 'workspace model override saved' }
+    );
+    // Make workspace form dirty on another field, then click 继承 (.ws-clear-ov) on l2StandardModel
+    await cdp.evaluate(`(() => {
+      const th = document.getElementById('ws-ov-controllerCompactionThreshold');
+      th.value = '6';
+      th.dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('.ws-clear-ov[data-key="l2StandardModel"]')?.click();
+    })()`);
+    await waitForCondition(
+      async () =>
+        Boolean(
+          await cdp.evaluate(
+            `document.getElementById('ws-ov-l2StandardModel')?.value === '' && document.getElementById('ov-tag-l2StandardModel')?.textContent?.trim() === '继承全局'`
+          )
+        ),
+      { label: 'ws-clear-ov resets select & badge even when workspace form is dirty' }
+    );
+    await saveShot('10-settings-ws-models-dark.png');
+    checks.push('settings-global-guard-allowlist-and-ws-override-clear');
+
+    // 4) Capture folded Settings dark shot, then seed active unread P1 inbox item + test deliver + Light theme
+    await cdp.evaluate(`document.querySelector('.seg-btn[data-scope="plugin"]')?.click()`);
+    await saveShot('07-settings-folded-dark.png');
+
+    upsertInboxItem(dataDir, ws, {
+      dedupKey: 'smoke-p1-done',
+      priority: 'P1',
+      kind: 'worker_done',
+      source: 'hook',
+      convId: swarmImplId,
+      title: '[CT_REPORT:DONE] W1 协议层核心已通过单测',
+      summary: '全量 28 项协议断言通过，等待总控解锁下游 W2。',
+    });
+    await cdp.evaluate(`(() => {
+      document.querySelector('.tab[data-tab="overview"]')?.click();
+      document.getElementById('refresh-btn')?.click();
+    })()`);
+    await waitForCondition(
+      async () =>
+        Boolean(
+          await cdp.evaluate(
+            `document.getElementById('tab-count-overview')?.textContent?.trim() === '1' && document.getElementById('inbox-deliver-all-btn')?.disabled === false && !document.getElementById('inbox-ack-all-btn')?.classList.contains('hidden')`
+          )
+        ),
+      { label: 'Unread P1 inbox activates overview count & deliver/ack actions' }
+    );
+    checks.push('overview-active-inbox-unlock');
+
     await cdp.send('Emulation.setEmulatedMedia', {
       features: [{ name: 'prefers-color-scheme', value: 'light' }],
     });
-    await cdp.evaluate(`document.documentElement.setAttribute('style', '--background: #ffffff')`);
+    await cdp.evaluate(
+      `document.documentElement.setAttribute('style', '--background: #f7f7f8; --card: #ffffff; --foreground: #1d1f21; --primary: #007acc')`
+    );
     await new Promise((r) => setTimeout(r, 60));
-    const lightTheme = await cdp.evaluate(`document.documentElement.dataset.theme`);
-    assert.equal(lightTheme, 'light', 'Theme observer should switch dataset.theme to light');
-    checks.push('narrow-light-theme');
+    const lightMeta = await cdp.evaluate(`({
+      theme: document.documentElement.dataset.theme,
+      bodyFont: getComputedStyle(document.body).fontFamily,
+      bodyBg: getComputedStyle(document.body).backgroundColor,
+    })`);
+    assert.equal(lightMeta.theme, 'light', 'Theme observer should switch dataset.theme to light');
+    assert.ok(lightMeta.bodyFont.includes('Google Sans'), 'Body font stack should prefer Google Sans Flex');
+    assert.equal(lightMeta.bodyBg, 'rgb(247, 247, 248)', 'Body background should bind to host --background token');
+    checks.push('narrow-light-theme-and-tokens');
+
+    await saveShot('08-overview-light.png');
+
+    // Verify Inbox Deliver RPC clears unread count cleanly
+    await cdp.evaluate(`document.getElementById('inbox-deliver-all-btn')?.click()`);
+    await waitForCondition(
+      async () =>
+        Boolean(
+          await cdp.evaluate(
+            `document.getElementById('tab-count-overview')?.textContent?.trim() === '' && document.getElementById('inbox-deliver-all-btn')?.disabled === true`
+          )
+        ),
+      { label: 'inbox deliver-all sends to controller and resets unread badge' }
+    );
+    checks.push('inbox-deliver-rpc');
+
+    // Verify setHtmlIfChanged preserves live DOM nodes across unchanged manual refresh
+    await cdp.evaluate(`(() => {
+      document.querySelector('.tab[data-tab="overview"]')?.click();
+      const firstKv = document.querySelector('#ctrl-view .kv-k');
+      if (firstKv) firstKv.__ctKeepAlive = 42;
+      document.getElementById('refresh-btn')?.click();
+    })()`);
+    await new Promise((r) => setTimeout(r, 120));
+    const domPreserved = await cdp.evaluate(`document.querySelector('#ctrl-view .kv-k')?.__ctKeepAlive === 42`);
+    assert.equal(domPreserved, true, 'setHtmlIfChanged must skip innerHTML teardown when snapshot HTML is unchanged');
+    checks.push('zero-thrash-dom-memoization');
 
     // 5) Resize to wide 960x844 and check overview & sessions
     await cdp.send('Emulation.setDeviceMetricsOverride', {
@@ -679,7 +1297,7 @@ export async function runUiSmoke({ requireBrowser = false } = {}) {
       mobile: false,
     });
     await cdp.evaluate(`document.querySelector('.tab[data-tab="sessions"]')?.click()`);
-    await new Promise((r) => setTimeout(r, 80));
+    await new Promise((r) => setTimeout(r, 200));
     const wideOverflow = await cdp.evaluate(`document.documentElement.scrollWidth <= window.innerWidth + 2`);
     assert.equal(wideOverflow, true, 'Wide viewport should have zero horizontal overflow');
     checks.push('wide-960:sessions');
@@ -730,8 +1348,10 @@ const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(imp
 if (isMain) {
   const jsonMode = process.argv.includes('--json');
   const requireBrowser = process.argv.includes('--require-browser');
+  const shotArg = process.argv.find((a) => a.startsWith('--screenshot-dir='));
+  const screenshotDir = shotArg ? resolve(shotArg.slice('--screenshot-dir='.length)) : '';
   try {
-    const res = await runUiSmoke({ requireBrowser });
+    const res = await runUiSmoke({ requireBrowser, screenshotDir });
     if (jsonMode) {
       process.stdout.write(`${JSON.stringify(res, null, 2)}\n`);
     } else if (res.skipped) {

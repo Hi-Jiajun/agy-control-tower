@@ -5,12 +5,12 @@ import {
 } from '../ui-logic.mjs';
 
 export function renderSessions(ctx, snap) {
-  const { $ } = ctx;
+  const { $, setModelField, setHtmlIfChanged } = ctx;
   const eff = snap.settings?.effective || {};
   const leaseEnabled = eff.exclusiveLeaseEnabled !== false;
   $('df-lock-wrap').classList.toggle('hidden', !leaseEnabled);
   if (!$('df-model').dataset.userEdited) {
-    $('df-model').value = eff.l2StandardModel || 'Orchestrator (Neon Extra High)';
+    setModelField('df-model', eff.l2StandardModel || 'Orchestrator (Neon Extra High)');
   }
 
   // 4-Surface Unified Task Navigator
@@ -28,17 +28,20 @@ export function renderSessions(ctx, snap) {
         ? '允许常规顶层'
         : '隐藏面优先';
   $('surfaces-summary-badge').textContent = `${policyLabel} | 隐藏 ${surfSum.hiddenTotal}`;
-  $('surfaces-grid').innerHTML = [
-    ['Swarm 隐藏成员', surfSum.swarm, 'badge-ok'],
-    ['Subagent 子代理', surfSum.subagents, 'badge-muted'],
-    ['Workflow 流水线', surfSum.workflows, 'badge-muted'],
-    ['顶层侧栏会话', surfSum.topLevel, surfSum.sidebarWarning ? 'badge-warn' : 'badge-muted'],
-  ]
-    .map(
-      ([label, count, cls]) =>
-        `<div class="surface-pill"><span>${esc(label)}</span><span class="badge ${cls}"><strong>${esc(count)}</strong></span></div>`
-    )
-    .join('');
+  setHtmlIfChanged(
+    $('surfaces-grid'),
+    [
+      ['Swarm 隐藏成员', surfSum.swarm, surfSum.swarm > 0 ? 'badge-ok' : 'badge-muted'],
+      ['Subagent 子代理', surfSum.subagents, surfSum.subagents > 0 ? 'badge-ok' : 'badge-muted'],
+      ['Workflow 流水线', surfSum.workflows, surfSum.workflows > 0 ? 'badge-ok' : 'badge-muted'],
+      ['顶层侧栏会话', surfSum.topLevel, surfSum.sidebarWarning ? 'badge-warn' : 'badge-muted'],
+    ]
+      .map(
+        ([label, count, cls]) =>
+          `<div class="surface-pill" data-active="${count > 0 ? 'true' : 'false'}"><span>${esc(label)}</span><span class="badge ${cls}"><strong>${esc(count)}</strong></span></div>`
+      )
+      .join('')
+  );
   $('sidebar-hint').classList.toggle('hidden', !surfSum.sidebarWarning);
 
   // Native Swarm panel with workspace isolation badge + cleanup waiting members button
@@ -138,42 +141,48 @@ export function renderSessions(ctx, snap) {
   $('active-count-badge').textContent = String(active.length);
   const activeBox = $('active-sessions-list');
   if (active.length === 0) {
-    activeBox.innerHTML = '<p class="muted">暂无活跃或挂起专职会话</p>';
+    setHtmlIfChanged(activeBox, '<p class="empty-inline">暂无活跃或挂起专职会话</p>');
   } else {
-    activeBox.innerHTML = active
-      .map((s) => {
-        const t = s.telemetry || {};
-        const compWarn = (t.compactions || 0) >= workerThresh ? 'badge-danger' : 'badge-muted';
-        const telLine = t.exists
-          ? `步数 ${t.maxStepIndex || t.lineCount} | 模型 ${t.lastModel || '-'} | 压缩 ${t.compactions} 次`
-          : '无本地日志';
-        return `
-          <div class="item-box">
-            <div class="card-head">
-              <strong>${esc(s.topic || '未命名任务')}</strong>
-              <span class="badge ${compWarn}">${esc(s.status || '-')}</span>
+    setHtmlIfChanged(
+      activeBox,
+      active
+        .map((s) => {
+          const t = s.telemetry || {};
+          const compWarn = (t.compactions || 0) >= workerThresh ? 'badge-danger' : 'badge-muted';
+          const telLine = t.exists
+            ? `步数 ${t.maxStepIndex || t.lineCount} | 模型 ${t.lastModel || '-'} | 压缩 ${t.compactions} 次`
+            : '无本地日志';
+          return `
+            <div class="item-box">
+              <div class="card-head">
+                <strong>${esc(s.topic || '未命名任务')}</strong>
+                <span class="badge ${compWarn}">${esc(s.status || '-')}</span>
+              </div>
+              <div class="item-meta">ID: ${esc(s.conversationId || '-')} | 锁: ${esc(s.lockStatus || '-')}</div>
+              <div class="item-meta">${esc(telLine)}</div>
+              <div class="actions">
+                <button class="btn btn-ghost btn-sm jump-conv-btn" data-id="${esc(s.conversationId)}">跳转会话</button>
+                <button class="btn btn-ghost btn-sm copy-conv-btn" data-id="${esc(s.conversationId)}">复制 ID</button>
+                <button class="btn btn-ghost btn-sm notify-ctrl-btn" data-id="${esc(s.conversationId)}">通知总控</button>
+                <button class="btn btn-ghost btn-sm send-learn-btn" data-id="${esc(s.conversationId)}">发送 /learn</button>
+                <button class="btn btn-warn btn-sm archive-conv-btn" data-id="${esc(s.conversationId)}" data-topic="${esc(s.topic)}">归档里程碑</button>
+              </div>
             </div>
-            <div class="item-meta">ID: ${esc(s.conversationId || '-')} | 锁: ${esc(s.lockStatus || '-')}</div>
-            <div class="item-meta">${esc(telLine)}</div>
-            <div class="actions">
-              <button class="btn btn-ghost btn-sm jump-conv-btn" data-id="${esc(s.conversationId)}">跳转会话</button>
-              <button class="btn btn-ghost btn-sm copy-conv-btn" data-id="${esc(s.conversationId)}">复制 ID</button>
-              <button class="btn btn-ghost btn-sm notify-ctrl-btn" data-id="${esc(s.conversationId)}">通知总控</button>
-              <button class="btn btn-ghost btn-sm send-learn-btn" data-id="${esc(s.conversationId)}">发送 /learn</button>
-              <button class="btn btn-warn btn-sm archive-conv-btn" data-id="${esc(s.conversationId)}" data-topic="${esc(s.topic)}">归档里程碑</button>
-            </div>
-          </div>
-        `;
-      })
-      .join('');
+          `;
+        })
+        .join('')
+    );
   }
 
   const archived = snap.parsed?.archivedSessions || [];
   $('archived-count-badge').textContent = String(archived.length);
+  const archFold = $('archived-fold');
+  if (archFold) archFold.open = archived.length > 0;
   const archBox = $('archived-sessions-list');
-  archBox.innerHTML =
+  setHtmlIfChanged(
+    archBox,
     archived.length === 0
-      ? '<p class="muted">暂无归档记录</p>'
+      ? '<p class="empty-inline">暂无归档记录</p>'
       : archived
           .map(
             (a) => `
@@ -183,40 +192,44 @@ export function renderSessions(ctx, snap) {
             </div>
           `
           )
-          .join('');
+          .join('')
+  );
 }
 
 export function renderQueue(ctx, snap) {
-  const { $ } = ctx;
+  const { $, setModelField, setHtmlIfChanged } = ctx;
   const queue = snap.parsed?.queue || [];
   const eff = snap.settings?.effective || {};
   if (!$('qf-originalId').value && !$('qf-route').dataset.userEdited) {
-    $('qf-route').value = `L2 ${eff.l2StandardModel || 'Gemini 4 Neon (High)'}`;
+    setModelField('qf-route', `L2 ${eff.l2StandardModel || 'Orchestrator (Neon Extra High)'}`);
   }
   $('queue-count-badge').textContent = String(queue.length);
   const box = $('queue-list');
   if (queue.length === 0) {
-    box.innerHTML = '<p class="muted">待调度队列为空</p>';
+    setHtmlIfChanged(box, '<p class="empty-inline">待调度队列为空</p>');
     return;
   }
-  box.innerHTML = queue
-    .map(
-      (q) => `
-      <div class="item-box">
-        <div class="card-head">
-          <strong>${esc(q.id)}</strong>
-          <span class="badge">${esc(q.status)}</span>
+  setHtmlIfChanged(
+    box,
+    queue
+      .map(
+        (q) => `
+        <div class="item-box">
+          <div class="card-head">
+            <strong>${esc(q.id)}</strong>
+            <span class="badge">${esc(q.status)}</span>
+          </div>
+          <div class="item-meta">${esc(q.summary)}</div>
+          <div class="item-meta">路线: ${esc(q.route)}</div>
+          <div class="actions">
+            <button class="btn btn-ghost btn-sm q-edit-btn" data-id="${esc(q.id)}">编辑</button>
+            <button class="btn btn-danger btn-sm q-del-btn" data-id="${esc(q.id)}">删除</button>
+          </div>
         </div>
-        <div class="item-meta">${esc(q.summary)}</div>
-        <div class="item-meta">路线: ${esc(q.route)}</div>
-        <div class="actions">
-          <button class="btn btn-ghost btn-sm q-edit-btn" data-id="${esc(q.id)}">编辑</button>
-          <button class="btn btn-danger btn-sm q-del-btn" data-id="${esc(q.id)}">删除</button>
-        </div>
-      </div>
-    `
-    )
-    .join('');
+      `
+      )
+      .join('')
+  );
 }
 
 export function renderRaw(ctx, snap) {
@@ -243,16 +256,21 @@ export function openInlineArchiveForm(ctx, convId, topic) {
 }
 
 export function bindSessionsAndQueueEvents(ctx) {
-  const { $, state, api, render, showToast, withBusyButton, copyText, refresh } = ctx;
+  const { $, state, api, render, showToast, withBusyButton, copyText, refresh, setModelField, getModelField } = ctx;
 
-  $('toggle-dispatch-btn').addEventListener('click', () => $('dispatch-form').classList.toggle('hidden'));
-  $('df-model').addEventListener('input', () => {
-    $('df-model').dataset.userEdited = '1';
+  $('toggle-dispatch-btn').addEventListener('click', () => {
+    const willShow = $('dispatch-form').classList.contains('hidden');
+    if (willShow && !$('df-model').dataset.userEdited) {
+      setModelField('df-model', state.snap?.settings?.effective?.l2StandardModel || 'Orchestrator (Neon Extra High)');
+    }
+    $('dispatch-form').classList.toggle('hidden', !willShow);
+    $('dispatch-policy-hint')?.classList.toggle('hidden', !willShow);
   });
   $('df-clear-ws-btn').addEventListener('click', () => {
     $('df-workstreamId').value = '';
     $('df-workstream-note').classList.add('hidden');
     delete $('df-model').dataset.userEdited;
+    setModelField('df-model', state.snap?.settings?.effective?.l2StandardModel || 'Orchestrator (Neon Extra High)');
   });
 
   $('dispatch-form').addEventListener('submit', async (e) => {
@@ -266,9 +284,10 @@ export function bindSessionsAndQueueEvents(ctx) {
           body: {
             workspace: state.workspace,
             expectedHash: state.snap?.hash,
+            sourceConversationId: window.sidecar?.conversationId || '',
             topic: $('df-topic').value.trim(),
             title: $('df-topic').value.trim(),
-            model: $('df-model').value.trim(),
+            model: getModelField('df-model'),
             slashPrefix: $('df-slash').value,
             lockStatus: $('df-lock').value,
             prompt: $('df-prompt').value.trim(),
@@ -281,6 +300,7 @@ export function bindSessionsAndQueueEvents(ctx) {
         $('df-slash').value = '';
         $('df-lock').selectedIndex = 0;
         delete $('df-model').dataset.userEdited;
+        setModelField('df-model', res.snapshot?.settings?.effective?.l2StandardModel || 'Orchestrator (Neon Extra High)');
         $('df-workstream-note').classList.add('hidden');
         render(res.snapshot);
         showToast(
@@ -328,7 +348,13 @@ export function bindSessionsAndQueueEvents(ctx) {
     })
   );
 
-  $('toggle-session-form-btn').addEventListener('click', () => $('session-form').classList.toggle('hidden'));
+  $('toggle-session-form-btn').addEventListener('click', () => {
+    const willOpen = $('session-form').classList.contains('hidden');
+    if (willOpen) {
+      setModelField('sf-modelTool', state.snap?.settings?.effective?.l2StandardModel || 'Orchestrator (Neon Extra High)');
+    }
+    $('session-form').classList.toggle('hidden', !willOpen);
+  });
   $('cancel-session-form-btn').addEventListener('click', () => $('session-form').classList.add('hidden'));
 
   $('session-form').addEventListener('submit', async (e) => {
@@ -342,7 +368,7 @@ export function bindSessionsAndQueueEvents(ctx) {
           expectedHash: state.snap.hash,
           conversationId: $('sf-id').value.trim(),
           topic: $('sf-topic').value.trim(),
-          modelTool: $('sf-modelTool').value.trim(),
+          modelTool: getModelField('sf-modelTool'),
           lockStatus: $('sf-lockStatus').value.trim(),
           status: $('sf-status').value,
           paths: $('sf-paths').value.trim(),
@@ -350,6 +376,7 @@ export function bindSessionsAndQueueEvents(ctx) {
       });
       $('session-form').classList.add('hidden');
       $('session-form').reset();
+      setModelField('sf-modelTool', res.snapshot?.settings?.effective?.l2StandardModel || 'Orchestrator (Neon Extra High)');
       render(res.snapshot);
       showToast('已入账活跃专职会话');
     } catch (err) {
@@ -428,8 +455,19 @@ export function bindSessionsAndQueueEvents(ctx) {
     }
   });
 
-  $('qf-route').addEventListener('input', () => {
-    $('qf-route').dataset.userEdited = '1';
+  $('toggle-queue-form-btn')?.addEventListener('click', () => {
+    const formEl = $('queue-form');
+    const wasHidden = formEl.classList.contains('hidden');
+    const wasEditing = Boolean($('qf-originalId').value);
+    if (wasHidden || wasEditing) {
+      formEl.reset();
+      $('qf-originalId').value = '';
+      delete $('qf-route').dataset.userEdited;
+      setModelField('qf-route', `L2 ${state.snap?.settings?.effective?.l2StandardModel || 'Orchestrator (Neon Extra High)'}`);
+      formEl.classList.remove('hidden');
+    } else {
+      formEl.classList.add('hidden');
+    }
   });
 
   $('queue-form').addEventListener('submit', async (e) => {
@@ -445,13 +483,14 @@ export function bindSessionsAndQueueEvents(ctx) {
           id: $('qf-id').value.trim(),
           summary: $('qf-summary').value.trim(),
           status: $('qf-status').value,
-          route: $('qf-route').value.trim(),
+          route: getModelField('qf-route'),
         },
       });
       $('queue-form').reset();
       $('qf-originalId').value = '';
       delete $('qf-route').dataset.userEdited;
-      $('qf-route').value = `L2 ${state.snap?.settings?.effective?.l2StandardModel || 'Gemini 4 Neon (High)'}`;
+      setModelField('qf-route', `L2 ${res.snapshot?.settings?.effective?.l2StandardModel || 'Orchestrator (Neon Extra High)'}`);
+      $('queue-form').classList.add('hidden');
       render(res.snapshot);
       showToast('已保存调度任务');
     } catch (err) {
@@ -463,7 +502,8 @@ export function bindSessionsAndQueueEvents(ctx) {
     $('queue-form').reset();
     $('qf-originalId').value = '';
     delete $('qf-route').dataset.userEdited;
-    $('qf-route').value = `L2 ${state.snap?.settings?.effective?.l2StandardModel || 'Gemini 4 Neon (High)'}`;
+    setModelField('qf-route', `L2 ${state.snap?.settings?.effective?.l2StandardModel || 'Orchestrator (Neon Extra High)'}`);
+    $('queue-form').classList.add('hidden');
   });
 
   $('raw-editor').addEventListener('input', () => {

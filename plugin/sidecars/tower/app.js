@@ -1,8 +1,13 @@
 import {
+  buildModelSelectOptionsHtml,
   computeLivePollPlan,
+  computePaneChromeState,
   computeTabVisibility,
   escHtml as esc,
+  formatWorkspaceLabel,
   nextInlineConfirmState,
+  resolveModelSelectState,
+  summarizeExecutionSurfaces,
 } from './ui-logic.mjs';
 import {
   bindOverviewEvents,
@@ -62,11 +67,39 @@ const state = {
   probeSeq: 0,
   lastProbe: null,
   diagLoaded: false,
+  extraModels: [],
+  extraModelsSig: null,
+  renderedWorkspace: null,
+  dirtyTabs: new Set(),
 };
 
+function setHtmlIfChanged(el, nextHtml) {
+  if (!el) return false;
+  if (el.__ctHtmlSig === nextHtml) return false;
+  el.__ctHtmlSig = nextHtml;
+  el.innerHTML = nextHtml;
+  return true;
+}
+
+function syncTabInkBar() {
+  const nav = document.querySelector('.tabs');
+  const ink = $('tab-ink-bar');
+  const activeBtn = nav?.querySelector('.tab.active');
+  if (!nav || !ink || !activeBtn) return;
+  const w = activeBtn.offsetWidth;
+  if (w <= 0) return;
+  ink.style.width = `${w}px`;
+  ink.style.transform = `translate3d(${activeBtn.offsetLeft}px, 0, 0)`;
+  nav.classList.add('ink-ready');
+}
+
 function syncTheme() {
+  const prefersDark =
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const fallbackBg = prefersDark ? '#161719' : '#f7f7f8';
   const probe = document.createElement('span');
-  probe.style.cssText = 'position:absolute;visibility:hidden;color:var(--background, #0f172a)';
+  probe.style.cssText = `position:absolute;visibility:hidden;color:var(--background, ${fallbackBg})`;
   (document.body || document.documentElement).appendChild(probe);
   const c = getComputedStyle(probe).color;
   probe.remove();
@@ -75,14 +108,23 @@ function syncTheme() {
     const scale = c.startsWith('color(') ? 1 : 255;
     const [r, g, b] = nums.slice(0, 3).map((v) => v / scale);
     const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    document.documentElement.dataset.theme = lum < 0.5 ? 'dark' : 'light';
+    const nextTheme = lum < 0.5 ? 'dark' : 'light';
+    if (document.documentElement.dataset.theme !== nextTheme) {
+      document.documentElement.dataset.theme = nextTheme;
+    }
   }
 }
 syncTheme();
 new MutationObserver(syncTheme).observe(document.documentElement, {
   attributes: true,
-  attributeFilter: ['style'],
+  attributeFilter: ['style', 'class'],
 });
+if (typeof window.matchMedia === 'function') {
+  const mq = window.matchMedia('(prefers-color-scheme: dark)');
+  if (typeof mq.addEventListener === 'function') {
+    mq.addEventListener('change', syncTheme);
+  }
+}
 
 function showToast(msg, isErr = false) {
   const el = $('toast');
@@ -149,14 +191,103 @@ async function withBusyButton(btn, asyncFn) {
   }
 }
 
-async function copyText(text) {
-  if (!text) return false;
+function execCommandCopy(text) {
   try {
-    await navigator.clipboard.writeText(text);
-    return true;
+    const prevFocus = document.activeElement;
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    if (prevFocus && typeof prevFocus.focus === 'function') {
+      try {
+        prevFocus.focus({ preventScroll: true });
+      } catch {
+        // ignore
+      }
+    }
+    return Boolean(ok);
   } catch {
     return false;
   }
+}
+
+async function copyText(text) {
+  if (!text) return false;
+  // Run synchronous execCommand('copy') first while user-gesture activation is still on stack
+  if (execCommandCopy(text)) return true;
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+function getModelField(id) {
+  const sel = $(id);
+  if (!sel) return '';
+  if (sel.value === '__custom__') {
+    return String($(`${id}-custom`)?.value || '').trim();
+  }
+  return String(sel.value || '').trim();
+}
+
+function setModelField(id, rawVal, { inheritLabel = '' } = {}) {
+  const sel = $(id);
+  if (!sel) return;
+  const mode = sel.dataset.modelPicker || 'standard';
+  if (mode === 'inherit' && inheritLabel) {
+    const inhOpt = sel.querySelector('option[data-inherit-opt="1"]');
+    if (inhOpt) inhOpt.textContent = inheritLabel;
+  }
+  const resolved = resolveModelSelectState(rawVal, {
+    mode,
+    extraModels: state.extraModels || [],
+  });
+  sel.value = resolved.selectValue;
+  const cust = $(`${id}-custom`);
+  if (cust) {
+    cust.value = resolved.customValue;
+    cust.classList.toggle('hidden', !resolved.showCustom);
+    cust.required = resolved.showCustom && mode !== 'inherit';
+  }
+}
+
+function syncModelPickerSelects(extraModels = []) {
+  const cleanExtras = Array.isArray(extraModels) ? extraModels.filter(Boolean) : [];
+  const sig = JSON.stringify(cleanExtras);
+  if (state.extraModelsSig === sig) return;
+  const prevValues = new Map();
+  if (state.extraModelsSig !== null) {
+    document.querySelectorAll('.model-select').forEach((sel) => {
+      prevValues.set(sel.id, {
+        val: getModelField(sel.id),
+        inheritText: sel.querySelector('option[data-inherit-opt="1"]')?.textContent || '',
+      });
+    });
+  }
+  state.extraModels = cleanExtras;
+  state.extraModelsSig = sig;
+  document.querySelectorAll('.model-select').forEach((sel) => {
+    const mode = sel.dataset.modelPicker || 'standard';
+    const prev = prevValues.get(sel.id);
+    sel.innerHTML = buildModelSelectOptionsHtml({
+      mode,
+      inheritLabel: prev?.inheritText || '继承全局设置',
+      extraModels: cleanExtras,
+    });
+    if (prev) {
+      setModelField(sel.id, prev.val, { inheritLabel: prev.inheritText });
+    }
+  });
 }
 
 async function api(path, { method = 'GET', body } = {}) {
@@ -205,20 +336,55 @@ function renderWorkspaces(snap) {
   const sel = $('ws-select');
   const items = Array.isArray(snap.recentWorkspaces) ? snap.recentWorkspaces : [];
   const list = snap.workspace && !items.includes(snap.workspace) ? [snap.workspace, ...items] : items;
+  sel.title = snap.workspace || '当前未绑定工作区';
   if (list.length === 0) {
     sel.innerHTML = '<option value="">当前未绑定工作区</option>';
   } else {
-    sel.innerHTML = list
-      .map((ws) => {
-        const shortName = ws.split('/').filter(Boolean).slice(-2).join('/') || ws;
-        return `<option value="${esc(ws)}" ${ws === snap.workspace ? 'selected' : ''}>${esc(shortName)} (${esc(ws)})</option>`;
-      })
-      .join('');
+    const opts = [];
+    if (!snap.workspace) {
+      opts.push('<option value="" selected>未绑定工作区 (点击选择)</option>');
+    }
+    for (const ws of list) {
+      const lbl = formatWorkspaceLabel(ws);
+      opts.push(
+        `<option value="${esc(ws)}" ${ws === snap.workspace ? 'selected' : ''}>${esc(lbl.display)}</option>`
+      );
+    }
+    sel.innerHTML = opts.join('');
   }
+
+  const unboundBox = $('unbound-ws-list');
+  if (unboundBox) {
+    if (!snap.workspace && list.length > 0) {
+      unboundBox.innerHTML = list
+        .slice(0, 5)
+        .map((ws) => {
+          const lbl = formatWorkspaceLabel(ws);
+          return `
+            <div class="item-box">
+              <div class="card-head">
+                <strong>${esc(lbl.display)}</strong>
+                <button type="button" class="btn btn-primary btn-xs switch-ws-card-btn" data-ws="${esc(ws)}">切入</button>
+              </div>
+              <div class="item-meta">${esc(ws)}</div>
+            </div>
+          `;
+        })
+        .join('');
+    } else {
+      unboundBox.innerHTML = '';
+    }
+  }
+
   const relBadge = $('reg-rel-badge');
   if (snap.registryExists && snap.registryRelPath) {
-    relBadge.textContent = snap.registryIsManaged ? '零侵入托管台账' : snap.registryRelPath;
+    relBadge.textContent = snap.registryIsManaged
+      ? '托管'
+      : snap.registryRelPath === '.agents/SESSION-REGISTRY.md'
+        ? '.agents'
+        : snap.registryRelPath;
     relBadge.className = `badge ${snap.registryIsManaged ? '' : 'badge-muted'}`;
+    relBadge.title = snap.registryPath || snap.registryRelPath;
     relBadge.classList.remove('hidden');
   } else {
     relBadge.classList.add('hidden');
@@ -242,9 +408,75 @@ function resetTransientForms() {
   $('qf-originalId').value = '';
   $('af-convId').value = '';
   $('probe-result').classList.add('hidden');
-  ['lease-form', 'ctrl-form', 'session-form', 'archive-form', 'rm-node-form', 'rm-ms-form'].forEach((id) => {
+  [
+    'lease-form',
+    'ctrl-form',
+    'session-form',
+    'archive-form',
+    'rm-node-form',
+    'rm-ms-form',
+    'queue-form',
+    'dispatch-form',
+    'dispatch-policy-hint',
+  ].forEach((id) => {
     $(id)?.classList.add('hidden');
   });
+}
+
+function updateChromeAndTabCounts(snap) {
+  const surfSummary = summarizeExecutionSurfaces(snap?.executionSurfaces);
+  const rmCounts = snap?.roadmap?.exists
+    ? snap.roadmap.graph?.counts || { done: 0, total: 0 }
+    : { done: 0, total: 0 };
+  const chrome = computePaneChromeState({
+    tab: state.tab,
+    hasSnapshot: Boolean(snap),
+    hasWorkspace: Boolean(snap?.workspace),
+    hasReg: Boolean(snap?.registryExists),
+    unreadTotal: Number(snap?.inbox?.unreadCounts?.total || 0),
+    activeSurfacesCount: snap?.executionSurfaces
+      ? surfSummary.totalActive
+      : snap?.parsed?.activeSessions?.length || 0,
+    roadmapDone: Number(rmCounts.done || 0),
+    roadmapTotal: Number(rmCounts.total || 0),
+    queueCount: Number(snap?.parsed?.queue?.length || 0),
+  });
+
+  $('boot-skeleton')?.classList.toggle('hidden', !chrome.showSkeleton);
+  $('unbound-state')?.classList.toggle('hidden', !chrome.showUnbound);
+
+  document.querySelectorAll('.tab').forEach((btn) => {
+    const t = btn.dataset.tab;
+    btn.classList.toggle('needs-init', chrome.needsInitTabs.includes(t));
+  });
+
+  const hintEl = $('empty-tab-hint');
+  if (hintEl) {
+    hintEl.textContent = chrome.emptyTabHint;
+    hintEl.classList.toggle('hidden', !chrome.emptyTabHint);
+  }
+
+  Object.entries(chrome.tabCounts).forEach(([name, text]) => {
+    const el = $(`tab-count-${name}`);
+    if (el && el.textContent !== text) el.textContent = text;
+  });
+  syncTabInkBar();
+}
+
+function flushTabRender(tab, snap) {
+  if (!snap) return;
+  state.dirtyTabs.delete(tab);
+  const hasReg = Boolean(snap.registryExists);
+  if (tab === 'settings') {
+    renderSettings(ctx, snap);
+  } else if (tab === 'roadmap') {
+    renderRoadmap(ctx, snap);
+  } else if (hasReg) {
+    if (tab === 'overview') renderOverview(ctx, snap);
+    else if (tab === 'sessions') renderSessions(ctx, snap);
+    else if (tab === 'queue') renderQueue(ctx, snap);
+    else if (tab === 'raw') renderRaw(ctx, snap);
+  }
 }
 
 function switchTab(tab) {
@@ -254,6 +486,9 @@ function switchTab(tab) {
     btn.classList.toggle('active', isAct);
     btn.setAttribute('aria-selected', isAct ? 'true' : 'false');
   });
+  if (state.snap && state.dirtyTabs.has(tab)) {
+    flushTabRender(tab, state.snap);
+  }
   const vis = computeTabVisibility({
     tab,
     hasReg: Boolean(state.snap?.registryExists),
@@ -263,6 +498,7 @@ function switchTab(tab) {
   Object.entries(vis.visibleTabs).forEach(([name, visible]) => {
     $(`tab-${name}`).classList.toggle('hidden', !visible);
   });
+  updateChromeAndTabCounts(state.snap);
   if (tab === 'settings' && state.settingsScope === 'plugin') {
     loadDiagnostics(ctx, { silent: true });
   }
@@ -270,12 +506,17 @@ function switchTab(tab) {
 
 function switchSettingsScope(scope) {
   state.settingsScope = scope;
+  const scopes = ['plugin', 'global', 'workspace'];
+  const segEl = document.querySelector('.segmented');
+  if (segEl) {
+    segEl.dataset.activeIdx = String(Math.max(0, scopes.indexOf(scope)));
+  }
   document.querySelectorAll('.seg-btn').forEach((btn) => {
     const isAct = btn.dataset.scope === scope;
     btn.classList.toggle('active', isAct);
     btn.setAttribute('aria-selected', isAct ? 'true' : 'false');
   });
-  ['plugin', 'global', 'workspace'].forEach((name) => {
+  scopes.forEach((name) => {
     $(`settings-scope-${name}`).classList.toggle('hidden', name !== scope);
   });
   if (scope === 'plugin') {
@@ -287,6 +528,18 @@ function isUiBusyEditing() {
   const activeTag = document.activeElement?.tagName;
   if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT') return true;
   if (document.querySelector('.btn-confirm-armed')) return true;
+  const openForms = [
+    'lease-form',
+    'ctrl-form',
+    'dispatch-form',
+    'session-form',
+    'archive-form',
+    'rm-node-form',
+    'rm-ms-form',
+    'queue-form',
+    'rm-l1-wrap',
+  ];
+  if (openForms.some((id) => $(id) && !$(id).classList.contains('hidden'))) return true;
   if (
     state.rawDirty ||
     state.rmL1Dirty ||
@@ -298,16 +551,7 @@ function isUiBusyEditing() {
   ) {
     return true;
   }
-  return (
-    !$('lease-form').classList.contains('hidden') ||
-    !$('ctrl-form').classList.contains('hidden') ||
-    !$('session-form').classList.contains('hidden') ||
-    !$('archive-form').classList.contains('hidden') ||
-    !$('dispatch-form').classList.contains('hidden') ||
-    !$('rm-l1-wrap').classList.contains('hidden') ||
-    !$('rm-node-form').classList.contains('hidden') ||
-    !$('rm-ms-form').classList.contains('hidden')
-  );
+  return false;
 }
 
 function connectSseStream(wsTarget = state.workspace) {
@@ -429,23 +673,36 @@ function render(snap) {
   }
   state.snap = snap;
   $('version-badge').textContent = `v${snap.plugin?.version || '1.10.0'}`;
+  syncModelPickerSelects(snap.settings?.global?.customAllowedModels || []);
   applyMotionSetting(snap);
   renderWorkspaces(snap);
   renderGlobalWorkspacesDrawer(ctx, snap);
   renderAttentionBanner(ctx, snap);
 
   const hasReg = Boolean(snap.registryExists);
-  $('empty-ws-path').textContent = snap.workspace ? `当前工作区: ${snap.workspace}` : '';
-  switchTab(state.tab);
-  renderSettings(ctx, snap);
-  renderRoadmap(ctx, snap);
-
-  if (hasReg) {
-    renderOverview(ctx, snap);
-    renderSessions(ctx, snap);
-    renderQueue(ctx, snap);
-    renderRaw(ctx, snap);
+  const wsPill = $('empty-ws-path');
+  if (wsPill) {
+    wsPill.textContent = snap.workspace || '';
+    wsPill.classList.toggle('hidden', !snap.workspace);
   }
+  const wsKey = `${snap.workspace || '__unbound__'}:${hasReg ? '1' : '0'}`;
+  const isFirstForWs = state.renderedWorkspace !== wsKey;
+  if (isFirstForWs) {
+    state.renderedWorkspace = wsKey;
+    state.dirtyTabs.clear();
+    renderSettings(ctx, snap);
+    renderRoadmap(ctx, snap);
+    if (hasReg) {
+      renderOverview(ctx, snap);
+      renderSessions(ctx, snap);
+      renderQueue(ctx, snap);
+      renderRaw(ctx, snap);
+    }
+  } else {
+    ['overview', 'sessions', 'roadmap', 'queue', 'raw', 'settings'].forEach((t) => state.dirtyTabs.add(t));
+    flushTabRender(state.tab, snap);
+  }
+  switchTab(state.tab);
   updateLivePollControls(snap);
 }
 
@@ -454,6 +711,8 @@ async function refresh(wsOverride, { recordSelection = false, silent = false } =
   if (wsOverride !== undefined && wsOverride !== state.workspace) {
     resetTransientForms();
     state.workspace = wsOverride;
+    state.renderedWorkspace = null;
+    state.dirtyTabs.clear();
   }
   const seq = ++state.refreshSeq;
   state.pollInFlight = true;
@@ -466,10 +725,17 @@ async function refresh(wsOverride, { recordSelection = false, silent = false } =
       });
       snap = res.snapshot;
     } else {
-      const qs = targetWs ? `?workspace=${encodeURIComponent(targetWs)}` : '';
-      snap = await api(`/api/snapshot${qs}`);
+      const sp = new URLSearchParams();
+      if (targetWs) sp.set('workspace', targetWs);
+      if (silent && state.snap?.stateSig && (state.snap.workspace || '') === (targetWs || '')) {
+        sp.set('sinceSig', state.snap.stateSig);
+      }
+      const qs = sp.toString();
+      snap = await api(`/api/snapshot${qs ? `?${qs}` : ''}`);
+      if (snap?.unchanged) return;
     }
     if (seq !== state.refreshSeq) return;
+    if (silent && isUiBusyEditing()) return;
     state.workspace = snap.workspace || '';
     if (!silent) {
       state.rawDirty = false;
@@ -502,7 +768,31 @@ const ctx = {
   sendToActiveController,
   switchTab,
   switchSettingsScope,
+  getModelField,
+  setModelField,
+  setHtmlIfChanged,
 };
+
+syncModelPickerSelects([]);
+document.addEventListener('change', (e) => {
+  const sel = e.target.closest?.('.model-select');
+  if (!sel) return;
+  const cust = $(`${sel.id}-custom`);
+  const isCustom = sel.value === '__custom__';
+  if (cust) {
+    cust.classList.toggle('hidden', !isCustom);
+    cust.required = isCustom && sel.dataset.modelPicker !== 'inherit';
+    if (isCustom) cust.focus();
+  }
+  if (sel.id === 'df-model') sel.dataset.userEdited = '1';
+  if (sel.id === 'qf-route') sel.dataset.userEdited = '1';
+});
+document.addEventListener('input', (e) => {
+  const cust = e.target.closest?.('.model-custom-input');
+  if (!cust) return;
+  if (cust.id === 'df-model-custom') $('df-model').dataset.userEdited = '1';
+  if (cust.id === 'qf-route-custom') $('qf-route').dataset.userEdited = '1';
+});
 
 function bindArrowTabNav(selector, activateBtn) {
   const container = document.querySelector(selector);
@@ -533,21 +823,64 @@ $('poll-toggle-btn').addEventListener('click', () => {
   if (!state.pollPausedByUser) state.sseFailCount = 0;
   if (state.snap) updateLivePollControls(state.snap);
 });
-$('refresh-btn').addEventListener('click', () => refresh());
+$('refresh-btn').addEventListener('click', () => {
+  const btn = $('refresh-btn');
+  btn.classList.remove('is-spinning');
+  void btn.offsetWidth;
+  btn.classList.add('is-spinning');
+  refresh();
+});
+$('refresh-btn').addEventListener('animationend', () => {
+  $('refresh-btn').classList.remove('is-spinning');
+});
 $('ws-select').addEventListener('change', (e) => {
   if (e.target.value) refresh(e.target.value, { recordSelection: true });
 });
 $('global-ws-btn').addEventListener('click', () => {
-  $('global-ws-drawer').classList.toggle('hidden');
+  const dr = $('global-ws-drawer');
+  dr.classList.toggle('hidden');
+  if (!dr.classList.contains('hidden') && state.snap) {
+    renderGlobalWorkspacesDrawer(ctx, state.snap, { forceList: true });
+  }
 });
 $('close-global-ws-btn').addEventListener('click', () => {
   $('global-ws-drawer').classList.add('hidden');
 });
 
-// Empty-state registry initialization
-$('init-relpath').addEventListener('change', (e) => {
-  $('init-custom-wrap').classList.toggle('hidden', e.target.value !== '__custom__');
+window.addEventListener(
+  'scroll',
+  () => {
+    document.querySelector('.topbar')?.classList.toggle('is-scrolled', window.scrollY > 4);
+  },
+  { passive: true }
+);
+if (typeof ResizeObserver === 'function') {
+  const tabsNav = document.querySelector('.tabs');
+  if (tabsNav) new ResizeObserver(() => syncTabInkBar()).observe(tabsNav);
+}
+requestAnimationFrame(syncTabInkBar);
+
+// Empty-state & Unbound-state controls
+function syncInitModeCards(relPath) {
+  document.querySelectorAll('.mode-card').forEach((card) => {
+    const active = card.dataset.relpath === relPath;
+    card.classList.toggle('active', active);
+    card.setAttribute('aria-checked', active ? 'true' : 'false');
+  });
+  $('init-custom-wrap')?.classList.toggle('hidden', relPath !== '__custom__');
+}
+document.querySelectorAll('.mode-card').forEach((card) => {
+  card.addEventListener('click', () => {
+    const rel = card.dataset.relpath;
+    if (!rel) return;
+    $('init-relpath').value = rel;
+    syncInitModeCards(rel);
+  });
 });
+$('init-relpath').addEventListener('change', (e) => {
+  syncInitModeCards(e.target.value);
+});
+$('unbound-open-settings-btn')?.addEventListener('click', () => switchTab('settings'));
 $('init-registry-btn').addEventListener('click', async () => {
   if (!state.workspace) return;
   let relPath = $('init-relpath').value;
@@ -642,12 +975,13 @@ document.body.addEventListener('click', async (e) => {
       const node = res.node || {};
       switchTab('sessions');
       $('dispatch-form').classList.remove('hidden');
+      $('dispatch-policy-hint')?.classList.remove('hidden');
       $('df-workstreamId').value = node.id || rmFill.dataset.id;
       $('df-workstream-text').textContent = `已关联路线图分支: ${node.id || rmFill.dataset.id} (${node.title || ''})，拉起后自动回链`;
       $('df-workstream-note').classList.remove('hidden');
       $('df-topic').value = `${node.id} ${node.title || ''}`.trim();
       if (node.recommendedModel) {
-        $('df-model').value = node.recommendedModel;
+        setModelField('df-model', node.recommendedModel);
         $('df-model').dataset.userEdited = '1';
       }
       $('df-prompt').value = res.contractPrompt || '';
@@ -712,7 +1046,7 @@ document.body.addEventListener('click', async (e) => {
       $('rnf-collaboration').value = node.collaboration || 'swarm_channel';
       $('rnf-dependsOn').value = (node.dependsOn || []).join(', ');
       $('rnf-ownership').value = (node.ownership || []).join(', ');
-      $('rnf-model').value = node.recommendedModel || 'Gemini 4 Neon (High)';
+      setModelField('rnf-model', node.recommendedModel || 'Orchestrator (Neon Extra High)');
       $('rnf-acceptance').value = node.acceptance || '';
       $('rm-node-form').classList.remove('hidden');
     }
@@ -757,11 +1091,24 @@ document.body.addEventListener('click', async (e) => {
 
   const clearOv = e.target.closest('.ws-clear-ov');
   if (clearOv?.dataset.key && state.workspace) {
+    const key = clearOv.dataset.key;
     try {
       const res = await api('/api/settings/workspace', {
         method: 'POST',
-        body: { workspace: state.workspace, overrides: { [clearOv.dataset.key]: null } },
+        body: { workspace: state.workspace, overrides: { [key]: null } },
       });
+      const ovEl = $(`ws-ov-${key}`);
+      if (ovEl?.classList.contains('model-select')) {
+        const gVal = res.snapshot?.settings?.global?.[key] || '-';
+        setModelField(`ws-ov-${key}`, '', { inheritLabel: `继承全局 (${gVal})` });
+      } else if (ovEl) {
+        ovEl.value = '';
+      }
+      const tagEl = $(`ov-tag-${key}`);
+      if (tagEl) {
+        tagEl.textContent = '继承全局';
+        tagEl.className = 'badge badge-muted';
+      }
       render(res.snapshot);
       showToast('已恢复继承全局设置');
     } catch (err) {
@@ -886,7 +1233,8 @@ document.body.addEventListener('click', async (e) => {
       $('qf-id').value = row.id;
       $('qf-summary').value = row.summary;
       $('qf-status').value = row.status;
-      $('qf-route').value = row.route;
+      setModelField('qf-route', row.route);
+      $('queue-form')?.classList.remove('hidden');
     }
     return;
   }

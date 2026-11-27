@@ -22,6 +22,11 @@ test('registry parses and mutates Sections 1..5 cleanly while sanitizing markdow
   assert.ok(templates.handoverTemplate.includes('总控换届快照'));
 
   let md = templates.registrySkeleton;
+  const initParsed = parseRegistry(md);
+  assert.equal(initParsed.queue.length, 0, 'Skeleton <T1> placeholder must not parse as a real queue item');
+  assert.equal(initParsed.controller.defaultModel, 'Gemini 4 Neon (XHigh)');
+  assert.equal(initParsed.lease.lockStatus.includes('`'), false, 'Lease lockStatus must not retain stray backticks');
+
   const ctrlId = makeConvId('c', '1', '4', '8', 'a');
   const workerId = makeConvId('b', '2', '4', '8', 'd');
 

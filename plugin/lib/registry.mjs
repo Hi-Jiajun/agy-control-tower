@@ -46,7 +46,7 @@ function cleanMdVal(text) {
   let s = String(text ?? '').trim();
   if (s.startsWith('**') && s.endsWith('**') && s.length > 4) s = s.slice(2, -2).trim();
   if (s.startsWith('`') && s.endsWith('`') && s.length > 2) s = s.slice(1, -1).trim();
-  return s;
+  return s.replace(/`/g, '').trim();
 }
 
 export function sanitizeCell(val, { backtick = false } = {}) {
@@ -123,7 +123,9 @@ export function parseRegistry(mdText) {
         const stM = line.match(/状态[：:]\s*`?([A-Za-z0-9_-]+)`?/);
         if (stM) result.controller.currentControllerStatus = stM[1];
       } else if (line.includes('常驻模型配置')) {
-        result.controller.defaultModel = line.replace(/^-\s*\*\*常驻模型配置\*\*[：:]\s*/, '').trim();
+        result.controller.defaultModel = cleanMdVal(
+          line.replace(/^-\s*\*\*常驻模型配置\*\*[：:]\s*/, '').trim()
+        );
       }
       continue;
     }
@@ -184,7 +186,7 @@ export function parseRegistry(mdText) {
       });
     } else if (section === 'queue' && cells.length >= 4) {
       const first = cleanMdVal(cells[0]);
-      if (!first || first === '暂无' || first === '-') continue;
+      if (!first || first === '暂无' || first === '-' || PLACEHOLDER_RE.test(first)) continue;
       result.queue.push({
         id: first,
         summary: cleanMdVal(cells[1]),
@@ -496,7 +498,7 @@ export function upsertQueueRow(mdText, item) {
     const cells = splitMdRow(lines[i]);
     if (!cells) continue;
     const rowId = cleanMdVal(cells[0]);
-    if (rowId === '暂无' || rowId === '-') continue;
+    if (!rowId || rowId === '暂无' || rowId === '-' || PLACEHOLDER_RE.test(rowId)) continue;
     if (rowId === origClean || rowId === idClean) {
       if (!replaced) {
         kept.push(newLine);
@@ -533,7 +535,7 @@ export function deleteQueueRow(mdText, id) {
       removed = true;
       continue;
     }
-    if (rowId && rowId !== '暂无' && rowId !== '-') kept.push(lines[i]);
+    if (rowId && rowId !== '暂无' && rowId !== '-' && !PLACEHOLDER_RE.test(rowId)) kept.push(lines[i]);
   }
   if (!removed) throw new PathError(404, `Task ${targetId} not found in queue`);
   if (kept.length === 0) kept.push('| `暂无` | - | - | - |');

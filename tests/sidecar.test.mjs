@@ -618,6 +618,53 @@ if (args.includes('new-conversation')) {
     const headBundle = await fetch(`${base}/app.bundle.js`, { method: 'HEAD' });
     assert.equal(headBundle.status, 200);
     assert.equal(await headBundle.text(), '');
+
+    // 20) Backend model guard enforcement on settings & controller updates
+    assert.equal(
+      (await req('POST', '/api/settings/global', { workspace: ws, l2StandardModel: 'Gemini 4 Argon (High)' })).status,
+      400
+    );
+    assert.equal(
+      (await req('POST', '/api/settings/global', { workspace: ws, l0ControllerModel: 'gemini-3.8-flash' })).status,
+      400
+    );
+    assert.equal(
+      (await req('POST', '/api/settings/workspace', { workspace: ws, overrides: { l2StandardModel: 'flash' } })).status,
+      400
+    );
+    assert.equal(
+      (
+        await req('POST', '/api/controller/update', {
+          workspace: ws,
+          controllerId: ctrlId,
+          defaultModel: 'Gemini 4 Argon',
+        })
+      ).status,
+      400
+    );
+    const allowCustomGlobal = await req('POST', '/api/settings/global', {
+      workspace: ws,
+      modelGuardPolicy: 'custom_allowlist',
+      customAllowedModels: ['custom-corp-v4'],
+      l2StandardModel: 'custom-corp-v4',
+    });
+    assert.equal(allowCustomGlobal.status, 200);
+    assert.equal(allowCustomGlobal.data.snapshot.settings.effective.l2StandardModel, 'custom-corp-v4');
+
+    // 21) Snapshot stateSig short-circuit for zero-payload silent polling
+    const fullSnap = await req('GET', `/api/snapshot?workspace=${encodeURIComponent(ws)}`);
+    assert.equal(fullSnap.status, 200);
+    assert.ok(typeof fullSnap.data.stateSig === 'string' && fullSnap.data.stateSig.length === 16);
+    const t0Short = performance.now();
+    const shortSnap = await req(
+      'GET',
+      `/api/snapshot?workspace=${encodeURIComponent(ws)}&sinceSig=${encodeURIComponent(fullSnap.data.stateSig)}`
+    );
+    const shortElapsedMs = performance.now() - t0Short;
+    assert.equal(shortSnap.status, 200);
+    assert.equal(shortSnap.data.unchanged, true);
+    assert.equal(shortSnap.data.stateSig, fullSnap.data.stateSig);
+    assert.ok(shortElapsedMs < 80, `Expected fast unchanged snapshot short-circuit (<80ms), got ${shortElapsedMs.toFixed(1)}ms`);
   } finally {
     if (server) await server.close();
     process.env = prevEnv;

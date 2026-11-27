@@ -1,6 +1,7 @@
 import {
   buildPrefilledHandoverText,
   computeControllerHealth,
+  computeOverviewRestraint,
   escHtml as esc,
   formatFocusGateBadge,
   formatGlobalWorkspacesBadge,
@@ -8,8 +9,8 @@ import {
   isLeaseIdle,
 } from '../ui-logic.mjs';
 
-export function renderGlobalWorkspacesDrawer(ctx, snap) {
-  const { $ } = ctx;
+export function renderGlobalWorkspacesDrawer(ctx, snap, { forceList = false } = {}) {
+  const { $, setHtmlIfChanged } = ctx;
   const mw = snap?.multiWorkspace || { workspaceCount: 0, totalP0: 0, totalP1: 0, workspaces: [] };
   const badgeInfo = formatGlobalWorkspacesBadge(mw);
   const badgeEl = $('global-ws-badge');
@@ -18,14 +19,17 @@ export function renderGlobalWorkspacesDrawer(ctx, snap) {
     badgeEl.className = `badge ${badgeInfo.badgeClass}`;
   }
 
+  const drawerEl = $('global-ws-drawer');
+  if (!forceList && drawerEl?.classList.contains('hidden')) return;
+
   const box = $('global-ws-list');
   if (!box) return;
   const list = Array.isArray(mw.workspaces) ? mw.workspaces : [];
   if (list.length === 0) {
-    box.innerHTML = '<p class="muted">暂无已记录的工作区。</p>';
+    setHtmlIfChanged(box, '<p class="empty-inline">暂无已记录的工作区。</p>');
     return;
   }
-  box.innerHTML = list
+  const html = list
     .map((w) => {
       const uc = w.unreadCounts || { P0: 0, P1: 0, P2: 0, total: 0 };
       const inboxCls =
@@ -59,6 +63,7 @@ export function renderGlobalWorkspacesDrawer(ctx, snap) {
       `;
     })
     .join('');
+  setHtmlIfChanged(box, html);
 }
 
 export function renderAttentionBanner(ctx, snap) {
@@ -97,30 +102,48 @@ export function renderAttentionBanner(ctx, snap) {
 }
 
 export function renderOverview(ctx, snap) {
-  const { $ } = ctx;
+  const { $, setModelField, setHtmlIfChanged } = ctx;
   const eff = snap.settings?.effective || {};
   const leaseEnabled = eff.exclusiveLeaseEnabled !== false;
   const lease = snap.parsed?.lease || {};
   const statusText = leaseEnabled ? lease.lockStatus || '-' : '无独占资源模式';
+  const inbox = snap.inbox || {
+    focus: { mode: 'idle' },
+    unreadCounts: { P0: 0, P1: 0, P2: 0, total: 0 },
+    items: [],
+  };
+  const uc = inbox.unreadCounts || { P0: 0, P1: 0, P2: 0, total: 0 };
+  const restraint = computeOverviewRestraint({
+    leaseEnabled,
+    lockStatus: statusText,
+    unreadTotal: uc.total || 0,
+  });
+
   const pill = $('lease-status-pill');
   pill.textContent = statusText;
   const isIdle = isLeaseIdle(statusText, leaseEnabled);
   pill.className = `badge ${isIdle ? 'badge-ok' : 'badge-warn'}`;
 
+  $('release-lease-btn')?.classList.toggle('hidden', !restraint.showReleaseLeaseBtn);
   $('lease-disabled-note').classList.toggle('hidden', leaseEnabled);
   $('lease-active-wrap').classList.toggle('hidden', !leaseEnabled);
 
   if (leaseEnabled) {
-    $('lease-view').innerHTML = [
-      ['锁状态', lease.lockStatus || '-'],
-      ['持锁会话', lease.holder || '-'],
-      ['独占对象', lease.resource || '-'],
-      ['起始时间', lease.since || '-'],
-      ['操作范围', lease.scope || '-'],
-      ['解锁判据', lease.releaseCriteria || '-'],
-    ]
-      .map(([k, v]) => `<div class="kv-k">${esc(k)}</div><div class="kv-v">${esc(v)}</div>`)
-      .join('');
+    $('lease-idle-summary')?.classList.toggle('hidden', restraint.showFullLeaseGrid);
+    $('lease-view')?.classList.toggle('hidden', !restraint.showFullLeaseGrid);
+    setHtmlIfChanged(
+      $('lease-view'),
+      [
+        ['锁状态', lease.lockStatus || '-'],
+        ['持锁会话', lease.holder || '-'],
+        ['独占对象', lease.resource || '-'],
+        ['起始时间', lease.since || '-'],
+        ['操作范围', lease.scope || '-'],
+        ['解锁判据', lease.releaseCriteria || '-'],
+      ]
+        .map(([k, v]) => `<div class="kv-k">${esc(k)}</div><div class="kv-v">${esc(v)}</div>`)
+        .join('')
+    );
 
     if ($('lease-form').classList.contains('hidden')) {
       $('lf-lockStatus').value = lease.lockStatus || '';
@@ -148,67 +171,89 @@ export function renderOverview(ctx, snap) {
   const autoBadge = $('ctrl-autonomy-badge');
   autoBadge.textContent = `代决策: ${eff.effectiveAutonomy || 'balanced'}`;
 
+  const cleanCtrlModel = String(ctrl.defaultModel || eff.l0ControllerModel || '-')
+    .replace(/^`+|`+$/g, '')
+    .trim();
   const stepStr = tel.exists ? `${tel.maxStepIndex || tel.lineCount} 步 (${tel.lineCount} 条)` : '未定位到日志';
-  $('ctrl-view').innerHTML = [
-    ['总控 ID', ctrl.currentControllerId || '未登记'],
-    ['常驻模型', ctrl.defaultModel || eff.l0ControllerModel || '-'],
-    ['运行状态', `${ctrl.currentControllerStatus || '-'} | ${tel.lastModel || '-'}`],
-    ['日志进度', `${stepStr}${tel.lastUpdatedAt ? ` | ${tel.lastUpdatedAt}` : ''}`],
-  ]
-    .map(([k, v]) => `<div class="kv-k">${esc(k)}</div><div class="kv-v">${esc(v)}</div>`)
-    .join('');
+  const ctrlStatusUpper = String(ctrl.currentControllerStatus || '').toUpperCase();
+  const statusDotCls =
+    ctrlStatusUpper === 'ONLINE' ? 'online' : ctrlStatusUpper === 'HANDOVER' ? 'warn' : '';
+  const statusHtml = `<span class="status-dot-inline ${statusDotCls}"></span>${esc(ctrl.currentControllerStatus || '-')} | ${esc(tel.lastModel || '-')}`;
+  setHtmlIfChanged(
+    $('ctrl-view'),
+    [
+      ['总控 ID', esc(ctrl.currentControllerId || '未登记')],
+      ['常驻模型', esc(cleanCtrlModel || '-')],
+      ['运行状态', statusHtml],
+      ['日志进度', esc(`${stepStr}${tel.lastUpdatedAt ? ` | ${tel.lastUpdatedAt}` : ''}`)],
+    ]
+      .map(([k, vHtml]) => `<div class="kv-k">${esc(k)}</div><div class="kv-v">${vHtml}</div>`)
+      .join('')
+  );
 
   if ($('ctrl-form').classList.contains('hidden')) {
     $('cf-controllerId').value = ctrl.currentControllerId || window.sidecar?.conversationId || '';
     $('cf-status').value = ctrl.currentControllerStatus || 'ONLINE';
-    $('cf-defaultModel').value = ctrl.defaultModel || eff.l0ControllerModel || 'Gemini 4 Neon (XHigh)';
+    setModelField(
+      'cf-defaultModel',
+      cleanCtrlModel && cleanCtrlModel !== '-' ? cleanCtrlModel : 'Gemini 4 Neon (XHigh)'
+    );
   }
 
   // Zero-token Sentinel & Priority Inbox
-  const inbox = snap.inbox || {
-    focus: { mode: 'idle' },
-    unreadCounts: { P0: 0, P1: 0, P2: 0, total: 0 },
-    items: [],
-  };
   const focusBadge = formatFocusGateBadge(inbox.focus);
   const fbEl = $('inbox-focus-badge');
   fbEl.textContent = focusBadge.text;
   fbEl.className = `badge ${focusBadge.badgeClass}`;
 
-  const uc = inbox.unreadCounts || { P0: 0, P1: 0, P2: 0, total: 0 };
-  $('inbox-counts-badge').textContent = `未读 ${uc.total || 0} (P0:${uc.P0 || 0} P1:${uc.P1 || 0} P2:${uc.P2 || 0})`;
+  const totalUnread = Number(uc.total || 0);
+  $('inbox-counts-badge').textContent =
+    totalUnread > 0
+      ? `未读 ${totalUnread} (P0:${uc.P0 || 0} P1:${uc.P1 || 0} P2:${uc.P2 || 0})`
+      : '未读 0';
   $('inbox-counts-badge').className = `badge ${
     (uc.P0 || 0) > 0 ? 'badge-danger' : (uc.P1 || 0) > 0 ? 'badge-warn' : 'badge-muted'
   }`;
 
+  const deliverAllBtn = $('inbox-deliver-all-btn');
+  if (deliverAllBtn) {
+    deliverAllBtn.disabled = !restraint.canDeliverInbox;
+    deliverAllBtn.classList.toggle('btn-primary', restraint.canDeliverInbox);
+    deliverAllBtn.classList.toggle('btn-ghost', !restraint.canDeliverInbox);
+  }
+  $('inbox-ack-all-btn')?.classList.toggle('hidden', !restraint.canAckAllInbox);
+
   const inboxList = $('inbox-list');
   const items = Array.isArray(inbox.items) ? inbox.items.slice(0, 12) : [];
   if (items.length === 0) {
-    inboxList.innerHTML = '<p class="muted">哨兵巡检正常，暂无待处理后台事件。</p>';
+    setHtmlIfChanged(inboxList, '<p class="empty-inline">哨兵巡检正常，暂无待处理后台事件。</p>');
   } else {
-    inboxList.innerHTML = items
-      .map((it) => {
-        const pCls = formatInboxPriorityClass(it.priority);
-        return `
-          <div class="item-box ${it.acked ? 'inbox-row-acked' : ''}">
-            <div class="card-head">
-              <strong>${esc(it.title || it.kind)}</strong>
-              <span class="badge ${pCls}">${esc(it.priority)}${it.acked ? ' 已读' : ''}</span>
+    setHtmlIfChanged(
+      inboxList,
+      items
+        .map((it) => {
+          const pCls = formatInboxPriorityClass(it.priority);
+          return `
+            <div class="item-box ${it.acked ? 'inbox-row-acked' : ''}">
+              <div class="card-head">
+                <strong>${esc(it.title || it.kind)}</strong>
+                <span class="badge ${pCls}">${esc(it.priority)}${it.acked ? ' 已读' : ''}</span>
+              </div>
+              <div class="item-meta">${esc(it.summary || '-')}</div>
+              ${
+                !it.acked
+                  ? `<div class="actions">
+                      <button class="btn btn-ghost btn-xs inbox-deliver-btn" data-id="${esc(it.id)}">投递</button>
+                      <button class="btn btn-ghost btn-xs inbox-ack-btn" data-id="${esc(it.id)}">已读</button>
+                      ${it.convId ? `<button class="btn btn-ghost btn-xs jump-conv-btn" data-id="${esc(it.convId)}">跳转</button>` : ''}
+                    </div>`
+                  : ''
+              }
             </div>
-            <div class="item-meta">${esc(it.summary || '-')}</div>
-            ${
-              !it.acked
-                ? `<div class="actions">
-                    <button class="btn btn-primary btn-sm inbox-deliver-btn" data-id="${esc(it.id)}">投递总控</button>
-                    <button class="btn btn-ghost btn-sm inbox-ack-btn" data-id="${esc(it.id)}">已读</button>
-                    ${it.convId ? `<button class="btn btn-ghost btn-sm jump-conv-btn" data-id="${esc(it.convId)}">跳转</button>` : ''}
-                  </div>`
-                : ''
-            }
-          </div>
-        `;
-      })
-      .join('');
+          `;
+        })
+        .join('')
+    );
   }
 }
 
@@ -223,6 +268,7 @@ export async function spawnHandoverController(ctx, oldCtrlId) {
       body: {
         workspace: state.workspace,
         handoverForWorkspace: true,
+        sourceConversationId: window.sidecar?.conversationId || '',
         model,
         title: 'Control Tower 换届接班总控',
         message: handoverPrompt,
@@ -246,7 +292,7 @@ export async function spawnHandoverController(ctx, oldCtrlId) {
 }
 
 export function bindOverviewEvents(ctx) {
-  const { $, state, api, render, showToast, withBusyButton, copyText } = ctx;
+  const { $, state, api, render, showToast, withBusyButton, copyText, setModelField, getModelField } = ctx;
 
   $('edit-lease-btn').addEventListener('click', () => {
     const wasHidden = $('lease-form').classList.contains('hidden');
@@ -311,9 +357,12 @@ export function bindOverviewEvents(ctx) {
     if (wasHidden && state.snap) {
       const ctrl = state.snap.parsed?.controller || {};
       const eff = state.snap.settings?.effective || {};
+      const cleanModel = String(ctrl.defaultModel || eff.l0ControllerModel || 'Gemini 4 Neon (XHigh)')
+        .replace(/^`+|`+$/g, '')
+        .trim();
       $('cf-controllerId').value = ctrl.currentControllerId || window.sidecar?.conversationId || '';
       $('cf-status').value = ctrl.currentControllerStatus || 'ONLINE';
-      $('cf-defaultModel').value = ctrl.defaultModel || eff.l0ControllerModel || 'Gemini 4 Neon (XHigh)';
+      setModelField('cf-defaultModel', cleanModel && cleanModel !== '-' ? cleanModel : 'Gemini 4 Neon (XHigh)');
     }
     $('ctrl-form').classList.toggle('hidden');
   });
@@ -356,7 +405,7 @@ export function bindOverviewEvents(ctx) {
           expectedHash: state.snap.hash,
           controllerId: $('cf-controllerId').value.trim(),
           status: $('cf-status').value,
-          defaultModel: $('cf-defaultModel').value.trim(),
+          defaultModel: getModelField('cf-defaultModel'),
           appendHistory: $('cf-appendHistory').checked,
           summary: $('cf-summary').value.trim(),
         },

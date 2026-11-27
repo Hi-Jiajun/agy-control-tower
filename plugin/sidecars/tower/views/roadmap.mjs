@@ -6,7 +6,7 @@ import {
 } from '../ui-logic.mjs';
 
 export function renderRoadmap(ctx, snap) {
-  const { $, state } = ctx;
+  const { $, state, setHtmlIfChanged } = ctx;
   const rm = snap.roadmap || { exists: false };
   $('rm-empty').classList.toggle('hidden', Boolean(rm.exists));
   $('rm-body').classList.toggle('hidden', !rm.exists);
@@ -26,23 +26,26 @@ export function renderRoadmap(ctx, snap) {
   };
   const msBox = $('rm-milestones-list');
   if (graph.milestoneStats.length === 0) {
-    msBox.innerHTML = '<p class="muted">暂无里程碑记录</p>';
+    setHtmlIfChanged(msBox, '<p class="empty-inline">暂无里程碑记录</p>');
   } else {
-    msBox.innerHTML = graph.milestoneStats
-      .map((m) => {
-        const pct = Math.min(100, Math.max(0, Number(m.pct) || 0));
-        return `
-        <div class="item-box">
-          <div class="card-head">
-            <strong>${esc(m.id)} | ${esc(m.title)}</strong>
-            <span class="badge ${pct === 100 ? 'badge-ok' : 'badge-muted'}">${esc(m.done)}/${esc(m.total)} (${esc(pct)}%)</span>
+    setHtmlIfChanged(
+      msBox,
+      graph.milestoneStats
+        .map((m) => {
+          const pct = Math.min(100, Math.max(0, Number(m.pct) || 0));
+          return `
+          <div class="item-box">
+            <div class="card-head">
+              <strong>${esc(m.id)} | ${esc(m.title)}</strong>
+              <span class="badge ${pct === 100 ? 'badge-ok' : 'badge-muted'}">${esc(m.done)}/${esc(m.total)} (${esc(pct)}%)</span>
+            </div>
+            <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
+            <div class="item-meta">DoD: ${esc(m.dod)} | 就绪 ${esc(m.ready)} / 进行中 ${esc(m.active)} / 阻塞 ${esc(m.blocked)}</div>
           </div>
-          <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
-          <div class="item-meta">DoD: ${esc(m.dod)} | 就绪 ${esc(m.ready)} / 进行中 ${esc(m.active)} / 阻塞 ${esc(m.blocked)}</div>
-        </div>
-      `;
-      })
-      .join('');
+        `;
+        })
+        .join('')
+    );
   }
 
   const overlaps = graph.overlaps || [];
@@ -56,10 +59,10 @@ export function renderRoadmap(ctx, snap) {
   $('rm-nodes-badge').textContent = `${graph.counts.done}/${graph.counts.total} | 就绪 ${graph.counts.ready}`;
   const nodesBox = $('rm-nodes-list');
   if (graph.nodes.length === 0) {
-    nodesBox.innerHTML = '<p class="muted">暂无分支工作包，点击右上角「新增分支」开始渐进式细化。</p>';
+    setHtmlIfChanged(nodesBox, '<p class="empty-inline">暂无分支工作包，点击右上角「+ 新增分支」开始渐进式细化。</p>');
     return;
   }
-  nodesBox.innerHTML = graph.nodes
+  const nodesHtml = graph.nodes
     .map((n) => {
       const st = formatRoadmapStatusBadge(n.effectiveStatus);
       const depsLine =
@@ -81,7 +84,7 @@ export function renderRoadmap(ctx, snap) {
         `
         : '';
       return `
-        <div class="item-box">
+        <div class="item-box" data-node-status="${esc(n.effectiveStatus || 'planned')}">
           <div class="card-head">
             <strong>${esc(n.id)} | ${esc(n.title)}</strong>
             <span class="badge ${st.badgeClass}">${esc(st.text)}</span>
@@ -103,10 +106,11 @@ export function renderRoadmap(ctx, snap) {
       `;
     })
     .join('');
+  setHtmlIfChanged(nodesBox, nodesHtml);
 }
 
 export function bindRoadmapEvents(ctx) {
-  const { $, state, api, render, showToast } = ctx;
+  const { $, state, api, render, showToast, setModelField, getModelField } = ctx;
 
   $('rm-init-ws-btn').addEventListener('click', async () => {
     if (!state.workspace) return;
@@ -149,6 +153,7 @@ export function bindRoadmapEvents(ctx) {
     if (wasHidden || wasEditing) {
       formEl.reset();
       $('rnf-originalId').value = '';
+      setModelField('rnf-model', state.snap?.settings?.effective?.l2StandardModel || 'Orchestrator (Neon Extra High)');
       formEl.classList.remove('hidden');
     } else {
       formEl.classList.add('hidden');
@@ -157,6 +162,7 @@ export function bindRoadmapEvents(ctx) {
   $('rm-node-cancel-btn').addEventListener('click', () => {
     $('rm-node-form').reset();
     $('rnf-originalId').value = '';
+    setModelField('rnf-model', state.snap?.settings?.effective?.l2StandardModel || 'Orchestrator (Neon Extra High)');
     $('rm-node-form').classList.add('hidden');
   });
 
@@ -225,12 +231,13 @@ export function bindRoadmapEvents(ctx) {
           collaboration: $('rnf-collaboration').value,
           dependsOn: $('rnf-dependsOn').value.trim(),
           ownership: $('rnf-ownership').value.trim(),
-          recommendedModel: $('rnf-model').value.trim(),
+          recommendedModel: getModelField('rnf-model'),
           acceptance: $('rnf-acceptance').value.trim(),
         },
       });
       $('rm-node-form').reset();
       $('rnf-originalId').value = '';
+      setModelField('rnf-model', res.snapshot?.settings?.effective?.l2StandardModel || 'Orchestrator (Neon Extra High)');
       $('rm-node-form').classList.add('hidden');
       render(res.snapshot);
       showToast('已保存路线图分支节点');

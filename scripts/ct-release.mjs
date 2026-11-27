@@ -11,7 +11,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { appendFlightEvent } from '../plugin/lib/logger.mjs';
 import { readJsonSafe, resolvePluginDataDir } from '../plugin/lib/paths.mjs';
-import { runDoctor } from './ct-doctor.mjs';
+import { inspectRunningSidecars, runDoctor } from './ct-doctor.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
@@ -144,6 +144,36 @@ export function createSnapshot({
   };
 }
 
+function recycleStaleSidecars(cfgDir, resolvedDataDir) {
+  const installedDir = join(cfgDir, 'plugins', 'control-tower');
+  const procCheck = inspectRunningSidecars(installedDir);
+  if (!procCheck.supported || procCheck.stale.length === 0) return [];
+  const recycled = [];
+  for (const s of procCheck.stale) {
+    try {
+      process.kill(s.pid, 'SIGTERM');
+      recycled.push(s.pid);
+    } catch {
+      // already exited
+    }
+  }
+  if (recycled.length > 0) {
+    const waitBuf = new Int32Array(new SharedArrayBuffer(4));
+    for (let i = 0; i < 8; i++) {
+      if (recycled.every((pid) => !existsSync(`/proc/${pid}`))) break;
+      Atomics.wait(waitBuf, 0, 0, 35);
+    }
+    appendFlightEvent(resolvedDataDir, {
+      level: 'info',
+      source: 'release',
+      event: 'sidecar_recycled_on_install',
+      message: `Recycled ${recycled.length} stale Sidecar process(es) so host respawns fresh code`,
+      detail: { pids: recycled },
+    });
+  }
+  return recycled;
+}
+
 export function rollbackToSnapshot({
   snapshotName = '',
   env = process.env,
@@ -170,6 +200,9 @@ export function rollbackToSnapshot({
   const cfgDir = resolveConfigDir(env, configDir);
   const childEnv = buildAgyChildEnv(env, cfgDir);
   execFileSync('agy', ['plugin', 'install', target.pluginDir], { env: childEnv, encoding: 'utf8' });
+  if (checkProcesses) {
+    recycleStaleSidecars(cfgDir, resolvedDataDir);
+  }
   appendFlightEvent(resolvedDataDir, {
     level: 'warn',
     source: 'release',
@@ -209,6 +242,9 @@ export function safeInstallRelease({
   const snapshotRes = createSnapshot({ env, configDir, dataDir: resolvedDataDir });
 
   execFileSync('agy', ['plugin', 'install', absPlugin], { env: childEnv, encoding: 'utf8' });
+  if (checkProcesses) {
+    recycleStaleSidecars(cfgDir, resolvedDataDir);
+  }
   const newMeta = readJsonSafe(join(absPlugin, 'plugin.json'), {});
 
   appendFlightEvent(resolvedDataDir, {

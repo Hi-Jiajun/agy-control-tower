@@ -80,15 +80,48 @@ export function inspectRunningSidecars(installedDir = '') {
       const rawArgs = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\u0000').filter(Boolean);
       if (rawArgs.length === 0) continue;
       const binBase = basename(rawArgs[0]);
-      if (!/^node(?:\d|$|-|\.)/i.test(binBase)) continue;
       const cmdline = rawArgs.join(' ');
-      if (!cmdline.includes('control-tower') || !cmdline.includes('sidecars/tower/main.mjs')) continue;
+      const isNodeRunner =
+        /^node(?:\d|$|-|\.)/i.test(binBase) &&
+        cmdline.includes('control-tower') &&
+        cmdline.includes('sidecars/tower/main.mjs');
+      const maybeHostSidecar =
+        rawArgs.some((a) => a === 'main.mjs' || a.endsWith('/sidecars/tower/main.mjs')) &&
+        (cmdline.includes('sidecar_sdk') || cmdline.includes('control-tower'));
+      if (!isNodeRunner && !maybeHostSidecar) continue;
+
       let cwd = '';
       try {
         cwd = readlinkSync(`/proc/${pid}/cwd`);
       } catch {
         cwd = '';
       }
+      const cleanCwd = cwd.replace(/\s*\(deleted\)$/, '');
+      let pluginRootEnv = '';
+      let matchesTower = isNodeRunner || cleanCwd.endsWith('/control-tower/sidecars/tower');
+      if ((!matchesTower || !cleanCwd) && maybeHostSidecar) {
+        try {
+          const envRaw = readFileSync(`/proc/${pid}/environ`, 'utf8');
+          for (const kv of envRaw.split('\u0000')) {
+            if (kv.startsWith('PLUGIN_ROOT=')) {
+              pluginRootEnv = kv.slice('PLUGIN_ROOT='.length);
+              if (pluginRootEnv.includes('control-tower')) matchesTower = true;
+            }
+          }
+        } catch {
+          // ignore unreadable environ
+        }
+      }
+      if (!matchesTower) continue;
+
+      const matchesInstalled = Boolean(
+        installedDir &&
+          (cmdline.includes(installedDir) ||
+            cleanCwd.startsWith(installedDir) ||
+            pluginRootEnv === installedDir)
+      );
+      if (installedDir && !matchesInstalled) continue;
+
       let procStartMs = 0;
       try {
         procStartMs = statSync(`/proc/${pid}`).mtimeMs;
@@ -97,7 +130,7 @@ export function inspectRunningSidecars(installedDir = '') {
       }
       const deletedCwd = cwd.includes('(deleted)');
       const outdatedCode =
-        cmdline.includes(installedDir) &&
+        matchesInstalled &&
         pluginMtimeMs > 0 &&
         procStartMs > 0 &&
         procStartMs < pluginMtimeMs - 1000;

@@ -7,9 +7,14 @@ import {
 } from '../../../lib/paths.mjs';
 import { parseRegistry } from '../../../lib/registry.mjs';
 import { loadWorkspaceRoadmap } from '../../../lib/roadmap.mjs';
-import { resolveEffectiveSettings } from '../../../lib/settings.mjs';
+import {
+  loadGlobalSettings,
+  loadPluginSettings,
+  readHostPermissionPolicy,
+  resolveEffectiveSettings,
+} from '../../../lib/settings.mjs';
 import { loadPluginState } from '../../../lib/transcript.mjs';
-import { isLeaseIdle } from '../ui-logic.mjs';
+import { formatWorkspaceLabel, isLeaseIdle } from '../ui-logic.mjs';
 
 /**
  * Strictly read-only cross-workspace global summary across all Control Tower workspaces.
@@ -30,6 +35,9 @@ export function buildMultiWorkspaceOverview({
   });
 
   const pluginState = dataDir && existsSync(dataDir) ? loadPluginState(dataDir) : { controllers: {} };
+  const preloadedPlugin = loadPluginSettings(dataDir);
+  const preloadedGlobal = loadGlobalSettings(dataDir);
+  const preloadedHostPerm = readHostPermissionPolicy({ env: process.env });
   const workspaces = [];
   let totalP0 = 0;
   let totalP1 = 0;
@@ -42,6 +50,10 @@ export function buildMultiWorkspaceOverview({
       wsReal,
       pluginRoot,
       env: process.env,
+      includeDocs: false,
+      preloadedPlugin,
+      preloadedGlobal,
+      preloadedHostPerm,
     });
     const found = findExistingRegistry(wsReal, {
       dataDir,
@@ -114,7 +126,8 @@ export function buildMultiWorkspaceOverview({
       otherAttentionCount += p0 + p1;
     }
 
-    const shortName = wsReal.split('/').filter(Boolean).slice(-2).join('/') || wsReal;
+    const lbl = formatWorkspaceLabel(wsReal);
+    const shortName = lbl.parent ? `${lbl.parent}/${lbl.name}` : lbl.name;
     workspaces.push({
       workspace: wsReal,
       shortName,

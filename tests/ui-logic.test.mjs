@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  buildModelSelectOptionsHtml,
   buildPrefilledHandoverText,
+  canonicalizePresetModel,
   computeControllerHealth,
   computeLivePollPlan,
+  computeOverviewRestraint,
+  computePaneChromeState,
   computeTabVisibility,
   escHtml,
   formatCollabLabel,
@@ -11,9 +15,12 @@ import {
   formatGlobalWorkspacesBadge,
   formatIsolationLabel,
   formatRoadmapStatusBadge,
+  formatWorkspaceLabel,
   isLeaseIdle,
   nextInlineConfirmState,
+  resolveModelSelectState,
   summarizeDiagnosticsBadge,
+  summarizeExecutionSurfaces,
 } from '../plugin/sidecars/tower/ui-logic.mjs';
 import { makeConvId } from './helpers.mjs';
 
@@ -197,4 +204,157 @@ test('ui-logic (v1.7.0): SSE live poll mode, inline 2-step confirm state machine
     badgeClass: 'badge-muted',
     hasAlert: false,
   });
+});
+
+test('ui-logic (v1.10.0): workspace short label, pane chrome skeleton/unbound/counts, and overview restraint', () => {
+  assert.deepEqual(formatWorkspaceLabel(''), {
+    name: '未绑定工作区',
+    parent: '',
+    display: '未绑定工作区',
+  });
+  assert.deepEqual(formatWorkspaceLabel('/srv/projects/AntigravityPlugins/control-tower'), {
+    name: 'control-tower',
+    parent: 'AntigravityPlugins',
+    display: 'control-tower  (AntigravityPlugins)',
+  });
+  assert.deepEqual(formatWorkspaceLabel('D:\\Workspaces\\AntigravityPlugins\\control-tower\\'), {
+    name: 'control-tower',
+    parent: 'AntigravityPlugins',
+    display: 'control-tower  (AntigravityPlugins)',
+  });
+
+  const bootChrome = computePaneChromeState({ hasSnapshot: false });
+  assert.equal(bootChrome.showSkeleton, true);
+  assert.equal(bootChrome.showUnbound, false);
+
+  const unboundChrome = computePaneChromeState({
+    tab: 'overview',
+    hasSnapshot: true,
+    hasWorkspace: false,
+  });
+  assert.equal(unboundChrome.showSkeleton, false);
+  assert.equal(unboundChrome.showUnbound, true);
+
+  const unboundSettingsChrome = computePaneChromeState({
+    tab: 'settings',
+    hasSnapshot: true,
+    hasWorkspace: false,
+  });
+  assert.equal(unboundSettingsChrome.showUnbound, false);
+
+  const uninitSessionsChrome = computePaneChromeState({
+    tab: 'sessions',
+    hasSnapshot: true,
+    hasWorkspace: true,
+    hasReg: false,
+    roadmapDone: 1,
+    roadmapTotal: 3,
+  });
+  assert.deepEqual(uninitSessionsChrome.needsInitTabs, ['sessions', 'queue', 'raw']);
+  assert.ok(uninitSessionsChrome.emptyTabHint.includes('完成下方台账初始化后'));
+  assert.equal(uninitSessionsChrome.tabCounts.roadmap, '1/3');
+  assert.equal(uninitSessionsChrome.tabCounts.sessions, '');
+
+  const activeChrome = computePaneChromeState({
+    tab: 'overview',
+    hasSnapshot: true,
+    hasWorkspace: true,
+    hasReg: true,
+    unreadTotal: 2,
+    activeSurfacesCount: 4,
+    roadmapDone: 2,
+    roadmapTotal: 5,
+    queueCount: 3,
+  });
+  assert.deepEqual(activeChrome.needsInitTabs, []);
+  assert.equal(activeChrome.emptyTabHint, '');
+  assert.deepEqual(activeChrome.tabCounts, {
+    overview: '2',
+    sessions: '4',
+    roadmap: '2/5',
+    queue: '3',
+  });
+
+  const surf = summarizeExecutionSurfaces({
+    swarm: { members: [{ state: 'working' }, { state: 'killed' }] },
+    subagents: [{}],
+    workflows: [],
+    topLevel: [{}, {}],
+  });
+  assert.equal(surf.hiddenTotal, 2);
+  assert.equal(surf.totalActive, 4);
+
+  const idleRestraint = computeOverviewRestraint({
+    leaseEnabled: true,
+    lockStatus: 'IDLE（空闲待分配）',
+    unreadTotal: 0,
+  });
+  assert.deepEqual(idleRestraint, {
+    leaseIdle: true,
+    showReleaseLeaseBtn: false,
+    showFullLeaseGrid: false,
+    canDeliverInbox: false,
+    canAckAllInbox: false,
+  });
+
+  const heldRestraint = computeOverviewRestraint({
+    leaseEnabled: true,
+    lockStatus: 'LOCKED (独占验证中)',
+    unreadTotal: 3,
+  });
+  assert.deepEqual(heldRestraint, {
+    leaseIdle: false,
+    showReleaseLeaseBtn: true,
+    showFullLeaseGrid: true,
+    canDeliverInbox: true,
+    canAckAllInbox: true,
+  });
+
+  // Model select helpers (preset canonicalization, inherit mode, route mode, custom allowlist & custom input)
+  assert.equal(canonicalizePresetModel('`gemini-4-neon-xhigh`'), 'Gemini 4 Neon (XHigh)');
+  assert.equal(canonicalizePresetModel('gemini-pro-orchestrator-neon'), 'Orchestrator (Neon Extra High)');
+  assert.equal(canonicalizePresetModel('gemini-pro-orchestrator'), 'Orchestrator (Carbon)');
+
+  assert.deepEqual(resolveModelSelectState('Gemini 4 Neon (XHigh)', { mode: 'standard' }), {
+    selectValue: 'Gemini 4 Neon (XHigh)',
+    customValue: '',
+    showCustom: false,
+  });
+  assert.deepEqual(resolveModelSelectState('', { mode: 'inherit' }), {
+    selectValue: '',
+    customValue: '',
+    showCustom: false,
+  });
+  assert.deepEqual(
+    resolveModelSelectState('custom-corp-v4', { mode: 'standard', extraModels: ['custom-corp-v4'] }),
+    {
+      selectValue: 'custom-corp-v4',
+      customValue: '',
+      showCustom: false,
+    }
+  );
+  assert.deepEqual(resolveModelSelectState('Orchestrator (Neon) + /plan', { mode: 'standard' }), {
+    selectValue: '__custom__',
+    customValue: 'Orchestrator (Neon) + /plan',
+    showCustom: true,
+  });
+  assert.deepEqual(resolveModelSelectState('L3 Orchestrator (Carbon)', { mode: 'route' }), {
+    selectValue: 'L3 Orchestrator (Carbon)',
+    customValue: '',
+    showCustom: false,
+  });
+  assert.deepEqual(resolveModelSelectState('L2 Custom Route', { mode: 'route' }), {
+    selectValue: '__custom__',
+    customValue: 'L2 Custom Route',
+    showCustom: true,
+  });
+
+  const inheritHtml = buildModelSelectOptionsHtml({
+    mode: 'inherit',
+    inheritLabel: '继承全局 (Gemini 4 Neon (XHigh))',
+    extraModels: ['custom-corp-v4'],
+  });
+  assert.ok(inheritHtml.includes('继承全局 (Gemini 4 Neon (XHigh))'));
+  assert.ok(inheritHtml.includes('custom-corp-v4'));
+  assert.ok(inheritHtml.includes('value="__custom__"'));
 });

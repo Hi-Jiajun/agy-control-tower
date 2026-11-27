@@ -51,6 +51,7 @@ import {
   updateRoadmapNodeStatus,
 } from '../../lib/roadmap.mjs';
 import {
+  loadGlobalSettings,
   MODEL_PRESETS,
   normalizeModelForAgentApi,
   resetDocOverride,
@@ -58,6 +59,7 @@ import {
   resetPluginSettings,
   resetWorkspaceSettings,
   resolveEffectiveSettings,
+  sanitizeGlobalSettings,
   saveDocOverride,
   saveGlobalSettings,
   savePluginSettings,
@@ -453,7 +455,7 @@ class ControlTowerServer {
         recentWorkspaces: recent,
         dataDir,
       });
-      return {
+      return this.#attachSnapshotSig({
         plugin,
         workspace: '',
         recentWorkspaces: recent,
@@ -472,7 +474,7 @@ class ControlTowerServer {
         inbox: emptyInbox,
         roadmap: emptyRoadmap,
         attention: { items: [], handoverIgnored: false },
-      };
+      });
     }
 
     const found = findExistingRegistry(wsReal, {
@@ -493,7 +495,7 @@ class ControlTowerServer {
       const wsInboxSummary = summarizeInbox(loadWorkspaceInbox(dataDir, wsReal), {
         focusCooldownSec: resolved.plugin.focusCooldownSec,
       });
-      return {
+      return this.#attachSnapshotSig({
         plugin,
         workspace: wsReal,
         recentWorkspaces: recent,
@@ -512,7 +514,7 @@ class ControlTowerServer {
         inbox: wsInboxSummary,
         roadmap: wsRoadmap,
         attention: { items: [], handoverIgnored: false },
-      };
+      });
     }
 
     const content = readFileSync(found.absPath, 'utf8');
@@ -563,7 +565,7 @@ class ControlTowerServer {
       topLevel: parsed.activeSessions,
     };
 
-    return {
+    return this.#attachSnapshotSig({
       plugin,
       workspace: wsReal,
       recentWorkspaces: recent,
@@ -582,7 +584,34 @@ class ControlTowerServer {
       inbox: wsInboxSummary,
       roadmap: wsRoadmap,
       attention,
-    };
+    });
+  }
+
+  #attachSnapshotSig(snap) {
+    const sigPayload = JSON.stringify({
+      ws: snap.workspace,
+      recent: snap.recentWorkspaces,
+      mw: snap.multiWorkspace?.totalUnread,
+      mwC: snap.multiWorkspace?.workspaceCount,
+      h: snap.hash,
+      ctrlTel: snap.parsed?.controller?.telemetry,
+      actTel: (snap.parsed?.activeSessions || []).map((s) => [s.conversationId, s.status, s.telemetry?.maxStepIndex, s.telemetry?.compactions]),
+      swarm: snap.nativeSwarm,
+      subs: snap.executionSurfaces?.subagents,
+      wfs: snap.executionSurfaces?.workflows,
+      inb: snap.inbox,
+      rmL1: snap.roadmap?.l1Hash,
+      rmL2: snap.roadmap?.l2Hash,
+      att: snap.attention,
+      set: snap.settings?.effective,
+      plug: snap.settings?.plugin,
+      docSrc: [
+        snap.settings?.docs?.['model-routing.md']?.source,
+        snap.settings?.docs?.['templates.md']?.source,
+      ],
+    });
+    snap.stateSig = sha256(sigPayload).slice(0, 16);
+    return snap;
   }
 
   async #flushDeferredReceiptForWorkspace(wsReal) {
@@ -742,6 +771,21 @@ class ControlTowerServer {
     return { dataDir, wsReal, target, content, currentHash, resolved };
   }
 
+  async #resolveProjectId(explicitProjectId = '', fallbackConvId = '') {
+    const direct = String(explicitProjectId || process.env.ANTIGRAVITY_PROJECT_ID || '').trim();
+    if (direct) return direct;
+    const cid = String(fallbackConvId || process.env.ANTIGRAVITY_CONVERSATION_ID || '').trim();
+    if (!cid || !isValidConvIdOrPrefix(cid)) return '';
+    try {
+      const data = await getConversationMetadataCached(cid);
+      const metaEvent = data?.response?.conversationMetadata || data?.response?.conversation_metadata;
+      const meta = metaEvent?.metadata;
+      return String(meta?.projectId || meta?.project_id || '').trim();
+    } catch {
+      return '';
+    }
+  }
+
   async #handleSidecarBridge(req, res, url) {
     if (req.method !== 'POST') {
       return this.#sendJson(res, 405, { error: 'Method Not Allowed' });
@@ -770,7 +814,8 @@ class ControlTowerServer {
       const args = ['new-conversation', '--model', cliModel];
       if (body.title) args.push('--title', String(body.title).trim());
       args.push(safePositionalMessage(message));
-      const result = await execAgentApiAsync(args, { projectId: body.projectId });
+      const resolvedProjId = await this.#resolveProjectId(body.projectId, body.sourceConversationId);
+      const result = await execAgentApiAsync(args, { projectId: resolvedProjId || undefined });
       const newConvId = extractConversationIdFromResult(result);
 
       // Pre-register legitimate handover successor so PreToolUse allows first registry takeover cleanly
@@ -836,6 +881,10 @@ class ControlTowerServer {
 
     if (req.method === 'GET' && url.pathname === '/api/snapshot') {
       const snap = this.#buildSnapshot(url.searchParams.get('workspace') || '');
+      const sinceSig = (url.searchParams.get('sinceSig') || '').trim();
+      if (sinceSig && snap.stateSig && sinceSig === snap.stateSig) {
+        return this.#sendJson(res, 200, { unchanged: true, stateSig: snap.stateSig, workspace: snap.workspace });
+      }
       return this.#sendJson(res, 200, snap);
     }
 
@@ -933,6 +982,23 @@ class ControlTowerServer {
     }
 
     if (url.pathname === '/api/settings/global') {
+      if (body.action !== 'reset') {
+        const candidate = sanitizeGlobalSettings(body, loadGlobalSettings(dataDir));
+        for (const key of [
+          'l0ControllerModel',
+          'l1LightModel',
+          'l2StandardModel',
+          'l3DeepModel',
+          'l4IntegrationModel',
+        ]) {
+          if (body[key] !== undefined) {
+            const mCheck = validateDispatchModel(String(body[key] ?? ''), candidate);
+            if (!mCheck.ok) {
+              throw new HttpError(400, `${key}: ${mCheck.reason}`);
+            }
+          }
+        }
+      }
       const next =
         body.action === 'reset' ? resetGlobalSettings(dataDir) : saveGlobalSettings(dataDir, body);
       const wsReal = body.workspace
@@ -948,6 +1014,29 @@ class ControlTowerServer {
     if (url.pathname === '/api/settings/workspace') {
       const wsReal = normalizeWorkspaceInput(body.workspace, { throwOnInvalid: true });
       if (!wsReal) throw new HttpError(400, 'workspace is required');
+      if (body.action !== 'reset' && body.overrides && typeof body.overrides === 'object') {
+        const curEff = resolveEffectiveSettings({
+          dataDir,
+          wsReal,
+          pluginRoot: PLUGIN_ROOT,
+          env: process.env,
+        }).effective;
+        for (const key of [
+          'l0ControllerModel',
+          'l1LightModel',
+          'l2StandardModel',
+          'l3DeepModel',
+          'l4IntegrationModel',
+        ]) {
+          const ovVal = body.overrides[key];
+          if (ovVal !== undefined && ovVal !== null) {
+            const mCheck = validateDispatchModel(String(ovVal), curEff);
+            if (!mCheck.ok) {
+              throw new HttpError(400, `${key}: ${mCheck.reason}`);
+            }
+          }
+        }
+      }
       const next =
         body.action === 'reset'
           ? resetWorkspaceSettings(dataDir, wsReal)
@@ -1123,7 +1212,11 @@ class ControlTowerServer {
         const args = ['new-conversation', '--model', cliModel];
         if (title) args.push('--title', title);
         args.push(safePositionalMessage(finalMessage));
-        const apiResult = await execAgentApiAsync(args, { projectId: body.projectId });
+        const resolvedProjId = await this.#resolveProjectId(
+          body.projectId,
+          ctrlId || body.sourceConversationId
+        );
+        const apiResult = await execAgentApiAsync(args, { projectId: resolvedProjId || undefined });
         const newConvId = extractConversationIdFromResult(apiResult);
 
         let enrolled = false;
@@ -1260,7 +1353,13 @@ class ControlTowerServer {
     }
 
     if (url.pathname === '/api/controller/update') {
-      const { wsReal, target, content } = this.#loadRegistryForMutation(body);
+      const { wsReal, target, content, resolved } = this.#loadRegistryForMutation(body);
+      if (body.defaultModel !== undefined && String(body.defaultModel).trim()) {
+        const mCheck = validateDispatchModel(String(body.defaultModel).trim(), resolved.effective);
+        if (!mCheck.ok) {
+          throw new HttpError(400, mCheck.reason);
+        }
+      }
       const next = updateControllerSection(content, {
         controllerId: body.controllerId,
         status: body.status,
@@ -1611,5 +1710,11 @@ export { ControlTowerServer };
 const isMain =
   process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
-  new ControlTowerServer().start();
+  const srv = new ControlTowerServer();
+  srv.start();
+  for (const sig of ['SIGTERM', 'SIGINT']) {
+    process.once(sig, () => {
+      srv.close().finally(() => process.exit(0));
+    });
+  }
 }

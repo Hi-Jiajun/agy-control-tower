@@ -1,6 +1,7 @@
 import {
   escHtml as esc,
   formatFlightEventRow,
+  formatWorkspaceLabel,
   summarizeDiagnosticsBadge,
 } from '../ui-logic.mjs';
 
@@ -39,7 +40,7 @@ export function syncWsDocEditor(ctx, snap) {
 }
 
 export function renderSettings(ctx, snap) {
-  const { $, state } = ctx;
+  const { $, state, setModelField } = ctx;
   const s = snap.settings || {};
   const p = s.plugin || {};
   const g = s.global || {};
@@ -71,11 +72,11 @@ export function renderSettings(ctx, snap) {
     : `未检测到宿主权限文件，跟随模式下默认采用 balanced 均衡档`;
   $('host-perm-summary').textContent = hostDesc;
   if (!state.settingsDirty.global) {
-    $('gs-l0ControllerModel').value = g.l0ControllerModel || 'Gemini 4 Neon (XHigh)';
-    $('gs-l1LightModel').value = g.l1LightModel || 'Gemini 4 Hydrogen (XHigh)';
-    $('gs-l2StandardModel').value = g.l2StandardModel || 'Orchestrator (Neon Extra High)';
-    $('gs-l3DeepModel').value = g.l3DeepModel || 'Orchestrator (Carbon)';
-    $('gs-l4IntegrationModel').value = g.l4IntegrationModel || 'Orchestrator (Neon Extra High)';
+    setModelField('gs-l0ControllerModel', g.l0ControllerModel || 'Gemini 4 Neon (XHigh)');
+    setModelField('gs-l1LightModel', g.l1LightModel || 'Gemini 4 Hydrogen (XHigh)');
+    setModelField('gs-l2StandardModel', g.l2StandardModel || 'Orchestrator (Neon Extra High)');
+    setModelField('gs-l3DeepModel', g.l3DeepModel || 'Orchestrator (Carbon)');
+    setModelField('gs-l4IntegrationModel', g.l4IntegrationModel || 'Orchestrator (Neon Extra High)');
     $('gs-modelGuardPolicy').value = g.modelGuardPolicy || 'strict_gemini4';
     $('gs-customAllowedModels').value = Array.isArray(g.customAllowedModels)
       ? g.customAllowedModels.join(', ')
@@ -95,7 +96,7 @@ export function renderSettings(ctx, snap) {
   $('ws-settings-empty').classList.toggle('hidden', hasWs);
   $('ws-settings-body').classList.toggle('hidden', !hasWs);
   if (hasWs) {
-    $('ws-settings-badge').textContent = snap.workspace.split('/').filter(Boolean).pop() || 'workspace';
+    $('ws-settings-badge').textContent = formatWorkspaceLabel(snap.workspace).name;
     if (!state.settingsDirty.workspace) {
       $('ws-exclusiveLeaseEnabled').checked = w.exclusiveLeaseEnabled !== false;
       $('ws-registryMode').value = w.registryMode || 'workspace_auto';
@@ -104,8 +105,9 @@ export function renderSettings(ctx, snap) {
 
       ['l0ControllerModel', 'l2StandardModel', 'l3DeepModel'].forEach((k) => {
         const hasOv = Object.prototype.hasOwnProperty.call(ov, k);
-        $(`ws-ov-${k}`).value = hasOv ? ov[k] : '';
-        $(`ws-ov-${k}`).placeholder = `继承全局 (${g[k] || '-'})`;
+        setModelField(`ws-ov-${k}`, hasOv ? ov[k] : '', {
+          inheritLabel: `继承全局 (${g[k] || '-'})`,
+        });
         setOvTag($, k, hasOv);
       });
 
@@ -138,7 +140,7 @@ export function renderSettings(ctx, snap) {
 }
 
 export function renderDiagnostics(ctx, payload) {
-  const { $ } = ctx;
+  const { $, setHtmlIfChanged } = ctx;
   const summary = payload?.summary || null;
   const events = Array.isArray(payload?.events) ? payload.events : [];
   const badge = summarizeDiagnosticsBadge(summary);
@@ -155,23 +157,26 @@ export function renderDiagnostics(ctx, payload) {
 
   const listEl = $('diag-events-list');
   if (events.length === 0) {
-    listEl.innerHTML = '<p class="muted">暂无匹配的飞行诊断事件。</p>';
+    setHtmlIfChanged(listEl, '<p class="empty-inline">暂无匹配的飞行诊断事件。</p>');
     return;
   }
-  listEl.innerHTML = events
-    .map((ev) => {
-      const row = formatFlightEventRow(ev);
-      return `
-        <div class="diag-row">
-          <div class="diag-head">
-            <span class="diag-title">${esc(row.timeLabel)} | ${esc(row.title)}</span>
-            <span class="badge ${row.levelClass}">${esc(row.level)}</span>
+  setHtmlIfChanged(
+    listEl,
+    events
+      .map((ev) => {
+        const row = formatFlightEventRow(ev);
+        return `
+          <div class="diag-row">
+            <div class="diag-head">
+              <span class="diag-title">${esc(row.timeLabel)} | ${esc(row.title)}</span>
+              <span class="badge ${row.levelClass}">${esc(row.level)}</span>
+            </div>
+            ${row.message ? `<div class="diag-msg">${esc(row.message)}</div>` : ''}
           </div>
-          ${row.message ? `<div class="diag-msg">${esc(row.message)}</div>` : ''}
-        </div>
-      `;
-    })
-    .join('');
+        `;
+      })
+      .join('')
+  );
 }
 
 export async function loadDiagnostics(ctx, { silent = false } = {}) {
@@ -190,7 +195,7 @@ export async function loadDiagnostics(ctx, { silent = false } = {}) {
 }
 
 export function bindSettingsEvents(ctx) {
-  const { $, state, api, render, showToast, confirmInline } = ctx;
+  const { $, state, api, render, showToast, confirmInline, getModelField } = ctx;
 
   $('plugin-settings-form').addEventListener('input', () => {
     state.settingsDirty.plugin = true;
@@ -301,11 +306,11 @@ export function bindSettingsEvents(ctx) {
         method: 'POST',
         body: {
           workspace: state.workspace,
-          l0ControllerModel: $('gs-l0ControllerModel').value.trim(),
-          l1LightModel: $('gs-l1LightModel').value.trim(),
-          l2StandardModel: $('gs-l2StandardModel').value.trim(),
-          l3DeepModel: $('gs-l3DeepModel').value.trim(),
-          l4IntegrationModel: $('gs-l4IntegrationModel').value.trim(),
+          l0ControllerModel: getModelField('gs-l0ControllerModel'),
+          l1LightModel: getModelField('gs-l1LightModel'),
+          l2StandardModel: getModelField('gs-l2StandardModel'),
+          l3DeepModel: getModelField('gs-l3DeepModel'),
+          l4IntegrationModel: getModelField('gs-l4IntegrationModel'),
           modelGuardPolicy: $('gs-modelGuardPolicy').value,
           customAllowedModels: customRaw,
           decisionAutonomy: $('gs-decisionAutonomy').value,
@@ -407,7 +412,7 @@ export function bindSettingsEvents(ctx) {
     if (!state.workspace) return;
     const overrides = {};
     ['l0ControllerModel', 'l2StandardModel', 'l3DeepModel'].forEach((k) => {
-      const v = $(`ws-ov-${k}`).value.trim();
+      const v = getModelField(`ws-ov-${k}`);
       overrides[k] = v || null;
     });
     overrides.decisionAutonomy = $('ws-ov-decisionAutonomy').value || null;

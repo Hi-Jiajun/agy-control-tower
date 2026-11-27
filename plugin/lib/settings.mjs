@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, unlinkSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
@@ -457,12 +457,21 @@ export function resolveEffectiveAutonomy(decisionAutonomy, hostPolicy) {
   return { level, source: 'host_permission', hostRaw };
 }
 
+const builtinDocCache = new Map();
+
 function readBuiltinDoc(pluginRoot, docName) {
   if (!pluginRoot) return { path: '', content: '' };
   const p = join(resolve(pluginRoot), 'skills', 'control-tower', 'references', docName);
   if (!existsSync(p)) return { path: p, content: '' };
   try {
-    return { path: p, content: readFileSync(p, 'utf8') };
+    const mtimeMs = statSync(p).mtimeMs;
+    const hit = builtinDocCache.get(p);
+    if (hit && hit.mtimeMs === mtimeMs) {
+      return { path: p, content: hit.content };
+    }
+    const content = readFileSync(p, 'utf8');
+    builtinDocCache.set(p, { mtimeMs, content });
+    return { path: p, content };
   } catch {
     return { path: p, content: '' };
   }
@@ -473,11 +482,15 @@ export function resolveEffectiveSettings({
   wsReal = '',
   pluginRoot = '',
   env = process.env,
+  includeDocs = true,
+  preloadedPlugin = null,
+  preloadedGlobal = null,
+  preloadedHostPerm = null,
 } = {}) {
-  const plugin = loadPluginSettings(dataDir);
-  const global = loadGlobalSettings(dataDir);
+  const plugin = preloadedPlugin || loadPluginSettings(dataDir);
+  const global = preloadedGlobal || loadGlobalSettings(dataDir);
   const workspace = loadWorkspaceSettings(dataDir, wsReal);
-  const hostPermission = readHostPermissionPolicy({ env });
+  const hostPermission = preloadedHostPerm || readHostPermissionPolicy({ env });
 
   const effective = { ...global, customAllowedModels: [...global.customAllowedModels] };
   const sourceMap = {};
@@ -499,37 +512,39 @@ export function resolveEffectiveSettings({
   effective.customRegistryRelPath = workspace.customRegistryRelPath;
 
   const docs = {};
-  for (const docName of OVERRIDE_DOC_NAMES) {
-    const wsDoc = wsReal ? readOverrideDoc(dataDir, 'workspace', docName, wsReal) : { exists: false };
-    const glDoc = readOverrideDoc(dataDir, 'global', docName);
-    const builtinDoc = readBuiltinDoc(pluginRoot, docName);
-    if (wsDoc.exists) {
-      docs[docName] = {
-        content: wsDoc.content,
-        source: 'workspace',
-        activePath: wsDoc.path,
-        hasGlobalOverride: glDoc.exists,
-        hasWorkspaceOverride: true,
-        builtinContent: builtinDoc.content,
-      };
-    } else if (glDoc.exists) {
-      docs[docName] = {
-        content: glDoc.content,
-        source: 'global',
-        activePath: glDoc.path,
-        hasGlobalOverride: true,
-        hasWorkspaceOverride: false,
-        builtinContent: builtinDoc.content,
-      };
-    } else {
-      docs[docName] = {
-        content: builtinDoc.content,
-        source: 'builtin',
-        activePath: builtinDoc.path,
-        hasGlobalOverride: false,
-        hasWorkspaceOverride: false,
-        builtinContent: builtinDoc.content,
-      };
+  if (includeDocs) {
+    for (const docName of OVERRIDE_DOC_NAMES) {
+      const wsDoc = wsReal ? readOverrideDoc(dataDir, 'workspace', docName, wsReal) : { exists: false };
+      const glDoc = readOverrideDoc(dataDir, 'global', docName);
+      const builtinDoc = readBuiltinDoc(pluginRoot, docName);
+      if (wsDoc.exists) {
+        docs[docName] = {
+          content: wsDoc.content,
+          source: 'workspace',
+          activePath: wsDoc.path,
+          hasGlobalOverride: glDoc.exists,
+          hasWorkspaceOverride: true,
+          builtinContent: builtinDoc.content,
+        };
+      } else if (glDoc.exists) {
+        docs[docName] = {
+          content: glDoc.content,
+          source: 'global',
+          activePath: glDoc.path,
+          hasGlobalOverride: true,
+          hasWorkspaceOverride: false,
+          builtinContent: builtinDoc.content,
+        };
+      } else {
+        docs[docName] = {
+          content: builtinDoc.content,
+          source: 'builtin',
+          activePath: builtinDoc.path,
+          hasGlobalOverride: false,
+          hasWorkspaceOverride: false,
+          builtinContent: builtinDoc.content,
+        };
+      }
     }
   }
 

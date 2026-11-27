@@ -92,4 +92,4 @@
 
 - **经典单脚本打包兼容宿主鉴权网关（`v1.8.1`）**：服务端按需编译 `/app.bundle.js` 经典 IIFE 包并附加 `no-store` 防缓存头与 `boot-guard.js` 启动守卫，彻底规避宿主网关对 `<script type="module">` 子模块图的拦截。
 - **全通道 MCP 台账写保护与实证 `L0 / Swarm` 动静分流（`v1.9.0 ~ v1.9.1`）**：`PreToolUse` 扩展拦截 `apply_edits` / `call_mcp_tool`；修复双层 `Orchestrator` 压缩双计；基于 45h 遥测将 `L0` 常驻总控回调为单模型 `Gemini 4 Neon (XHigh)` 消除短对话切层损耗，保留 `Swarm` 与 `L2/L4` 使用 `Orchestrator (Neon Extra High)`。
-- **Sidecar 跨站/DNS 重绑定纵深防护与 Linux/macOS/Windows 开源 CI（`v1.10.0`）**：升级 `#validOrigin` URL 主机名精确匹配、新增 `#validHost` 防 DNS Rebinding 校验、`Sec-Fetch-Site: cross-site` 拦截及安全响应头；补齐 Windows 个人目录脱敏、无 `agy` 离线严格校验器 `ct-validate-offline.mjs`、中英双语开源文档与三操作系统 GitHub Actions CI。
+- **Antigravity 原生设计系统 UI 焕新、Sidecar 纵深安全加固与三端开源 CI（`v1.10.0`）**：看板 UI 与图标全面重构为 Google Antigravity 原生克制灰阶、宿主语义 Token 直绑与单行下划线标签风格；升级 `#validOrigin` URL 主机名精确匹配、新增 `#validHost` 防 DNS Rebinding 校验、`Sec-Fetch-Site: cross-site` 拦截及安全响应头；补齐 Windows 个人目录脱敏、无 `agy` 离线严格校验器 `ct-validate-offline.mjs`、中英双语开源文档与三操作系统 GitHub Actions CI。

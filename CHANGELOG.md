@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 新增零依赖离线插件包严格校验器 `scripts/ct-validate-offline.mjs`（`npm run validate:offline`）与跨平台合规检查入口 `scripts/ct-precommit-check.mjs`（`npm run hygiene` / `npm run ci`），使无 `agy` CLI 的公共 CI 与外部贡献者环境也能 100% 校验插件清单、钩子、看板与纯净包边界。
 
 ### Changed
+- **看板 UI 与信息架构全面升级为 Google Antigravity 原生风格**：
+  - `plugin/sidecars/tower/*` 与 `plugin/assets/logo.svg` 对齐官方内置 Aux Pane 交互与视觉规范：采用双行紧凑粘性顶栏（高度 `<= 88px`）、`项目名 (父目录)` 精简工作区切换器、单行 6 标签页配实时数字角标、启动骨架屏与未绑定工作区引导卡、双模式台账初始化选择卡（`.agents/` 标准 vs `@plugin_data/` 零侵入托管）。
+  - 全面引入静默降噪与渐进式披露：总览页将现役总控卡置顶，在单锁 `IDLE` 与 `0` 未读时自动收敛占位键值网格与冗余主按钮；执行面、队列、台账与设置页对归档历史、新增表单、高级阈值与文档覆写采用 `<details>` 按需展开，并免疫宿主 `preload.js` 内联背景样式覆盖。
+  - 重构全站 13 处模型选择器为原生分组 `<select>` + 自定义模型输入联动（彻底解决宿主 WebView 下 `<datalist>` 无法弹出与预填值过滤锁死问题），动态同步 `customAllowedModels` 白名单，并在 `/api/settings/{global,workspace}` 与 `/api/controller/update` 补齐模型合规校验；同时补齐跨源 iframe 同步手势剪贴板兜底、直派与接班 `projectId` 自动反查、静默 SSE 刷新防冲毁二次确认及新台账 `<T1>` 占位过滤。
+  - **质感微动效与前后端渲染性能深度优化**：新增 GPU `translate3d` 滑动底栏标签指示条与三段式设置滑块、磨砂半透吸顶阴影、暗色卡片 `1px` 高光微浮雕、刷新旋钮微反馈与折叠/面板入场缓动（严格兼容 `减弱动效` 与 `prefers-reduced-motion`）；后端消除跨工作区概览重复文件 I/O 并引入 `stateSig`/`sinceSig` 零载荷静默轮询短路，前端引入仅渲染当前活跃标签页（`dirtyTabs` 按需刷新）、`setHtmlIfChanged` DOM 签名记忆化与 `content-visibility: auto` 布局隔离。
+  - `scripts/ct-ui-smoke.mjs` 与 `tests/ui-logic.test.mjs` 升级为覆盖全部 6 大标签页、13 处模型选择、滑动指示条、DOM 零重绘记忆化、RPC 派单/巡检/投递及 `360px` / `390px` / `960px` 亮暗主题的 36 项全功能真浏览器回归门禁；`scripts/ct-doctor.mjs` 与 `ct-release.mjs` 同步支持识别并在实装时自动回收旧驻留 Sidecar 进程。
 - **全平台（Linux / macOS / Windows）运行态与工具链兼容增强**：
   - `plugin/lib/paths.mjs`、`plugin/lib/settings.mjs`、`plugin/scripts/ct-hook.mjs`、`plugin/sidecars/tower/lib/agentapi.mjs`、`scripts/ct-doctor.mjs`、`scripts/ct-release.mjs` 与 `scripts/ct-ui-smoke.mjs` 全面兼容 Windows `USERPROFILE`、盘符大小写归一化、跨平台 `PATH`/`PATHEXT` 命令探测、`.mjs` 桩脚本直接调用以及 macOS/Windows 下 Chrome/Edge/Playwright 浏览器路径自动发现；`package.json` `setup-hooks` 升级为跨平台 Node 实现。
   - 重构升级中文主页 `README.md`（新增 Mermaid 系统架构图、3 分钟快速开始、零侵入 `PLUGIN_DATA` 托管指引与实证路由表），并同步更新 `plugin/README.md` 与 `docs/ARCHITECTURE-ROADMAP.md`。
